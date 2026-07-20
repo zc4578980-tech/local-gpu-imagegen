@@ -1,0 +1,13 @@
+{
+  "defaults": {
+    "max_rounds": 3,
+    "backend": "auto",
+    "upscale_policy": "auto"
+  },
+  "rubric": {
+    "intent_adherence": {"weight": 1},
+    "composition": {"weight": 1},
+    "artifact_control": {"weight": 1},
+    "user_constraints": {"weight": 1}
+  }
+}

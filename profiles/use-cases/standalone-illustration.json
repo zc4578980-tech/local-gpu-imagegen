@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "standalone-illustration",
+  "kind": "use_case",
+  "description": "A single finished illustration intended to stand on its own.",
+  "aliases": ["illustration", "single image", "artwork"],
+  "examples": {
+    "character": ["Draw a character illustration of a sailor at sunset."],
+    "environment": ["Create an illustrated coastal environment after rain."],
+    "wallpaper": ["Make a wide desktop wallpaper of a calm ocean horizon."]
+  },
+  "subtypes": ["character", "environment", "wallpaper"],
+  "defaults": {"aspect_ratio": "1:1"},
+  "prompt_guidance": ["State the subject, composition, lighting, and requested medium."],
+  "prohibited_content": ["Do not add unrequested text or watermarks."],
+  "rubric": {
+    "subject_completeness": {"weight": 2, "description": "The requested subject is complete and recognizable."},
+    "face_quality": {"weight": 2, "description": "Prominent visible faces are coherent, expressive, and anatomically plausible."},
+    "hand_quality": {"weight": 2, "description": "Prominent visible hands have plausible anatomy and readable poses."},
+    "style_consistency": {"weight": 2, "description": "The requested visual style is applied consistently."},
+    "detail_quality": {"weight": 2, "description": "Important requested details are clear and deliberate."}
+  },
+  "hard_failures": ["missing_subject", "severe_anatomy", "unreadable_text", "watermark", "explicit_constraint_violation"],
+  "refine_mutable": ["denoise_strength", "steps", "guidance_scale"],
+  "explore_mutable": ["seed", "steps", "guidance_scale"]
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local GPU Image Generation Use-Case Profile",
+  "type": "object",
+  "required": [
+    "schema_version", "id", "kind", "description", "aliases", "examples", "subtypes",
+    "defaults", "prompt_guidance", "prohibited_content", "rubric", "hard_failures",
+    "refine_mutable", "explore_mutable"
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import copy
+
+from .errors import ValidationError
+
+
+PLAN_REQUIRED = {
+    "profile", "style", "intent", "positive_prompt", "negative_prompt",
+    "constraints", "model_choice", "backend", "parameters", "max_rounds",
+    "upscale_policy",
+}
+_BACKENDS = {"auto", "webui", "diffusers"}
+_UPSCALE_POLICIES = {"auto", "never", "always"}
+
+
+def validate_generation_plan(plan: dict[str, object], run_request: dict[str, object], action: str) -> dict[str, object]:
+    if not isinstance(plan, dict):
+        raise ValidationError("invalid_generation_plan", "Generation plan must be an object.")
+    fields = set(plan)
+    if fields != PLAN_REQUIRED:
+        raise ValidationError(
+            "invalid_generation_plan",
+            "Generation plan fields do not match the published schema.",
+            {"missing": sorted(PLAN_REQUIRED - fields), "extra": sorted(fields - PLAN_REQUIRED)},
+        )
+    if not isinstance(plan["positive_prompt"], str) or not plan["positive_prompt"].strip():
+        raise ValidationError("invalid_positive_prompt", "positive_prompt must be a non-empty string.")
+    if not isinstance(plan["negative_prompt"], str):
+        raise ValidationError("invalid_negative_prompt", "negative_prompt must be a string.")
+    if not isinstance(plan["constraints"], dict) or not isinstance(plan["parameters"], dict):
+        raise ValidationError("invalid_generation_plan", "constraints and parameters must be objects.")
+    if not isinstance(plan["backend"], str) or plan["backend"] not in _BACKENDS:
+        raise ValidationError("invalid_backend", "backend must be auto, webui, or diffusers.")
+    if not isinstance(plan["upscale_policy"], str) or plan["upscale_policy"] not in _UPSCALE_POLICIES:
+        raise ValidationError("invalid_upscale_policy", "upscale_policy must be auto, never, or always.")
+    if type(plan["max_rounds"]) is not int or not 1 <= plan["max_rounds"] <= 3:
+        raise ValidationError("invalid_round_budget", "max_rounds must be an integer from 1 to 3.")
+    if action not in {"initial", "refine", "explore"}:
+        raise ValidationError("invalid_generation_action", "action must be initial, refine, or explore.")
+
+    _validate_confirmed_boundary(plan, run_request)
+    _validate_backend(plan["backend"], run_request)
+    if action != "initial":
+        profile = _merged_profile(run_request)
+        mutable = profile.get(f"{action}_mutable", [])
+        if not isinstance(mutable, list) or not all(isinstance(name, str) for name in mutable):
+            raise ValidationError("invalid_profile_document", f"{action}_mutable must be a list of strings.")
+        disallowed = sorted(set(plan["parameters"]) - set(mutable))
+        if disallowed:
+            raise ValidationError(
+                "parameter_not_allowed",
+                f"Parameters are not mutable for {action}: {', '.join(disallowed)}",
+                {"action": action, "parameters": disallowed},
+            )
+    return copy.deepcopy(plan)
+
+
+def _validate_confirmed_boundary(plan: dict[str, object], run_request: dict[str, object]) -> None:
+    if not isinstance(run_request, dict):
+        raise ValidationError("invalid_run_request", "Confirmed run request must be an object.")
+    for field in ("profile", "style", "intent", "model_choice", "max_rounds", "upscale_policy"):
+        if field in run_request and plan[field] != run_request[field]:
+            raise ValidationError("generation_plan_mismatch", f"Generation plan {field} differs from confirmed run.", {"field": field})
+    explicit_constraints = run_request.get("constraints", {})
+    if not isinstance(explicit_constraints, dict):
+        raise ValidationError("invalid_run_request", "Confirmed constraints must be an object.")
+    for name, value in explicit_constraints.items():
+        if plan["constraints"].get(name) != value:
+            raise ValidationError("generation_plan_mismatch", f"Generation plan constraint differs from confirmed run: {name}", {"field": name})
+
+
+def _validate_backend(backend: object, run_request: dict[str, object]) -> None:
+    confirmed_backend = run_request.get("backend", "auto")
+    if not isinstance(confirmed_backend, str) or confirmed_backend not in _BACKENDS:
+        raise ValidationError("invalid_run_request", "Confirmed backend must be auto, webui, or diffusers.")
+    if confirmed_backend != "auto":
+        if backend != confirmed_backend:
+            raise ValidationError("generation_plan_mismatch", "Generation plan backend differs from confirmed run.", {"field": "backend"})
+        return
+    available = run_request.get("available_backends", [])
+    if not isinstance(available, (list, tuple, set)):
+        raise ValidationError("invalid_run_request", "available_backends must be a collection.")
+    advertised = {
+        candidate for candidate in available
+        if isinstance(candidate, str) and candidate in {"webui", "diffusers"}
+    }
+    if backend not in advertised:
+        raise ValidationError("invalid_backend", "Auto backend must resolve to an advertised WebUI or Diffusers backend.")
+
+
+def _merged_profile(run_request: dict[str, object]) -> dict[str, object]:
+    for field in ("merged_profile", "profile_document", "profile_definition"):
+        value = run_request.get(field)
+        if isinstance(value, dict):
+            return value
+    return {}
