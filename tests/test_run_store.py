@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -16,7 +17,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.artifacts import ensure_within, sha256_file  # noqa: E402
-from local_gpu_imagegen.errors import ArtifactError, ConflictError, StateError, ValidationError  # noqa: E402
+from local_gpu_imagegen.errors import (  # noqa: E402
+    ArtifactError,
+    AssetEngineError,
+    ConflictError,
+    StateError,
+    ValidationError,
+)
 from local_gpu_imagegen.run_store import AttemptHandle, RunStore  # noqa: E402
 
 
@@ -203,6 +210,94 @@ class RunStoreTests(unittest.TestCase):
         acquired_path, owner_token = outcomes[0]
         self.store._release_lock(acquired_path, owner_token)
 
+    def test_update_falls_back_when_hard_links_are_unsupported(self) -> None:
+        manifest = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+
+        with patch("local_gpu_imagegen.run_store.os.link", side_effect=OSError(errno.EPERM, "not permitted")):
+            updated = self.store.update(manifest["run_id"], lambda value: value.update({"state": "reviewed"}))
+
+        self.assertEqual(updated["state"], "reviewed")
+        run_root = self.output_root / "runs" / manifest["run_id"]
+        self.assertFalse((run_root / ".run.lock").exists())
+        self.assertFalse(list(run_root.glob(".run.lock.*.tmp")))
+
+    def test_attempt_acquisition_falls_back_without_losing_ownership(self) -> None:
+        manifest = self.store.create({
+            "profile": "standalone-illustration",
+            "max_rounds": 1,
+            "merged_profile": {"rubric": {}, "hard_failures": []},
+        })
+        store = RunStore(self.output_root)
+
+        with patch("local_gpu_imagegen.run_store.os.link", side_effect=OSError(errno.EPERM, "not permitted")):
+            handle = store.begin_attempt(manifest["run_id"], "fallback-attempt", INITIAL)
+
+        lock_path = self.output_root / "runs" / manifest["run_id"] / ".run.lock"
+        self.assertTrue(lock_path.is_file())
+        store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
+        self.assertFalse(lock_path.exists())
+
+    def test_unexpected_lock_publication_error_is_structured(self) -> None:
+        manifest = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+
+        with patch("local_gpu_imagegen.run_store.os.link", side_effect=OSError(errno.EIO, "device error")):
+            with self.assertRaisesRegex(AssetEngineError, "lock_operation_failed"):
+                self.store.update(manifest["run_id"], lambda value: value.update({"state": "reviewed"}))
+
+        run_root = self.output_root / "runs" / manifest["run_id"]
+        self.assertFalse((run_root / ".run.lock").exists())
+        self.assertFalse(list(run_root.glob(".run.lock.*.tmp")))
+
+    def test_fallback_pending_metadata_prevents_live_lock_theft(self) -> None:
+        manifest = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+        run_root = self.output_root / "runs" / manifest["run_id"]
+        other = RunStore(self.output_root)
+        writing_canonical = threading.Event()
+        continue_writing = threading.Event()
+        original_dump = json.dump
+        outcomes: list[tuple[Path, str] | Exception] = []
+        owner_dump_count = 0
+
+        def delayed_dump(value: object, stream: object, *args: object, **kwargs: object) -> None:
+            nonlocal owner_dump_count
+            if threading.current_thread().name == "fallback-owner":
+                owner_dump_count += 1
+                if owner_dump_count == 2:
+                    writing_canonical.set()
+                    continue_writing.wait(timeout=5)
+            original_dump(value, stream, *args, **kwargs)
+
+        def acquire_first() -> None:
+            try:
+                outcomes.append(self.store._acquire_lock(run_root))
+            except Exception as error:  # pragma: no cover - asserted through outcomes
+                outcomes.append(error)
+
+        unsupported = OSError(errno.EPERM, "not permitted")
+        with (
+            patch("local_gpu_imagegen.run_store.os.link", side_effect=unsupported),
+            patch("local_gpu_imagegen.run_store.json.dump", side_effect=delayed_dump),
+        ):
+            thread = threading.Thread(target=acquire_first, name="fallback-owner")
+            thread.start()
+            self.assertTrue(writing_canonical.wait(timeout=5))
+            try:
+                outcomes.append(other._acquire_lock(run_root))
+            except Exception as error:
+                outcomes.append(error)
+            finally:
+                continue_writing.set()
+                thread.join(timeout=5)
+
+        acquired = [value for value in outcomes if isinstance(value, tuple)]
+        rejected = [value for value in outcomes if isinstance(value, Exception)]
+        self.assertEqual(len(acquired), 1)
+        self.assertEqual(len(rejected), 1)
+        self.assertIsInstance(rejected[0], ConflictError)
+        self.assertEqual(rejected[0].code, "run_busy")
+        lock_path, owner_token = acquired[0]
+        self.store._release_lock(lock_path, owner_token)
+
     def test_cleanup_rejects_mismatched_confirmation(self) -> None:
         manifest = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
 
@@ -239,6 +334,22 @@ class RunStoreTransitionTests(unittest.TestCase):
                 "hard_failures": ["missing_subject"],
             },
         })
+
+    def write_run_image(
+        self,
+        *,
+        relative_path: str = "round-01.png",
+        contents: bytes = b"trusted full image",
+    ) -> dict[str, object]:
+        path = Path(self.temp.name) / "runs" / self.manifest["run_id"] / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(contents)
+        return {
+            "path": relative_path,
+            "sha256": sha256_file(path),
+            "width": 256,
+            "height": 256,
+        }
 
     def complete_initial(self, key: str = "initial-1") -> dict[str, object]:
         handle = self.store.begin_attempt(self.manifest["run_id"], key, INITIAL)
@@ -355,9 +466,8 @@ class RunStoreTransitionTests(unittest.TestCase):
 
     def test_interrupted_attempt_with_image_resumes_preview(self) -> None:
         handle = self.store.begin_attempt(self.manifest["run_id"], "initial-image", INITIAL)
-        self.store.mark_attempt_image(handle, {
-            "path": "round-01.png", "sha256": "a" * 64, "width": 256, "height": 256,
-        })
+        image = self.write_run_image()
+        self.store.mark_attempt_image(handle, image)
         with patch("local_gpu_imagegen.run_store.is_process_alive", return_value=False):
             self.store.get(self.manifest["run_id"])
         resumed = self.store.begin_attempt(self.manifest["run_id"], "initial-image", INITIAL)
@@ -377,9 +487,8 @@ class RunStoreTransitionTests(unittest.TestCase):
         lock_path = Path(self.temp.name) / "runs" / self.manifest["run_id"] / ".run.lock"
         self.assertTrue(lock_path.is_file())
 
-        self.store.mark_attempt_image(handle, {
-            "path": "round-01.png", "sha256": "b" * 64, "width": 16, "height": 16,
-        })
+        image = self.write_run_image(contents=b"owned checkpoint")
+        self.store.mark_attempt_image(handle, image)
         self.assertTrue(lock_path.is_file())
 
         completed = self.store.complete_attempt(handle, {
@@ -387,7 +496,7 @@ class RunStoreTransitionTests(unittest.TestCase):
             "image": {"path": "unvalidated-replacement.png"},
         })
         self.assertEqual(completed["rounds"][0]["seed"], 42)
-        self.assertEqual(completed["rounds"][0]["image"]["sha256"], "b" * 64)
+        self.assertEqual(completed["rounds"][0]["image"]["sha256"], image["sha256"])
         self.assertFalse(lock_path.exists())
 
     def test_foreign_handle_cannot_complete_or_release_attempt(self) -> None:
@@ -462,6 +571,61 @@ class RunStoreTransitionTests(unittest.TestCase):
             self.store.mark_attempt_image(handle, {"path": "round-01.png"})
         self.store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
 
+    def test_mark_attempt_image_rejects_path_escaping_run_directory(self) -> None:
+        handle = self.store.begin_attempt(self.manifest["run_id"], "initial-image-escape", INITIAL)
+        outside = Path(self.temp.name) / "runs" / "outside.png"
+        outside.write_bytes(b"outside")
+        image = {
+            "path": "../outside.png",
+            "sha256": sha256_file(outside),
+            "width": 16,
+            "height": 16,
+        }
+
+        with self.assertRaisesRegex(ArtifactError, "invalid_image_path"):
+            self.store.mark_attempt_image(handle, image)
+
+        self.store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
+
+    def test_mark_attempt_image_rejects_missing_file(self) -> None:
+        handle = self.store.begin_attempt(self.manifest["run_id"], "initial-image-missing", INITIAL)
+        image = {
+            "path": "missing.png",
+            "sha256": hashlib.sha256(b"missing").hexdigest(),
+            "width": 16,
+            "height": 16,
+        }
+
+        with self.assertRaisesRegex(ArtifactError, "image_not_found"):
+            self.store.mark_attempt_image(handle, image)
+
+        self.store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
+
+    def test_mark_attempt_image_rejects_hash_mismatch(self) -> None:
+        handle = self.store.begin_attempt(self.manifest["run_id"], "initial-image-hash", INITIAL)
+        image = self.write_run_image(contents=b"actual contents")
+        image["sha256"] = hashlib.sha256(b"different contents").hexdigest()
+
+        with self.assertRaisesRegex(ArtifactError, "image_hash_mismatch"):
+            self.store.mark_attempt_image(handle, image)
+
+        self.store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
+
+    def test_tampered_interrupted_image_does_not_resume_preview(self) -> None:
+        handle = self.store.begin_attempt(self.manifest["run_id"], "initial-image-tampered", INITIAL)
+        image = self.write_run_image(contents=b"original contents")
+        self.store.mark_attempt_image(handle, image)
+        with patch("local_gpu_imagegen.run_store.is_process_alive", return_value=False):
+            self.store.get(self.manifest["run_id"])
+        image_path = Path(self.temp.name) / "runs" / self.manifest["run_id"] / str(image["path"])
+        image_path.write_bytes(b"tampered contents")
+
+        restarted = self.store.begin_attempt(self.manifest["run_id"], "initial-image-tampered", INITIAL)
+
+        self.assertEqual(restarted.status, "started")
+        self.assertIsNone(restarted.existing_round)
+        self.store.fail_attempt(restarted, {"code": "cancelled", "message": "cleanup"})
+
     def test_review_requires_exact_rubric_dimensions(self) -> None:
         self.complete_initial()
         review = {
@@ -510,6 +674,68 @@ class RunStoreTransitionTests(unittest.TestCase):
         self.assertEqual(finalized["state"], "finalized")
         self.assertEqual(finalized["final"]["round_number"], 1)
         self.assertEqual(finalized["final"]["summary"], "Selected result.")
+        self.assertEqual(finalized["final"]["quality_status"], "accepted")
+
+    def test_finalize_marks_hard_failure_round_for_user_review(self) -> None:
+        self.complete_initial()
+        self.store.record_review(self.manifest["run_id"], 1, {
+            "scores": {"intent_adherence": 5},
+            "hard_failures": ["missing_subject"],
+            "critique": "The requested subject is missing.",
+            "constraint_results": {},
+            "next_action": "finalize",
+        })
+
+        finalized = self.store.finalize(self.manifest["run_id"], 1, "User-selected exception.")
+
+        self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
+
+    def test_finalize_marks_low_critical_score_for_user_review(self) -> None:
+        self.complete_initial()
+        self.store.record_review(self.manifest["run_id"], 1, {
+            "scores": {"intent_adherence": 2},
+            "hard_failures": [],
+            "critique": "Intent adherence remains below the acceptance threshold.",
+            "constraint_results": {},
+            "next_action": "finalize",
+        })
+
+        finalized = self.store.finalize(self.manifest["run_id"], 1, "User-selected draft.")
+
+        self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
+
+    def test_finalized_run_rejects_new_generation_attempt(self) -> None:
+        self.complete_initial()
+        self.review_initial()
+        self.store.finalize(self.manifest["run_id"], 1, "Selected result.")
+
+        with self.assertRaisesRegex(StateError, "run_finalized"):
+            self.store.begin_attempt(self.manifest["run_id"], "refine-after-final", REFINE)
+
+    def test_finalize_rejects_repeated_selection(self) -> None:
+        self.complete_initial()
+        self.review_initial()
+        self.store.finalize(self.manifest["run_id"], 1, "Selected result.")
+
+        with self.assertRaisesRegex(StateError, "already_finalized"):
+            self.store.finalize(self.manifest["run_id"], 1, "Repeated selection.")
+
+    def test_finalize_rejects_replacement_selection(self) -> None:
+        self.complete_initial()
+        self.review_initial()
+        refine = self.store.begin_attempt(self.manifest["run_id"], "refine-1", REFINE)
+        self.store.complete_attempt(refine, {"seed": 42, "image": {"path": "round-02.png"}})
+        self.store.record_review(self.manifest["run_id"], 2, {
+            "scores": {"intent_adherence": 4},
+            "hard_failures": [],
+            "critique": "The refined intent is clear.",
+            "constraint_results": {},
+            "next_action": "finalize",
+        })
+        self.store.finalize(self.manifest["run_id"], 1, "First reviewed round selected.")
+
+        with self.assertRaisesRegex(StateError, "already_finalized"):
+            self.store.finalize(self.manifest["run_id"], 2, "Replacement selection.")
 
     def test_missing_attempt_lock_is_recovered_with_warning(self) -> None:
         self.store.begin_attempt(self.manifest["run_id"], "initial-missing-lock", INITIAL)

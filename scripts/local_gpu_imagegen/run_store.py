@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -13,8 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .artifacts import atomic_write_json, ensure_within, validate_json_serializable
-from .errors import ArtifactError, ConflictError, StateError, ValidationError
+from .artifacts import atomic_write_json, ensure_within, sha256_file, validate_json_serializable
+from .errors import ArtifactError, AssetEngineError, ConflictError, StateError, ValidationError
 
 
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$")
@@ -323,8 +324,7 @@ class RunStore:
 
     def mark_attempt_image(self, handle: AttemptHandle, image: dict[str, object]) -> dict[str, object]:
         manifest, active = self._owned_attempt(handle)
-        self._validate_full_image(image)
-        active["image"] = copy.deepcopy(image)
+        active["image"] = self._validate_full_image(handle.run_id, image)
         manifest["active_attempt"] = active
         return self._save_manifest(handle.run_id, manifest)
 
@@ -371,15 +371,19 @@ class RunStore:
             raise ValidationError("invalid_final_summary", "Final summary must be non-empty and concise.")
 
         def select_round(manifest: dict[str, object]) -> None:
+            if manifest.get("state") == "finalized" or manifest.get("final") is not None:
+                raise StateError("already_finalized", "Run already has a final selection.")
             selected = self._round_by_number(manifest, round_number)
             if selected is None:
                 raise StateError("round_not_found", "Selected round does not exist.", {"round_number": round_number})
-            if not self._round_has_review(manifest, round_number):
+            review = self._review_by_number(manifest, round_number)
+            if review is None:
                 raise StateError("round_requires_review", "Selected round must be reviewed before finalization.")
             final: dict[str, object] = {
                 "round_number": round_number,
                 "summary": summary.strip(),
                 "finalized_at": utc_now(),
+                "quality_status": self._quality_status(manifest, review),
             }
             image = selected.get("image")
             if isinstance(image, dict):
@@ -463,6 +467,18 @@ class RunStore:
         return value
 
     def _acquire_lock(self, run_root: Path) -> tuple[Path, str]:
+        try:
+            return self._acquire_lock_impl(run_root)
+        except AssetEngineError:
+            raise
+        except OSError as error:
+            raise ArtifactError(
+                "lock_operation_failed",
+                "Run lock filesystem operation failed.",
+                {"path": str(run_root), "errno": error.errno},
+            ) from error
+
+    def _acquire_lock_impl(self, run_root: Path) -> tuple[Path, str]:
         if not run_root.is_dir():
             raise ArtifactError("run_not_found", "Run directory does not exist.", {"path": str(run_root)})
 
@@ -494,15 +510,27 @@ class RunStore:
                 try:
                     os.link(pending_path, lock_path)
                 except FileExistsError:
-                    if self._lock_has_live_owner(lock_path):
+                    if self._lock_has_live_owner(lock_path, ignored_pending_token=owner_token):
                         raise ConflictError("run_busy", "Run is locked by a live owner.", {"run_root": str(run_root)})
-                    stale_path = self._claim_stale_lock(lock_path, run_root.name)
+                    stale_path = self._claim_stale_lock(
+                        lock_path,
+                        run_root.name,
+                        ignored_pending_token=owner_token,
+                    )
                     if stale_path is not None:
                         try:
                             stale_path.unlink()
                         except FileNotFoundError:
                             pass
                     continue
+                except OSError as error:
+                    if not self._hard_link_is_unavailable(error):
+                        raise ArtifactError(
+                            "lock_operation_failed",
+                            "Atomic run lock publication failed.",
+                            {"path": str(lock_path), "errno": error.errno},
+                        ) from error
+                    self._publish_lock_exclusive(lock_path, metadata, run_root, owner_token)
                 return lock_path, owner_token
         finally:
             try:
@@ -510,9 +538,69 @@ class RunStore:
             except FileNotFoundError:
                 pass
 
-    def _lock_has_live_owner(self, lock_path: Path) -> bool:
+    def _publish_lock_exclusive(
+        self,
+        lock_path: Path,
+        metadata: dict[str, object],
+        run_root: Path,
+        owner_token: str,
+    ) -> None:
+        while True:
+            try:
+                descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if self._lock_has_live_owner(lock_path, ignored_pending_token=owner_token):
+                    raise ConflictError("run_busy", "Run is locked by a live owner.", {"run_root": str(run_root)})
+                stale_path = self._claim_stale_lock(
+                    lock_path,
+                    run_root.name,
+                    ignored_pending_token=owner_token,
+                )
+                if stale_path is not None:
+                    try:
+                        stale_path.unlink()
+                    except FileNotFoundError:
+                        pass
+                continue
+
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    json.dump(metadata, stream, sort_keys=True)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except Exception:
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    pass
+                raise
+            return
+
+    def _hard_link_is_unavailable(self, error: OSError) -> bool:
+        unsupported_errnos = {
+            errno.EACCES,
+            errno.EPERM,
+            errno.ENOSYS,
+            errno.EXDEV,
+            getattr(errno, "ENOTSUP", -1),
+            getattr(errno, "EOPNOTSUPP", -1),
+        }
+        return error.errno in unsupported_errnos or getattr(error, "winerror", None) in {1, 5, 50}
+
+    def _lock_has_live_owner(self, lock_path: Path, *, ignored_pending_token: str | None = None) -> bool:
         metadata = self._read_lock_metadata(lock_path)
-        return metadata is not None and self._lock_metadata_has_live_owner(metadata)
+        if metadata is not None:
+            return self._lock_metadata_has_live_owner(metadata)
+        return self._pending_lock_has_live_owner(lock_path.parent, ignored_pending_token)
+
+    def _pending_lock_has_live_owner(self, run_root: Path, ignored_owner_token: str | None = None) -> bool:
+        for pending_path in run_root.glob(".run.lock.*.tmp"):
+            metadata = self._read_lock_metadata(pending_path)
+            if metadata is None or metadata.get("owner_token") == ignored_owner_token:
+                continue
+            if self._lock_metadata_has_live_owner(metadata):
+                return True
+        return False
 
     def _pid_is_live(self, owner_pid: int) -> bool:
         return is_process_alive(owner_pid)
@@ -596,17 +684,26 @@ class RunStore:
         idempotency_key: str,
         request_hash_value: str,
     ) -> dict[str, object] | None:
+        run_id = manifest.get("run_id")
+        if not isinstance(run_id, str):
+            raise ArtifactError("corrupt_manifest", "Manifest run_id must be a string.")
         for attempt in reversed(self._attempts(manifest)):
-            if (
+            if not (
                 attempt.get("idempotency_key") == idempotency_key
                 and attempt.get("request_hash") == request_hash_value
                 and attempt.get("status") == "interrupted"
-                and self._is_full_image(attempt.get("image"))
             ):
-                return attempt
+                continue
+            try:
+                self._validate_full_image(run_id, attempt.get("image"))
+            except (ArtifactError, ValidationError):
+                continue
+            return attempt
         return None
 
     def _validate_attempt_transition(self, manifest: dict[str, object], request: dict[str, object]) -> None:
+        if manifest.get("state") == "finalized" or manifest.get("final") is not None:
+            raise StateError("run_finalized", "Finalized runs cannot start new generation attempts.")
         action = request.get("action")
         if action not in {"initial", "refine", "explore"}:
             raise ValidationError("invalid_generation_action", "Action must be initial, refine, or explore.")
@@ -660,13 +757,40 @@ class RunStore:
         if not isinstance(handle, AttemptHandle) or not isinstance(handle.owner_token, str):
             raise ConflictError("attempt_owner_mismatch", "Attempt handle does not own the active attempt.")
 
-    def _validate_full_image(self, image: object) -> None:
+    def _validate_full_image(self, run_id: str, image: object) -> dict[str, object]:
         if not self._is_full_image(image):
             raise ValidationError(
                 "invalid_image_metadata",
                 "Full image metadata requires path, SHA-256, positive width, and positive height.",
             )
         validate_json_serializable(image)
+        assert isinstance(image, dict)
+        path_value = image["path"]
+        assert isinstance(path_value, str)
+        relative_path = Path(path_value)
+        if relative_path.is_absolute():
+            raise ArtifactError("invalid_image_path", "Attempt image path must be relative to its run directory.")
+        run_root = self._run_root(run_id)
+        resolved = (run_root / relative_path).resolve()
+        if resolved == run_root or run_root not in resolved.parents:
+            raise ArtifactError(
+                "invalid_image_path",
+                "Attempt image path escapes its run directory.",
+                {"path": path_value},
+            )
+        if not resolved.is_file():
+            raise ArtifactError("image_not_found", "Attempt image must be an existing regular file.", {"path": path_value})
+        try:
+            actual_digest = sha256_file(resolved)
+        except OSError as error:
+            raise ArtifactError("image_unreadable", "Attempt image cannot be read.", {"path": path_value}) from error
+        if actual_digest != image["sha256"]:
+            raise ArtifactError(
+                "image_hash_mismatch",
+                "Attempt image digest does not match the recorded SHA-256.",
+                {"path": path_value},
+            )
+        return copy.deepcopy(image)
 
     def _is_full_image(self, image: object) -> bool:
         if not isinstance(image, dict):
@@ -775,7 +899,12 @@ class RunStore:
     ) -> dict[str, object]:
         lock_path = self._lock_path(run_id)
         metadata = self._read_lock_metadata(lock_path)
-        if metadata is not None and self._lock_metadata_has_live_owner(metadata):
+        if (
+            metadata is not None
+            and self._lock_metadata_has_live_owner(metadata)
+            or metadata is None
+            and self._pending_lock_has_live_owner(lock_path.parent)
+        ):
             return copy.deepcopy(manifest)
 
         stale_path: Path | None = None
@@ -809,7 +938,13 @@ class RunStore:
                 except FileNotFoundError:
                     pass
 
-    def _claim_stale_lock(self, lock_path: Path, run_id: str) -> Path | None:
+    def _claim_stale_lock(
+        self,
+        lock_path: Path,
+        run_id: str,
+        *,
+        ignored_pending_token: str | None = None,
+    ) -> Path | None:
         stale_path = lock_path.with_name(f"{lock_path.name}.stale.{secrets.token_hex(16)}")
         try:
             lock_path.rename(stale_path)
@@ -819,7 +954,13 @@ class RunStore:
             raise ConflictError("run_busy", "Stale run lock cannot be claimed.", {"run_id": run_id}) from error
 
         claimed_metadata = self._read_lock_metadata(stale_path)
-        if claimed_metadata is not None and self._lock_metadata_has_live_owner(claimed_metadata):
+        claimed_live = (
+            claimed_metadata is not None
+            and self._lock_metadata_has_live_owner(claimed_metadata)
+            or claimed_metadata is None
+            and self._pending_lock_has_live_owner(lock_path.parent, ignored_pending_token)
+        )
+        if claimed_live:
             try:
                 stale_path.rename(lock_path)
             except FileExistsError:
@@ -903,6 +1044,40 @@ class RunStore:
 
     def _round_has_review(self, manifest: dict[str, object], round_number: int) -> bool:
         return any(review.get("round_number") == round_number for review in self._reviews(manifest))
+
+    def _review_by_number(
+        self,
+        manifest: dict[str, object],
+        round_number: int,
+    ) -> dict[str, object] | None:
+        for review in self._reviews(manifest):
+            if review.get("round_number") == round_number:
+                return review
+        return None
+
+    def _quality_status(self, manifest: dict[str, object], review: dict[str, object]) -> str:
+        hard_failures = review.get("hard_failures")
+        scores = review.get("scores")
+        run_request = manifest.get("request")
+        if not isinstance(hard_failures, list) or not isinstance(scores, dict) or not isinstance(run_request, dict):
+            raise ArtifactError("corrupt_manifest", "Stored review eligibility fields are invalid.")
+        profile = run_request.get("merged_profile", {})
+        if not isinstance(profile, dict):
+            raise ArtifactError("corrupt_manifest", "Merged profile must be an object.")
+        rubric = profile.get("rubric", {})
+        if not isinstance(rubric, dict):
+            raise ArtifactError("corrupt_manifest", "Merged profile rubric must be an object.")
+        critical_dimensions = {
+            name for name, specification in rubric.items()
+            if isinstance(specification, dict) and specification.get("critical") is True
+        }
+        eligible = not hard_failures and all(
+            isinstance(scores.get(name), int)
+            and not isinstance(scores.get(name), bool)
+            and scores[name] >= 3
+            for name in critical_dimensions
+        )
+        return "accepted" if eligible else "needs_user_review"
 
     def _final_paths(self, run_root: Path, manifest: dict[str, object]) -> set[Path]:
         final = manifest.get("final")
