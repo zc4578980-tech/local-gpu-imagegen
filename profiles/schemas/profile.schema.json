@@ -8,6 +8,7 @@
     "refine_mutable", "explore_mutable"
   ],
   "properties": {
+    "id": {"type": "string", "minLength": 1},
     "schema_version": {"type": "integer", "const": 1},
     "kind": {"type": "string", "const": "use_case"}
   },

@@ -40,14 +40,16 @@ class ProfileRegistryTests(unittest.TestCase):
         schema = json.loads((ROOT / "profiles" / "schemas" / "profile.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(set(schema["required"]), PROFILE_REQUIRED)
 
-    def test_published_schema_matches_runtime_kind_and_version_contract(self) -> None:
+    def test_published_schema_matches_runtime_identity_contract(self) -> None:
         schema = json.loads((ROOT / "profiles" / "schemas" / "profile.schema.json").read_text(encoding="utf-8"))
+        self.assertEqual(schema["properties"]["id"], {"type": "string", "minLength": 1})
         self.assertEqual(schema["properties"]["kind"], {"type": "string", "const": "use_case"})
         self.assertEqual(schema["properties"]["schema_version"], {"type": "integer", "const": 1})
 
-    def test_runtime_rejects_wrong_kind_and_boolean_schema_version(self) -> None:
+    def test_runtime_rejects_invalid_identity_fields(self) -> None:
         source = json.loads((ROOT / "profiles" / "use-cases" / "standalone-illustration.json").read_text(encoding="utf-8"))
         for field, value, error_code in (
+            ("id", "", "invalid_profile_document"),
             ("kind", "style", "invalid_profile_kind"),
             ("schema_version", True, "unsupported_profile_schema"),
         ):
