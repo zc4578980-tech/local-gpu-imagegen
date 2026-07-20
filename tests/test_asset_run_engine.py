@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.engine import AssetRunEngine  # noqa: E402
+import local_gpu_imagegen.engine as engine_module  # noqa: E402
 from local_gpu_imagegen.errors import AssetEngineError, ValidationError  # noqa: E402
 from local_gpu_imagegen.preview import MAX_PREVIEW_BYTES, PreviewResult  # noqa: E402
 from local_gpu_imagegen.profile_registry import ProfileRegistry  # noqa: E402
@@ -507,6 +508,62 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertNotEqual(returned, attacker_bytes)
         self.assertEqual(returned, preview_path.read_bytes())
         self.assertEqual(data["round"]["preview"]["sha256"], hashlib.sha256(returned).hexdigest())
+
+    def test_completed_preview_internal_symlink_is_rebuilt_when_supported(self) -> None:
+        started = self.start()
+        arguments = self.generate_arguments(started["run_id"])
+        first, _ = self.engine.generate_round(arguments)
+        run_root = self.output_root / "runs" / started["run_id"]
+        preview_path = run_root / first["round"]["preview"]["path"]
+        target_path = preview_path.with_name("internal-preview-target.jpg")
+        os.replace(preview_path, target_path)
+        try:
+            os.symlink(target_path.name, preview_path, target_is_directory=False)
+        except OSError as error:
+            os.replace(target_path, preview_path)
+            self.skipTest(f"Symlink creation is unavailable: {error}")
+
+        with patch("local_gpu_imagegen.engine.create_preview", wraps=engine_module.create_preview) as rebuild:
+            _, preview = self.engine.generate_round(arguments)
+
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertEqual(rebuild.call_count, 1)
+        self.assertFalse(preview_path.is_symlink())
+        self.assertEqual(base64.b64decode(preview.data_base64), preview_path.read_bytes())
+
+    def test_completed_preview_checks_manifest_raw_path_not_only_resolved_target(self) -> None:
+        started = self.start()
+        arguments = self.generate_arguments(started["run_id"])
+        first, _ = self.engine.generate_round(arguments)
+        run_root = self.output_root / "runs" / started["run_id"]
+        target_path = run_root / first["round"]["preview"]["path"]
+        raw_path = run_root / "manifest-preview-link.jpg"
+
+        def nominate_raw_path(manifest: dict[str, object]) -> None:
+            manifest["rounds"][0]["preview"]["path"] = raw_path.name
+
+        self.engine.store.update(started["run_id"], nominate_raw_path)
+        original_ensure = engine_module.ensure_within
+
+        def resolve_manifest_link(root: Path, candidate: Path) -> Path:
+            if candidate.name == raw_path.name:
+                return target_path.resolve()
+            return original_ensure(root, candidate)
+
+        def raw_path_is_link(path: Path) -> bool:
+            return path.name == raw_path.name
+
+        with (
+            patch("local_gpu_imagegen.engine.ensure_within", side_effect=resolve_manifest_link),
+            patch("local_gpu_imagegen.engine._path_is_link_like", side_effect=raw_path_is_link) as link_check,
+            patch("local_gpu_imagegen.engine.create_preview", wraps=engine_module.create_preview) as rebuild,
+        ):
+            _, preview = self.engine.generate_round(arguments)
+
+        self.assertIn(raw_path.name, [call.args[0].name for call in link_check.call_args_list])
+        self.assertEqual(rebuild.call_count, 1)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertEqual(base64.b64decode(preview.data_base64), target_path.read_bytes())
 
     def test_review_and_weighted_eligible_selection_publish_final_atomically(self) -> None:
         started = self.start()

@@ -611,47 +611,64 @@ def _load_retained_preview(
     if candidate.is_absolute():
         return None
     try:
-        path = ensure_within(run_root, run_root / candidate)
-        if _path_is_link_like(path):
-            return None
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
-        try:
-            opened_stat = os.fstat(descriptor)
-            full_stat = os.stat(full_image_path, follow_symlinks=False)
-            if (
-                not stat.S_ISREG(opened_stat.st_mode)
-                or opened_stat.st_size <= 0
-                or opened_stat.st_size > MAX_PREVIEW_BYTES
-                or _same_file_identity(opened_stat, full_stat)
-            ):
-                return None
-            contents = _read_bounded_descriptor(descriptor)
-            final_stat = os.fstat(descriptor)
-        finally:
-            os.close(descriptor)
-        if (
-            len(contents) != opened_stat.st_size
-            or not _same_descriptor_state(opened_stat, final_stat)
-            or not _path_matches_open_file(path, final_stat)
-        ):
-            return None
-        if not contents.startswith(b"\xff\xd8") or not contents.endswith(b"\xff\xd9"):
-            return None
-        if hashlib.sha256(contents).hexdigest() != preview["sha256"]:
+        raw_path = run_root / candidate
+        resolved_path = ensure_within(run_root, raw_path)
+        contents = _trusted_preview_data(raw_path, resolved_path, full_image_path, preview["sha256"])
+        if contents is None:
             return None
         payload = base64.b64encode(contents).decode("ascii")
     except (ArtifactError, OSError):
         return None
     return PreviewResult(
-        path,
+        resolved_path,
         preview.get("mime_type") if isinstance(preview.get("mime_type"), str) else "image/jpeg",
         payload,
         preview.get("width") if _exact_int(preview.get("width")) else None,
         preview.get("height") if _exact_int(preview.get("height")) else None,
         None,
     )
+
+
+def _trusted_preview_data(
+    raw_path: Path,
+    resolved_path: Path,
+    full_image_path: Path,
+    expected_sha256: str,
+) -> bytes | None:
+    if _path_is_link_like(raw_path):
+        return None
+    raw_stat = os.stat(raw_path, follow_symlinks=False)
+    if not stat.S_ISREG(raw_stat.st_mode):
+        return None
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(resolved_path, flags)
+    try:
+        opened_stat = os.fstat(descriptor)
+        full_stat = os.stat(full_image_path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened_stat.st_mode)
+            or not _same_file_identity(raw_stat, opened_stat)
+            or opened_stat.st_size <= 0
+            or opened_stat.st_size > MAX_PREVIEW_BYTES
+            or _same_file_identity(opened_stat, full_stat)
+        ):
+            return None
+        contents = _read_bounded_descriptor(descriptor)
+        final_stat = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if (
+        len(contents) != opened_stat.st_size
+        or not _same_descriptor_state(opened_stat, final_stat)
+        or not _path_matches_open_file(raw_path, final_stat)
+        or not contents.startswith(b"\xff\xd8")
+        or not contents.endswith(b"\xff\xd9")
+        or hashlib.sha256(contents).hexdigest() != expected_sha256
+    ):
+        return None
+    return contents
 
 
 def _read_bounded_descriptor(descriptor: int) -> bytes:
