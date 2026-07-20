@@ -1,0 +1,31 @@
+{
+  "name": "local-gpu-imagegen",
+  "version": "0.2.0",
+  "description": "Generate and transform Stable Diffusion images on the local machine with a CUDA-capable GPU.",
+  "author": {
+    "name": "Capricorn"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Local GPU Imagegen",
+    "shortDescription": "Generate images with this PC's GPU.",
+    "longDescription": "Local GPU Imagegen adds a tested Codex skill and MCP tool for creating and transforming images through AUTOMATIC1111-compatible WebUI APIs or Hugging Face Diffusers, with structured diagnostics and no hidden model downloads.",
+    "developerName": "Capricorn",
+    "category": "Creative",
+    "capabilities": [
+      "Image generation",
+      "Image-to-image",
+      "Inpainting",
+      "Stable Diffusion",
+      "Local execution",
+      "MCP tool"
+    ],
+    "defaultPrompt": [
+      "Use my local GPU to generate an image.",
+      "Check whether CUDA image generation is ready.",
+      "Create a 1024px concept image locally."
+    ],
+    "brandColor": "#2563EB"
+  },
+  "mcpServers": "./.mcp.json"
+}

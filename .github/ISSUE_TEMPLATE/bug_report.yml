@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible MCP, WebUI, or Diffusers integration problem.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options: [Protocol only, WebUI, Diffusers, Auto, Unknown]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide minimal sanitized steps, arguments, and JSON output. Do not include credentials or private images.
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.x"
+    validations:
+      required: true
+  - type: textarea
+    id: verify
+    attributes:
+      label: verify_mcp.py output
+      description: Paste the sanitized output of python scripts/verify_mcp.py.
+    validations:
+      required: true

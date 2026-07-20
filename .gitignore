@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+outputs/
+.env
+AGENTS.md
+NEXT_SESSION.md
+PROJECT_NODES.md
+.worktrees/
+.superpowers/
+docs/superpowers/
