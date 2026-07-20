@@ -9,7 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.errors import ValidationError  # noqa: E402
-from local_gpu_imagegen.generation_plan import validate_generation_plan  # noqa: E402
+from local_gpu_imagegen.generation_plan import (  # noqa: E402
+    validate_confirmed_run_request,
+    validate_generation_plan,
+)
 
 
 class GenerationPlanTests(unittest.TestCase):
@@ -82,6 +85,19 @@ class GenerationPlanTests(unittest.TestCase):
                 incomplete = {key: value for key, value in self.run_request.items() if key != field}
                 with self.assertRaisesRegex(ValidationError, "invalid_run_request"):
                     validate_generation_plan(self.plan, incomplete, "initial")
+
+    def test_shared_confirmed_request_validator_rejects_semantic_invalidity(self) -> None:
+        invalid = (
+            {**self.run_request, "intent": "   "},
+            {**self.run_request, "model_choice": ""},
+            {**self.run_request, "backend": "comfyui"},
+            {**self.run_request, "upscale_policy": "sometimes"},
+            {**self.run_request, "available_backends": ["comfyui"]},
+        )
+        for request in invalid:
+            with self.subTest(request=request):
+                with self.assertRaises(ValidationError):
+                    validate_confirmed_run_request(request)
 
 
 if __name__ == "__main__":

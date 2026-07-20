@@ -262,11 +262,15 @@ class RunStore:
             if resumable is not None:
                 image = copy.deepcopy(resumable["image"])
                 active["image"] = image
+                if isinstance(resumable.get("backend_result"), dict):
+                    active["backend_result"] = copy.deepcopy(resumable["backend_result"])
                 status = "resume_preview"
                 existing_round = {
                     "round_number": len(self._rounds(current)) + 1,
                     "image": copy.deepcopy(image),
                 }
+                if "backend_result" in active:
+                    existing_round["backend_result"] = copy.deepcopy(active["backend_result"])
 
             current["active_attempt"] = active
             current["state"] = "generating"
@@ -299,6 +303,8 @@ class RunStore:
             round_value = copy.deepcopy(result)
             if "image" in active:
                 round_value["image"] = copy.deepcopy(active["image"])
+            if "backend_result" in active:
+                round_value["backend_result"] = copy.deepcopy(active["backend_result"])
             round_value.update({
                 "round_number": round_number,
                 "status": "generated",
@@ -322,9 +328,19 @@ class RunStore:
             if owns_attempt and handle.owner_token is not None:
                 self._release_lock(lock_path, handle.owner_token)
 
-    def mark_attempt_image(self, handle: AttemptHandle, image: dict[str, object]) -> dict[str, object]:
+    def mark_attempt_image(
+        self,
+        handle: AttemptHandle,
+        image: dict[str, object],
+        backend_result: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         manifest, active = self._owned_attempt(handle)
         active["image"] = self._validate_full_image(handle.run_id, image)
+        if backend_result is not None:
+            if not isinstance(backend_result, dict):
+                raise ValidationError("invalid_backend_result", "Backend result metadata must be an object.")
+            validate_json_serializable(backend_result)
+            active["backend_result"] = copy.deepcopy(backend_result)
         manifest["active_attempt"] = active
         return self._save_manifest(handle.run_id, manifest)
 
@@ -367,34 +383,60 @@ class RunStore:
         return self.update(run_id, add_review)
 
     def finalize(self, run_id: str, round_number: int, summary: str) -> dict[str, object]:
-        if not isinstance(summary, str) or not summary.strip() or len(summary.strip()) > 2000:
-            raise ValidationError("invalid_final_summary", "Final summary must be non-empty and concise.")
+        self._validate_final_summary(summary)
 
         def select_round(manifest: dict[str, object]) -> None:
-            if manifest.get("state") == "finalized" or manifest.get("final") is not None:
-                raise StateError("already_finalized", "Run already has a final selection.")
-            selected = self._round_by_number(manifest, round_number)
-            if selected is None:
-                raise StateError("round_not_found", "Selected round does not exist.", {"round_number": round_number})
-            review = self._review_by_number(manifest, round_number)
-            if review is None:
-                raise StateError("round_requires_review", "Selected round must be reviewed before finalization.")
-            final: dict[str, object] = {
-                "round_number": round_number,
-                "summary": summary.strip(),
-                "finalized_at": utc_now(),
-                "quality_status": self._quality_status(manifest, review),
-            }
-            image = selected.get("image")
-            if isinstance(image, dict):
-                final["image"] = copy.deepcopy(image)
-                if isinstance(image.get("path"), str):
-                    final["path"] = image["path"]
-            manifest["final"] = final
-            manifest["state"] = "finalized"
-            manifest["last_stable_state"] = "finalized"
+            self._select_final_round(manifest, round_number, summary)
 
         return self.update(run_id, select_round)
+
+    def finalize_published(
+        self,
+        run_id: str,
+        round_number: int,
+        summary: str,
+        final_image: dict[str, object],
+        publish: Callable[[], object],
+        rollback: Callable[[], object],
+        commit: Callable[[], object] | None = None,
+    ) -> dict[str, object]:
+        """Publish a final file and manifest under one run-lock ownership."""
+        self._validate_final_summary(summary)
+        if not isinstance(final_image, dict):
+            raise ValidationError("invalid_image_metadata", "Final image metadata must be an object.")
+        validate_json_serializable(final_image)
+        if not callable(publish) or not callable(rollback) or commit is not None and not callable(commit):
+            raise ValidationError("invalid_final_publisher", "Final publication callbacks must be callable.")
+
+        run_root = self._run_root(run_id)
+        lock_path, owner_token = self._acquire_lock(run_root)
+        published = False
+        try:
+            manifest = self._read_manifest(run_id)
+            self._select_final_round(manifest, round_number, summary)
+            try:
+                published = True
+                publish()
+                validated_image = self._validate_full_image(run_id, final_image)
+                final = manifest.get("final")
+                if not isinstance(final, dict):
+                    raise ArtifactError("corrupt_manifest", "Final selection metadata is missing.")
+                final["image"] = copy.deepcopy(validated_image)
+                final["path"] = validated_image["path"]
+                revision = manifest.get("manifest_revision")
+                if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+                    raise ArtifactError("corrupt_manifest", "Manifest revision is invalid.", {"run_id": run_id})
+                manifest["manifest_revision"] = revision + 1
+                atomic_write_json(self._manifest_path(run_id), manifest)
+            except Exception:
+                if published:
+                    rollback()
+                raise
+            if commit is not None:
+                commit()
+            return copy.deepcopy(manifest)
+        finally:
+            self._release_lock(lock_path, owner_token)
 
     def update(
         self,
@@ -1078,6 +1120,42 @@ class RunStore:
             for name in critical_dimensions
         )
         return "accepted" if eligible else "needs_user_review"
+
+    @staticmethod
+    def _validate_final_summary(summary: object) -> None:
+        if not isinstance(summary, str) or not summary.strip() or len(summary.strip()) > 2000:
+            raise ValidationError("invalid_final_summary", "Final summary must be non-empty and concise.")
+
+    def _select_final_round(
+        self,
+        manifest: dict[str, object],
+        round_number: int,
+        summary: str,
+    ) -> None:
+        if manifest.get("state") == "finalized" or manifest.get("final") is not None:
+            raise StateError("already_finalized", "Run already has a final selection.")
+        if manifest.get("active_attempt") is not None:
+            raise ConflictError("run_busy", "Cannot finalize while a generation attempt is active.")
+        selected = self._round_by_number(manifest, round_number)
+        if selected is None:
+            raise StateError("round_not_found", "Selected round does not exist.", {"round_number": round_number})
+        review = self._review_by_number(manifest, round_number)
+        if review is None:
+            raise StateError("round_requires_review", "Selected round must be reviewed before finalization.")
+        final: dict[str, object] = {
+            "round_number": round_number,
+            "summary": summary.strip(),
+            "finalized_at": utc_now(),
+            "quality_status": self._quality_status(manifest, review),
+        }
+        image = selected.get("image")
+        if isinstance(image, dict):
+            final["image"] = copy.deepcopy(image)
+            if isinstance(image.get("path"), str):
+                final["path"] = image["path"]
+        manifest["final"] = final
+        manifest["state"] = "finalized"
+        manifest["last_stable_state"] = "finalized"
 
     def _final_paths(self, run_root: Path, manifest: dict[str, object]) -> set[Path]:
         final = manifest.get("final")

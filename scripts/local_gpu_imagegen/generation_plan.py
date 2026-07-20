@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 from .errors import ValidationError
 
@@ -57,7 +58,7 @@ def validate_generation_plan(plan: dict[str, object], run_request: dict[str, obj
 
 
 def _validate_confirmed_boundary(plan: dict[str, object], run_request: dict[str, object]) -> None:
-    _validate_confirmed_run_request(run_request)
+    validate_confirmed_run_request(run_request)
     for field in ("profile", "style", "intent", "model_choice", "max_rounds", "upscale_policy"):
         if field in run_request and plan[field] != run_request[field]:
             raise ValidationError("generation_plan_mismatch", f"Generation plan {field} differs from confirmed run.", {"field": field})
@@ -69,7 +70,7 @@ def _validate_confirmed_boundary(plan: dict[str, object], run_request: dict[str,
             raise ValidationError("generation_plan_mismatch", f"Generation plan constraint differs from confirmed run: {name}", {"field": name})
 
 
-def _validate_confirmed_run_request(run_request: object) -> None:
+def validate_confirmed_run_request(run_request: object) -> dict[str, object]:
     if not isinstance(run_request, dict):
         raise ValidationError("invalid_run_request", "Confirmed run request must be an object.")
     required = {
@@ -79,25 +80,42 @@ def _validate_confirmed_run_request(run_request: object) -> None:
     missing = sorted(required - set(run_request))
     if missing:
         raise ValidationError("invalid_run_request", f"Confirmed run request is missing: {', '.join(missing)}", {"fields": missing})
-    if not isinstance(run_request["profile"], str) or not run_request["profile"]:
+    if not isinstance(run_request["profile"], str) or not run_request["profile"].strip():
         raise ValidationError("invalid_run_request", "Confirmed profile must be a non-empty string.")
-    if run_request["style"] is not None and not isinstance(run_request["style"], str):
-        raise ValidationError("invalid_run_request", "Confirmed style must be a string or null.")
-    if not isinstance(run_request["intent"], str) or not run_request["intent"]:
+    if run_request["style"] is not None and (
+        not isinstance(run_request["style"], str) or not run_request["style"].strip()
+    ):
+        raise ValidationError("invalid_run_request", "Confirmed style must be a non-empty string or null.")
+    if not isinstance(run_request["intent"], str) or not run_request["intent"].strip():
         raise ValidationError("invalid_run_request", "Confirmed intent must be a non-empty string.")
     if not isinstance(run_request["constraints"], dict):
         raise ValidationError("invalid_run_request", "Confirmed constraints must be an object.")
-    if not isinstance(run_request["model_choice"], str) or not run_request["model_choice"]:
+    try:
+        json.dumps(run_request["constraints"], allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as error:
+        raise ValidationError("invalid_run_request", "Confirmed constraints must be JSON serializable.") from error
+    if not isinstance(run_request["model_choice"], str) or not run_request["model_choice"].strip():
         raise ValidationError("invalid_run_request", "Confirmed model_choice must be a non-empty string.")
     if type(run_request["max_rounds"]) is not int or not 1 <= run_request["max_rounds"] <= 3:
         raise ValidationError("invalid_run_request", "Confirmed max_rounds must be an integer from 1 to 3.")
     if not isinstance(run_request["upscale_policy"], str) or run_request["upscale_policy"] not in _UPSCALE_POLICIES:
         raise ValidationError("invalid_run_request", "Confirmed upscale_policy is invalid.")
     if not isinstance(run_request["backend"], str) or run_request["backend"] not in _BACKENDS:
-        raise ValidationError("invalid_run_request", "Confirmed backend must be auto, webui, or diffusers.")
+        raise ValidationError("invalid_backend", "Confirmed backend must be auto, webui, or diffusers.")
     available = run_request["available_backends"]
     if not isinstance(available, (list, tuple, set)) or not all(isinstance(candidate, str) for candidate in available):
         raise ValidationError("invalid_run_request", "available_backends must be a collection of backend names.")
+    available_values = list(available)
+    if len(set(available_values)) != len(available_values) or any(
+        candidate not in {"webui", "diffusers"} for candidate in available_values
+    ):
+        raise ValidationError("invalid_backend", "available_backends contains an unsupported or duplicate backend.")
+    backend = run_request["backend"]
+    if backend == "auto" and not available_values:
+        raise ValidationError("invalid_backend", "Auto backend requires at least one advertised supported backend.")
+    if backend in {"webui", "diffusers"} and backend not in available_values:
+        raise ValidationError("invalid_backend", "Confirmed backend must be advertised as available.")
+    return copy.deepcopy(run_request)
 
 
 def _validate_backend(backend: object, run_request: dict[str, object]) -> None:

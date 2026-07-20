@@ -367,6 +367,23 @@ class RunStoreTransitionTests(unittest.TestCase):
             "next_action": "refine",
         })
 
+    def complete_marked_and_reviewed_initial(self) -> dict[str, object]:
+        handle = self.store.begin_attempt(self.manifest["run_id"], "initial-published", INITIAL)
+        image = self.write_run_image(contents=b"published final contents")
+        self.store.mark_attempt_image(handle, image)
+        self.store.complete_attempt(handle, {})
+        self.review_initial()
+        return image
+
+    def final_publication(self) -> tuple[Path, dict[str, object]]:
+        final_path = Path(self.temp.name) / "runs" / self.manifest["run_id"] / "final.png"
+        return final_path, {
+            "path": "final.png",
+            "sha256": hashlib.sha256(b"published final contents").hexdigest(),
+            "width": 256,
+            "height": 256,
+        }
+
     def test_completed_idempotency_key_returns_existing_round(self) -> None:
         self.complete_initial()
         retried = self.store.begin_attempt(self.manifest["run_id"], "initial-1", INITIAL)
@@ -736,6 +753,111 @@ class RunStoreTransitionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(StateError, "already_finalized"):
             self.store.finalize(self.manifest["run_id"], 2, "Replacement selection.")
+
+    def test_published_finalize_rejects_active_attempt_before_publisher(self) -> None:
+        self.complete_marked_and_reviewed_initial()
+        active = self.store.begin_attempt(self.manifest["run_id"], "refine-live-finalize", REFINE)
+        final_path, final_image = self.final_publication()
+        publish_calls = 0
+
+        def publish() -> None:
+            nonlocal publish_calls
+            publish_calls += 1
+            final_path.write_bytes(b"published final contents")
+
+        try:
+            with self.assertRaisesRegex(ConflictError, "run_busy"):
+                RunStore(Path(self.temp.name)).finalize_published(
+                    self.manifest["run_id"], 1, "Blocked by active attempt.", final_image, publish, lambda: None
+                )
+            self.assertEqual(publish_calls, 0)
+            self.assertFalse(final_path.exists())
+        finally:
+            self.store.fail_attempt(active, {"code": "cancelled", "message": "cleanup"})
+
+    def test_published_finalize_repeated_and_concurrent_callers_publish_once(self) -> None:
+        self.complete_marked_and_reviewed_initial()
+        final_path, final_image = self.final_publication()
+        barrier = threading.Barrier(2)
+        publisher_lock = threading.Lock()
+        publish_calls = 0
+        successes: list[dict[str, object]] = []
+        failures: list[AssetEngineError] = []
+
+        def finalize() -> None:
+            nonlocal publish_calls
+            store = RunStore(Path(self.temp.name))
+            barrier.wait()
+
+            def publish() -> None:
+                nonlocal publish_calls
+                with publisher_lock:
+                    publish_calls += 1
+                final_path.write_bytes(b"published final contents")
+
+            try:
+                successes.append(store.finalize_published(
+                    self.manifest["run_id"], 1, "Concurrent selection.", final_image, publish, final_path.unlink
+                ))
+            except AssetEngineError as error:
+                failures.append(error)
+
+        threads = [threading.Thread(target=finalize) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(len(successes), 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIn(failures[0].code, {"run_busy", "already_finalized"})
+        self.assertEqual(publish_calls, 1)
+        self.assertEqual(final_path.read_bytes(), b"published final contents")
+
+        repeated_calls = 0
+
+        def repeated_publish() -> None:
+            nonlocal repeated_calls
+            repeated_calls += 1
+            final_path.write_bytes(b"replacement")
+
+        with self.assertRaisesRegex(StateError, "already_finalized"):
+            self.store.finalize_published(
+                self.manifest["run_id"], 1, "Repeated.", final_image, repeated_publish, lambda: None
+            )
+        self.assertEqual(repeated_calls, 0)
+        self.assertEqual(final_path.read_bytes(), b"published final contents")
+
+    def test_published_finalize_rolls_back_publisher_failure(self) -> None:
+        self.complete_marked_and_reviewed_initial()
+        final_path, final_image = self.final_publication()
+
+        def publish() -> None:
+            final_path.write_bytes(b"published final contents")
+            raise OSError("publish failed")
+
+        with self.assertRaisesRegex(OSError, "publish failed"):
+            self.store.finalize_published(
+                self.manifest["run_id"], 1, "Publisher failure.", final_image, publish, final_path.unlink
+            )
+        self.assertFalse(final_path.exists())
+        self.assertEqual(self.store.get(self.manifest["run_id"])["state"], "reviewed")
+
+    def test_published_finalize_rolls_back_manifest_write_failure(self) -> None:
+        self.complete_marked_and_reviewed_initial()
+        final_path, final_image = self.final_publication()
+
+        def publish() -> None:
+            final_path.write_bytes(b"published final contents")
+
+        with patch("local_gpu_imagegen.run_store.atomic_write_json", side_effect=OSError("manifest failed")):
+            with self.assertRaisesRegex(OSError, "manifest failed"):
+                self.store.finalize_published(
+                    self.manifest["run_id"], 1, "Manifest failure.", final_image, publish, final_path.unlink
+                )
+        self.assertFalse(final_path.exists())
+        self.assertEqual(self.store.get(self.manifest["run_id"])["state"], "reviewed")
+        self.assertFalse((Path(self.temp.name) / "runs" / self.manifest["run_id"] / ".run.lock").exists())
 
     def test_missing_attempt_lock_is_recovered_with_warning(self) -> None:
         self.store.begin_attempt(self.manifest["run_id"], "initial-missing-lock", INITIAL)

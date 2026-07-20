@@ -4,15 +4,16 @@ import base64
 import copy
 import json
 import os
+import secrets
 import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from .artifacts import ensure_within, validate_png
+from .artifacts import ensure_within, sha256_file, validate_png
 from .backend_contract import validate_backend_result
 from .errors import ArtifactError, AssetEngineError, ConflictError, StateError, ValidationError
-from .generation_plan import validate_generation_plan
-from .preview import PreviewResult, create_preview
+from .generation_plan import validate_confirmed_run_request, validate_generation_plan
+from .preview import MAX_PREVIEW_BYTES, PreviewResult, create_preview
 from .profile_registry import ProfileRegistry
 from .run_store import AttemptHandle, RunStore
 
@@ -61,6 +62,20 @@ class AssetRunEngine:
             "merged_profile": merged,
             "max_rounds": max_rounds,
         }
+        request = validate_confirmed_run_request(request)
+        capabilities = self.capability_provider()
+        if not isinstance(capabilities, dict) or not isinstance(capabilities.get("available_backends"), list):
+            raise ValidationError("invalid_capabilities", "Capability provider must advertise available_backends.")
+        provider_backends = capabilities["available_backends"]
+        if (
+            not all(isinstance(value, str) for value in provider_backends)
+            or len(set(provider_backends)) != len(provider_backends)
+            or set(provider_backends) != set(request["available_backends"])
+        ):
+            raise ValidationError(
+                "inconsistent_capabilities",
+                "Confirmed available_backends must match the capability provider.",
+            )
         manifest = self.store.create(request)
         return {
             "ok": True,
@@ -108,6 +123,7 @@ class AssetRunEngine:
             if handle.status == "resume_preview":
                 image = _existing_image(handle)
                 image_metadata = self._validate_retained_image(run_root, image, width, height)
+                backend_result = _existing_backend_result(handle, mode, width, height, seed, plan, request)
             else:
                 pending_path.unlink(missing_ok=True)
                 command = _backend_arguments(plan, seed, run_root, pending_path.name, width, height, mode)
@@ -119,7 +135,7 @@ class AssetRunEngine:
                         "backend",
                         {"exit_code": return_code, "stderr": stderr},
                     )
-                backend_result = _parse_backend_stdout(stdout, mode, width, height)
+                backend_result = _parse_backend_stdout(stdout, mode, width, height, seed, plan, request)
                 backend_path = Path(str(backend_result["path"]))
                 if not backend_path.is_absolute():
                     backend_path = run_root / backend_path
@@ -134,15 +150,15 @@ class AssetRunEngine:
                 os.replace(backend_path, final_path)
                 image_metadata = validate_png(final_path, width, height)
                 image_metadata["path"] = final_path.name
-                self.store.mark_attempt_image(handle, image_metadata)
+                backend_result["path"] = final_path.name
+                self.store.mark_attempt_image(handle, image_metadata, backend_result)
 
             preview_path = final_path.with_suffix(".preview.jpg")
             preview = create_preview(final_path, preview_path)
             preview_metadata = _preview_metadata(preview, run_root)
             warnings = [preview.warning] if preview.warning is not None else []
             completed = self.store.complete_attempt(handle, {
-                "backend": plan["backend"],
-                "mode": mode,
+                **_backend_round_fields(backend_result),
                 "preview": preview_metadata,
                 "warnings": warnings,
             })
@@ -186,25 +202,43 @@ class AssetRunEngine:
         source_path = ensure_within(run_root, run_root / str(source["path"]))
         pending_path = ensure_within(run_root, run_root / "final.pending.png")
         final_path = ensure_within(run_root, run_root / "final.png")
-        pending_path.unlink(missing_ok=True)
-        try:
+        backup_path = ensure_within(run_root, run_root / f".final.rollback.{secrets.token_hex(8)}.png")
+        final_image = copy.deepcopy(source)
+        final_image["path"] = final_path.name
+        backup_created = False
+        final_published = False
+
+        def publish() -> None:
+            nonlocal backup_created, final_published
+            pending_path.unlink(missing_ok=True)
+            backup_path.unlink(missing_ok=True)
             shutil.copyfile(source_path, pending_path)
             validate_png(pending_path, width, height)
+            if final_path.exists():
+                os.replace(final_path, backup_path)
+                backup_created = True
             os.replace(pending_path, final_path)
-            final_image = validate_png(final_path, width, height)
-            final_image["path"] = final_path.name
-            finalized = self.store.finalize(run_id, int(selected["round_number"]), summary)
+            final_published = True
 
-            def publish_final(value: dict[str, object]) -> None:
-                final = value.get("final")
-                if not isinstance(final, dict):
-                    raise ArtifactError("corrupt_manifest", "Final selection metadata is missing.")
-                final["image"] = copy.deepcopy(final_image)
-                final["path"] = final_path.name
-
-            finalized = self.store.update(run_id, publish_final)
-        finally:
+        def rollback() -> None:
+            if final_published:
+                final_path.unlink(missing_ok=True)
             pending_path.unlink(missing_ok=True)
+            if backup_created and backup_path.exists():
+                os.replace(backup_path, final_path)
+
+        def commit() -> None:
+            backup_path.unlink(missing_ok=True)
+
+        finalized = self.store.finalize_published(
+            run_id,
+            int(selected["round_number"]),
+            summary,
+            final_image,
+            publish,
+            rollback,
+            commit,
+        )
         request = finalized.get("request", {})
         max_rounds = request.get("max_rounds") if isinstance(request, dict) else None
         return {
@@ -265,7 +299,7 @@ class AssetRunEngine:
         run_root = self._run_root(run_id)
         retained = self._validate_retained_image(run_root, image, width, height)
         image_path = ensure_within(run_root, run_root / str(retained["path"]))
-        preview = _load_retained_preview(round_value, run_root)
+        preview = _load_retained_preview(round_value, run_root, image_path)
         if preview is None:
             preview = create_preview(image_path, image_path.with_suffix(".preview.jpg"))
             preview_value = _preview_metadata(preview, run_root)
@@ -478,12 +512,31 @@ def _backend_arguments(
     return command
 
 
-def _parse_backend_stdout(stdout: str, mode: str, width: int, height: int) -> dict[str, object]:
+def _parse_backend_stdout(
+    stdout: str,
+    mode: str,
+    width: int,
+    height: int,
+    seed: int,
+    plan: dict[str, object],
+    request: dict[str, object],
+) -> dict[str, object]:
     try:
         value = json.loads(stdout)
     except (json.JSONDecodeError, TypeError) as error:
         raise ArtifactError("invalid_backend_result", "Backend stdout must be one JSON result object.") from error
-    return validate_backend_result(value, mode, width, height)
+    available = request.get("available_backends")
+    if not isinstance(available, list):
+        raise ArtifactError("corrupt_manifest", "Confirmed available_backends must be an array.")
+    return validate_backend_result(
+        value,
+        mode,
+        width,
+        height,
+        expected_seed=seed,
+        expected_backend=str(plan["backend"]),
+        available_backends=available,
+    )
 
 
 def _existing_image(handle: AttemptHandle) -> dict[str, object]:
@@ -492,6 +545,42 @@ def _existing_image(handle: AttemptHandle) -> dict[str, object]:
     if not isinstance(image, dict):
         raise ArtifactError("invalid_image_metadata", "Resumable attempt has no retained image.")
     return image
+
+
+def _existing_backend_result(
+    handle: AttemptHandle,
+    mode: str,
+    width: int,
+    height: int,
+    seed: int,
+    plan: dict[str, object],
+    request: dict[str, object],
+) -> dict[str, object]:
+    existing = handle.existing_round
+    value = existing.get("backend_result") if isinstance(existing, dict) else None
+    available = request.get("available_backends")
+    if not isinstance(available, list):
+        raise ArtifactError("corrupt_manifest", "Confirmed available_backends must be an array.")
+    return validate_backend_result(
+        value,
+        mode,
+        width,
+        height,
+        expected_seed=seed,
+        expected_backend=str(plan["backend"]),
+        available_backends=available,
+    )
+
+
+def _backend_round_fields(result: dict[str, object]) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "backend": result["backend"],
+        "mode": result["mode"],
+        "backend_result": copy.deepcopy(result),
+    }
+    if "model" in result:
+        fields["model"] = copy.deepcopy(result["model"])
+    return fields
 
 
 def _preview_metadata(preview: PreviewResult, run_root: Path) -> dict[str, object] | None:
@@ -503,20 +592,41 @@ def _preview_metadata(preview: PreviewResult, run_root: Path) -> dict[str, objec
         "mime_type": preview.mime_type,
         "width": preview.width,
         "height": preview.height,
+        "sha256": sha256_file(path),
     }
 
 
-def _load_retained_preview(round_value: dict[str, object], run_root: Path) -> PreviewResult | None:
+def _load_retained_preview(
+    round_value: dict[str, object],
+    run_root: Path,
+    full_image_path: Path,
+) -> PreviewResult | None:
     preview = round_value.get("preview")
-    if not isinstance(preview, dict) or not isinstance(preview.get("path"), str):
+    if (
+        not isinstance(preview, dict)
+        or not isinstance(preview.get("path"), str)
+        or preview.get("mime_type") != "image/jpeg"
+        or not isinstance(preview.get("sha256"), str)
+        or len(preview["sha256"]) != 64
+    ):
         return None
     candidate = Path(str(preview["path"]))
     if candidate.is_absolute():
         return None
-    path = ensure_within(run_root, run_root / candidate)
     try:
-        payload = base64.b64encode(path.read_bytes()).decode("ascii")
-    except OSError:
+        path = ensure_within(run_root, run_root / candidate)
+        if path.is_symlink() or not path.is_file() or os.path.samefile(path, full_image_path):
+            return None
+        size = path.stat().st_size
+        if size <= 0 or size > MAX_PREVIEW_BYTES:
+            return None
+        contents = path.read_bytes()
+        if not contents.startswith(b"\xff\xd8") or not contents.endswith(b"\xff\xd9"):
+            return None
+        if sha256_file(path) != preview["sha256"]:
+            return None
+        payload = base64.b64encode(contents).decode("ascii")
+    except (ArtifactError, OSError):
         return None
     return PreviewResult(
         path,

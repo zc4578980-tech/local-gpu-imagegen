@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import base64
 import os
+import shutil
 import struct
 import sys
 import tempfile
+import threading
 import unittest
 import zlib
 from pathlib import Path
@@ -16,7 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.engine import AssetRunEngine  # noqa: E402
 from local_gpu_imagegen.errors import AssetEngineError, ValidationError  # noqa: E402
-from local_gpu_imagegen.preview import PreviewResult  # noqa: E402
+from local_gpu_imagegen.preview import MAX_PREVIEW_BYTES, PreviewResult  # noqa: E402
 from local_gpu_imagegen.profile_registry import ProfileRegistry  # noqa: E402
 from local_gpu_imagegen.run_store import RunStore  # noqa: E402
 
@@ -38,6 +41,7 @@ class FakeBackendRunner:
         self.exit_code = 0
         self.stderr = ""
         self.path_override: Path | None = None
+        self.result_overrides: dict[str, object] = {}
 
     def __call__(self, args: list[str]) -> tuple[int, str, str]:
         self.calls.append(list(args))
@@ -54,7 +58,9 @@ class FakeBackendRunner:
             "seed": int(args[args.index("--seed") + 1]),
             "width": int(args[args.index("--width") + 1]),
             "height": int(args[args.index("--height") + 1]),
+            "model": "actual-loaded-model",
         }
+        result.update(self.result_overrides)
         return self.exit_code, json.dumps(result), self.stderr
 
 
@@ -170,6 +176,52 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "invalid_round_budget")
         self.assertFalse((self.output_root / "runs").exists())
 
+    def test_start_rejects_invalid_confirmed_requests_before_creating_run(self) -> None:
+        invalid_changes: dict[str, dict[str, object]] = {
+            "empty-intent": {"intent": "   "},
+            "empty-model": {"model_choice": ""},
+            "nullable-model-not-supported": {"model_choice": None},
+            "unknown-backend": {"backend": "comfyui"},
+            "invalid-upscale": {"upscale_policy": "sometimes"},
+            "zero-budget": {"max_rounds": 0},
+            "invalid-constraints": {"constraints": []},
+            "empty-style": {"style": ""},
+            "unknown-style": {"style": "missing-style"},
+            "unknown-profile": {"profile": "missing-profile"},
+            "fixed-backend-not-advertised": {"available_backends": ["diffusers"]},
+            "unknown-advertised-backend": {"available_backends": ["webui", "comfyui"]},
+        }
+        for name, changes in invalid_changes.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_root = Path(directory) / "output"
+                    engine = AssetRunEngine(
+                        ProfileRegistry(ROOT / "profiles"),
+                        RunStore(output_root),
+                        FakeBackendRunner(),
+                        lambda: self.capabilities,
+                    )
+                    arguments = {**self.start_arguments(), **changes}
+                    with self.assertRaises(ValidationError):
+                        engine.start_run(arguments)
+                    self.assertFalse((output_root / "runs").exists())
+
+    def test_start_rejects_capabilities_that_disagree_with_provider(self) -> None:
+        for advertised in (["webui"], ["webui", "diffusers", "diffusers"]):
+            with self.subTest(advertised=advertised):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_root = Path(directory) / "output"
+                    engine = AssetRunEngine(
+                        ProfileRegistry(ROOT / "profiles"),
+                        RunStore(output_root),
+                        FakeBackendRunner(),
+                        lambda: {"available_backends": advertised},
+                    )
+                    with self.assertRaises(ValidationError) as raised:
+                        engine.start_run(self.start_arguments())
+                    self.assertEqual(raised.exception.code, "inconsistent_capabilities")
+                    self.assertFalse((output_root / "runs").exists())
+
     def test_argument_validation_happens_before_state_mutation(self) -> None:
         with self.assertRaises(ValidationError) as missing:
             self.engine.start_run({})
@@ -196,9 +248,39 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(data["round"]["image"]["path"], "round-01.png")
         self.assertEqual(data["round"]["backend"], "webui")
         self.assertEqual(data["round"]["mode"], "txt2img")
+        self.assertEqual(data["round"]["model"], "actual-loaded-model")
+        self.assertEqual(data["round"]["backend_result"]["model"], "actual-loaded-model")
+        self.assertEqual(data["round"]["backend_result"]["path"], "round-01.png")
         self.assertEqual(data["full_image_path"], str((run_root / "round-01.png").resolve()))
         self.assertIsNotNone(preview)
         self.assertIsNotNone(preview.data_base64)
+
+    def test_backend_result_must_match_requested_backend_seed_and_integer_dimensions(self) -> None:
+        mismatches = {
+            "backend": {"backend": "diffusers"},
+            "seed": {"seed": 99},
+            "boolean-width": {"width": True},
+            "float-height": {"height": 256.0},
+        }
+        for name, overrides in mismatches.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_root = Path(directory) / "output"
+                    runner = FakeBackendRunner()
+                    runner.result_overrides = overrides
+                    engine = AssetRunEngine(
+                        ProfileRegistry(ROOT / "profiles"),
+                        RunStore(output_root),
+                        runner,
+                        lambda: self.capabilities,
+                    )
+                    started = engine.start_run(self.start_arguments())
+                    with self.assertRaises(AssetEngineError) as raised:
+                        engine.generate_round(self.generate_arguments(started["run_id"]))
+                    self.assertEqual(raised.exception.code, "invalid_backend_result")
+                    manifest = engine.get_run({"run_id": started["run_id"]})
+                    self.assertEqual(manifest["rounds"], [])
+                    self.assertEqual(manifest["attempts"][-1]["status"], "failed")
 
     def test_invalid_full_plan_does_not_begin_attempt(self) -> None:
         started = self.start()
@@ -290,6 +372,82 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(second["round"]["round_number"], 1)
         self.assertIsNotNone(preview)
 
+    def test_completed_retry_rebuilds_untrusted_preview_without_returning_png_bytes(self) -> None:
+        started = self.start()
+        arguments = self.generate_arguments(started["run_id"])
+        first, _ = self.engine.generate_round(arguments)
+        image_path = Path(first["full_image_path"])
+        preview_path = self.output_root / "runs" / started["run_id"] / first["round"]["preview"]["path"]
+        self.assertIn("sha256", first["round"]["preview"])
+
+        def full_png() -> None:
+            preview_path.write_bytes(image_path.read_bytes())
+
+        def oversized() -> None:
+            preview_path.write_bytes(b"\xff\xd8" + b"x" * MAX_PREVIEW_BYTES + b"\xff\xd9")
+
+        def non_jpeg() -> None:
+            preview_path.write_bytes(b"not-a-jpeg")
+
+        def corrupt_jpeg() -> None:
+            preview_path.write_bytes(b"\xff\xd8truncated")
+
+        def hash_mismatch() -> None:
+            contents = bytearray(preview_path.read_bytes())
+            contents[len(contents) // 2] ^= 1
+            preview_path.write_bytes(contents)
+
+        def hard_link_to_full() -> None:
+            preview_path.unlink()
+            os.link(image_path, preview_path)
+
+        replacements = (
+            ("full-png", full_png),
+            ("oversized", oversized),
+            ("non-jpeg", non_jpeg),
+            ("corrupt-jpeg", corrupt_jpeg),
+            ("hash-mismatch", hash_mismatch),
+            ("hard-link", hard_link_to_full),
+        )
+        for name, replace_preview in replacements:
+            with self.subTest(name=name):
+                replace_preview()
+                _, preview = self.engine.generate_round(arguments)
+                self.assertEqual(len(self.runner.calls), 1)
+                self.assertIsNotNone(preview)
+                self.assertEqual(preview.mime_type, "image/jpeg")
+                preview_bytes = base64.b64decode(preview.data_base64)
+                self.assertTrue(preview_bytes.startswith(b"\xff\xd8"))
+                self.assertTrue(preview_bytes.endswith(b"\xff\xd9"))
+                self.assertNotEqual(preview_bytes, image_path.read_bytes())
+
+    def test_invalid_completed_preview_returns_warning_without_data_when_rebuild_is_unavailable(self) -> None:
+        started = self.start()
+        arguments = self.generate_arguments(started["run_id"])
+        first, _ = self.engine.generate_round(arguments)
+        preview_path = self.output_root / "runs" / started["run_id"] / first["round"]["preview"]["path"]
+        preview_path.write_bytes(Path(first["full_image_path"]).read_bytes())
+        unavailable = PreviewResult(None, None, None, None, None, "preview_unavailable:test-rebuild")
+        with patch("local_gpu_imagegen.engine.create_preview", return_value=unavailable):
+            _, preview = self.engine.generate_round(arguments)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertEqual(preview.warning, "preview_unavailable:test-rebuild")
+        self.assertIsNone(preview.data_base64)
+
+    def test_escaping_completed_preview_path_is_rebuilt_without_backend(self) -> None:
+        started = self.start()
+        arguments = self.generate_arguments(started["run_id"])
+        first, _ = self.engine.generate_round(arguments)
+
+        def escape_preview(manifest: dict[str, object]) -> None:
+            manifest["rounds"][0]["preview"]["path"] = "../outside.jpg"
+
+        self.engine.store.update(started["run_id"], escape_preview)
+        _, preview = self.engine.generate_round(arguments)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertIsNotNone(preview.data_base64)
+        self.assertNotEqual(base64.b64decode(preview.data_base64), Path(first["full_image_path"]).read_bytes())
+
     def test_review_and_weighted_eligible_selection_publish_final_atomically(self) -> None:
         started = self.start()
         run_id = started["run_id"]
@@ -341,6 +499,112 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "invalid_final_summary")
         self.assertFalse((self.output_root / "runs" / run_id / "final.png").exists())
         self.assertEqual(self.engine.get_run({"run_id": run_id})["state"], "reviewed")
+
+    def test_active_generation_prevents_final_publication_without_pending_leak(self) -> None:
+        started = self.start()
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id))
+        self.review(run_id, 1)
+        active = self.engine.store.begin_attempt(run_id, "refine-live-finalize", {
+            "action": "refine",
+            "seed": 42,
+            "plan": {"positive_prompt": "active refinement"},
+        })
+        run_root = self.output_root / "runs" / run_id
+        try:
+            with self.assertRaises(AssetEngineError) as raised:
+                self.engine.finalize_run({"run_id": run_id, "summary": "Must wait."})
+            self.assertEqual(raised.exception.code, "run_busy")
+            self.assertFalse((run_root / "final.png").exists())
+            self.assertFalse((run_root / "final.pending.png").exists())
+        finally:
+            self.engine.store.fail_attempt(active, {"code": "cancelled", "message": "cleanup"})
+
+    def test_final_publication_rolls_back_engine_publisher_and_manifest_failures(self) -> None:
+        for failure in ("publisher", "manifest"):
+            with self.subTest(failure=failure):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_root = Path(directory) / "output"
+                    engine = AssetRunEngine(
+                        ProfileRegistry(ROOT / "profiles"),
+                        RunStore(output_root),
+                        FakeBackendRunner(),
+                        lambda: self.capabilities,
+                    )
+                    started = engine.start_run(self.start_arguments())
+                    run_id = started["run_id"]
+                    engine.generate_round(self.generate_arguments(run_id))
+                    rubric = engine.get_run({"run_id": run_id})["request"]["merged_profile"]["rubric"]
+                    engine.record_review({
+                        "run_id": run_id,
+                        "round_number": 1,
+                        "review": {
+                            "scores": {name: 4 for name in rubric},
+                            "hard_failures": [],
+                            "critique": "Reviewed.",
+                            "constraint_results": {
+                                "width": {"status": "pass", "observation": "Width matches."},
+                                "height": {"status": "pass", "observation": "Height matches."},
+                            },
+                            "next_action": "finalize",
+                        },
+                    })
+                    run_root = output_root / "runs" / run_id
+                    if failure == "publisher":
+                        (run_root / "final.png").write_bytes(b"prior-untracked-final")
+                        context = patch("local_gpu_imagegen.engine.os.replace", side_effect=OSError("publish failed"))
+                    else:
+                        context = patch("local_gpu_imagegen.run_store.atomic_write_json", side_effect=OSError("manifest failed"))
+                    with context:
+                        with self.assertRaises(OSError):
+                            engine.finalize_run({"run_id": run_id, "summary": "Transactional final."})
+                    if failure == "publisher":
+                        self.assertEqual((run_root / "final.png").read_bytes(), b"prior-untracked-final")
+                    else:
+                        self.assertFalse((run_root / "final.png").exists())
+                    self.assertFalse((run_root / "final.pending.png").exists())
+                    self.assertEqual(engine.get_run({"run_id": run_id})["state"], "reviewed")
+
+    def test_concurrent_engine_finalizer_cannot_delete_winner_pending_file(self) -> None:
+        started = self.start()
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id))
+        self.review(run_id, 1)
+        copied = threading.Event()
+        continue_winner = threading.Event()
+        winner_results: list[dict[str, object]] = []
+        winner_errors: list[BaseException] = []
+        original_copy = shutil.copyfile
+
+        def paused_copy(source: Path, destination: Path) -> str:
+            result = original_copy(source, destination)
+            copied.set()
+            continue_winner.wait(timeout=5)
+            return result
+
+        def finalize_winner() -> None:
+            try:
+                winner_results.append(self.engine.finalize_run({"run_id": run_id, "summary": "Winner."}))
+            except BaseException as error:
+                winner_errors.append(error)
+
+        with patch("local_gpu_imagegen.engine.shutil.copyfile", side_effect=paused_copy):
+            winner = threading.Thread(target=finalize_winner)
+            winner.start()
+            self.assertTrue(copied.wait(timeout=5))
+            try:
+                with self.assertRaises(AssetEngineError) as raised:
+                    self.engine.finalize_run({"run_id": run_id, "summary": "Loser."})
+                self.assertEqual(raised.exception.code, "run_busy")
+            finally:
+                continue_winner.set()
+            winner.join(timeout=5)
+        self.assertFalse(winner.is_alive())
+        self.assertEqual(winner_errors, [])
+        self.assertEqual(len(winner_results), 1)
+        run_root = self.output_root / "runs" / run_id
+        self.assertTrue((run_root / "final.png").is_file())
+        self.assertFalse((run_root / "final.pending.png").exists())
 
     def test_cleanup_requires_exact_confirmation(self) -> None:
         started = self.start()
