@@ -26,8 +26,26 @@ def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", checksum)
 
 
-def make_png(width: int = 2, height: int = 1) -> bytes:
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+def make_png(
+    width: int = 2,
+    height: int = 1,
+    *,
+    bit_depth: int = 8,
+    color_type: int = 2,
+    compression: int = 0,
+    filter_method: int = 0,
+    interlace: int = 0,
+) -> bytes:
+    ihdr = struct.pack(
+        ">IIBBBBB",
+        width,
+        height,
+        bit_depth,
+        color_type,
+        compression,
+        filter_method,
+        interlace,
+    )
     scanlines = b"".join(b"\x00" + b"\x20\x40\x60" * width for _ in range(height))
     return (
         PNG_SIGNATURE
@@ -120,6 +138,35 @@ class PngValidationTests(unittest.TestCase):
 
     def test_rejects_bytes_after_iend(self) -> None:
         self.assert_invalid(make_png() + b"trailing")
+
+    def test_rejects_invalid_ihdr_format_fields(self) -> None:
+        invalid_fields = (
+            ("invalid color type", {"color_type": 1}),
+            ("invalid bit depth for color type", {"color_type": 2, "bit_depth": 4}),
+            ("invalid compression method", {"compression": 1}),
+            ("invalid filter method", {"filter_method": 1}),
+            ("invalid interlace method", {"interlace": 2}),
+        )
+
+        for label, fields in invalid_fields:
+            with self.subTest(label=label):
+                self.assert_invalid(make_png(**fields))
+
+    def test_accepts_allowed_ihdr_color_type_and_bit_depth_combinations(self) -> None:
+        allowed_depths = {
+            0: (1, 2, 4, 8, 16),
+            2: (8, 16),
+            3: (1, 2, 4, 8),
+            4: (8, 16),
+            6: (8, 16),
+        }
+
+        for color_type, bit_depths in allowed_depths.items():
+            for bit_depth in bit_depths:
+                with self.subTest(color_type=color_type, bit_depth=bit_depth):
+                    self.path.write_bytes(make_png(color_type=color_type, bit_depth=bit_depth, interlace=1))
+                    metadata = self.validate_png()
+                    self.assertEqual((metadata["width"], metadata["height"]), (2, 1))
 
 
 class PreviewWithoutPillowTests(unittest.TestCase):

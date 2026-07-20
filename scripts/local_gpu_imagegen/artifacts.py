@@ -11,6 +11,13 @@ from .errors import ArtifactError
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PNG_BIT_DEPTHS_BY_COLOR_TYPE = {
+    0: frozenset((1, 2, 4, 8, 16)),
+    2: frozenset((8, 16)),
+    3: frozenset((1, 2, 4, 8)),
+    4: frozenset((8, 16)),
+    6: frozenset((8, 16)),
+}
 
 
 def ensure_within(root: Path, candidate: Path) -> Path:
@@ -96,9 +103,20 @@ def _parse_png(contents: bytes) -> tuple[int, int]:
             ihdr_count += 1
             if chunk_index != 0 or ihdr_count != 1 or length != 13:
                 raise ValueError("invalid IHDR")
-            width, height = struct.unpack(">II", data[:8])
+            width, height, bit_depth, color_type, compression, filter_method, interlace = struct.unpack(
+                ">IIBBBBB", data
+            )
             if width <= 0 or height <= 0:
                 raise ValueError("invalid PNG dimensions")
+            allowed_bit_depths = PNG_BIT_DEPTHS_BY_COLOR_TYPE.get(color_type)
+            if allowed_bit_depths is None or bit_depth not in allowed_bit_depths:
+                raise ValueError("invalid PNG color type or bit depth")
+            if compression != 0:
+                raise ValueError("invalid PNG compression method")
+            if filter_method != 0:
+                raise ValueError("invalid PNG filter method")
+            if interlace not in (0, 1):
+                raise ValueError("invalid PNG interlace method")
             dimensions = (width, height)
         elif chunk_type == b"IDAT":
             if dimensions is None:
