@@ -11,11 +11,76 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .artifacts import atomic_write_json, ensure_within
+from .artifacts import atomic_write_json, ensure_within, validate_json_serializable
 from .errors import ArtifactError, ConflictError
 
 
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$")
+
+
+def process_identity(pid: int) -> str | None:
+    """Return a process-start identity, or None when it cannot be queried safely."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    if os.name == "nt":
+        return _windows_process_identity(pid)
+    return _posix_process_identity(pid)
+
+
+def _windows_process_identity(pid: int) -> str | None:
+    class FileTime(ctypes.Structure):
+        _fields_ = (("low", ctypes.c_ulong), ("high", ctypes.c_ulong))
+
+    process_query_limited_information = 0x1000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong)
+    open_process.restype = ctypes.c_void_p
+    get_process_times = kernel32.GetProcessTimes
+    get_process_times.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(FileTime),
+        ctypes.POINTER(FileTime),
+        ctypes.POINTER(FileTime),
+        ctypes.POINTER(FileTime),
+    )
+    get_process_times.restype = ctypes.c_bool
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (ctypes.c_void_p,)
+    close_handle.restype = ctypes.c_bool
+
+    handle = open_process(process_query_limited_information, False, pid)
+    if not handle:
+        return None
+    try:
+        creation = FileTime()
+        exit_time = FileTime()
+        kernel_time = FileTime()
+        user_time = FileTime()
+        if not get_process_times(handle, creation, exit_time, kernel_time, user_time):
+            return None
+        creation_ticks = (creation.high << 32) | creation.low
+        return f"windows-filetime:{creation_ticks}"
+    finally:
+        close_handle(handle)
+
+
+def _posix_process_identity(pid: int) -> str | None:
+    try:
+        stat_text = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
+        closing_parenthesis = stat_text.rfind(")")
+        if closing_parenthesis < 0:
+            return None
+        fields_after_command = stat_text[closing_parenthesis + 2 :].split()
+        start_ticks = fields_after_command[19]
+    except (FileNotFoundError, IndexError, OSError, UnicodeDecodeError):
+        return None
+
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        boot_id = "unknown-boot"
+    return f"posix-proc:{boot_id}:{start_ticks}"
 
 
 class RunStore:
@@ -27,6 +92,7 @@ class RunStore:
     def create(self, request: dict[str, object]) -> dict[str, object]:
         if not isinstance(request, dict):
             raise ArtifactError("invalid_run_request", "Run requests must be JSON objects.")
+        validate_json_serializable(request)
 
         self.output_root.mkdir(parents=True, exist_ok=True)
         runs_root = ensure_within(self.output_root, self.output_root / "runs")
@@ -140,9 +206,11 @@ class RunStore:
 
         lock_path = ensure_within(self.output_root, run_root / ".run.lock")
         owner_token = secrets.token_hex(16)
+        owner_pid = os.getpid()
         metadata = {
-            "owner_pid": os.getpid(),
+            "owner_pid": owner_pid,
             "owner_token": owner_token,
+            "owner_process_identity": process_identity(owner_pid),
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         while True:
@@ -182,6 +250,13 @@ class RunStore:
         owner_pid = metadata.get("owner_pid")
         if not isinstance(owner_pid, int) or isinstance(owner_pid, bool) or owner_pid <= 0:
             return True
+        recorded_identity = metadata.get("owner_process_identity")
+        current_identity = process_identity(owner_pid)
+        if isinstance(recorded_identity, str) and current_identity is not None:
+            return current_identity == recorded_identity
+        return self._pid_is_live(owner_pid)
+
+    def _pid_is_live(self, owner_pid: int) -> bool:
         if os.name == "nt":
             return self._windows_pid_is_live(owner_pid)
         try:
@@ -196,7 +271,7 @@ class RunStore:
 
     def _windows_pid_is_live(self, owner_pid: int) -> bool:
         process_query_limited_information = 0x1000
-        access_denied = 5
+        invalid_parameter = 87
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         open_process = kernel32.OpenProcess
         open_process.argtypes = (ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong)
@@ -209,7 +284,10 @@ class RunStore:
         if handle:
             close_handle(handle)
             return True
-        return ctypes.get_last_error() == access_denied
+        error_code = ctypes.get_last_error()
+        if error_code == invalid_parameter:
+            return False
+        return True
 
     def _release_lock(self, lock_path: Path, owner_token: str) -> None:
         try:
