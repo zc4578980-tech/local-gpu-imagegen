@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -38,6 +39,26 @@ class ProfileRegistryTests(unittest.TestCase):
     def test_runtime_required_fields_match_published_schema(self) -> None:
         schema = json.loads((ROOT / "profiles" / "schemas" / "profile.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(set(schema["required"]), PROFILE_REQUIRED)
+
+    def test_published_schema_matches_runtime_kind_and_version_contract(self) -> None:
+        schema = json.loads((ROOT / "profiles" / "schemas" / "profile.schema.json").read_text(encoding="utf-8"))
+        self.assertEqual(schema["properties"]["kind"], {"type": "string", "const": "use_case"})
+        self.assertEqual(schema["properties"]["schema_version"], {"type": "integer", "const": 1})
+
+    def test_runtime_rejects_wrong_kind_and_boolean_schema_version(self) -> None:
+        source = json.loads((ROOT / "profiles" / "use-cases" / "standalone-illustration.json").read_text(encoding="utf-8"))
+        for field, value, error_code in (
+            ("kind", "style", "invalid_profile_kind"),
+            ("schema_version", True, "unsupported_profile_schema"),
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                profiles = Path(directory)
+                (profiles / "use-cases").mkdir()
+                (profiles / "base.json").write_text("{}", encoding="utf-8")
+                document = {**source, field: value}
+                (profiles / "use-cases" / "candidate.json").write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(ValidationError, error_code):
+                    ProfileRegistry(profiles).list_catalog()
 
 
 if __name__ == "__main__":

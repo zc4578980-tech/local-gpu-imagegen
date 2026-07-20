@@ -34,7 +34,7 @@ def _validate(document: dict[str, object], required: set[str], expected_kind: st
         raise ValidationError("missing_profile_fields", f"Missing fields: {', '.join(missing)}", {"fields": missing})
     if document["kind"] != expected_kind:
         raise ValidationError("invalid_profile_kind", f"Expected kind {expected_kind}.")
-    if document["schema_version"] != 1:
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise ValidationError("unsupported_profile_schema", "Only schema_version 1 is supported.")
 
 

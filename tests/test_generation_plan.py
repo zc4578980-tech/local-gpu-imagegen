@@ -22,6 +22,7 @@ class GenerationPlanTests(unittest.TestCase):
             "model_choice": "local-model",
             "max_rounds": 2,
             "upscale_policy": "auto",
+            "backend": "auto",
             "available_backends": ["webui"],
             "merged_profile": {"refine_mutable": ["denoise_strength"], "explore_mutable": ["seed"]},
         }
@@ -70,6 +71,17 @@ class GenerationPlanTests(unittest.TestCase):
         validated = validate_generation_plan(self.plan, self.run_request, "initial")
         validated["constraints"]["aspect_ratio"] = "16:9"
         self.assertEqual(self.plan["constraints"]["aspect_ratio"], "1:1")
+
+    def test_rejects_incomplete_confirmed_run_request(self) -> None:
+        required = (
+            "profile", "style", "intent", "constraints", "model_choice", "max_rounds",
+            "upscale_policy", "backend", "available_backends",
+        )
+        for field in required:
+            with self.subTest(field=field):
+                incomplete = {key: value for key, value in self.run_request.items() if key != field}
+                with self.assertRaisesRegex(ValidationError, "invalid_run_request"):
+                    validate_generation_plan(self.plan, incomplete, "initial")
 
 
 if __name__ == "__main__":
