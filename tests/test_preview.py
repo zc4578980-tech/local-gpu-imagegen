@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import hashlib
 import importlib.util
+import os
 import struct
 import sys
 import tempfile
@@ -147,6 +148,20 @@ class PreviewWithoutPillowTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertEqual(source.read_bytes(), original)
 
+    def test_same_source_and_destination_is_rejected_before_pillow_import(self) -> None:
+        from local_gpu_imagegen.preview import create_preview
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "full.png"
+            original = make_png()
+            source.write_bytes(original)
+
+            with patch("builtins.__import__", side_effect=ImportError("Pillow unavailable for test")):
+                result = create_preview(source, source)
+
+            self.assertEqual(result.warning, "preview_unavailable:invalid_destination")
+            self.assertEqual(source.read_bytes(), original)
+
 
 @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow not installed")
 class PreviewEncodingTests(unittest.TestCase):
@@ -173,6 +188,96 @@ class PreviewEncodingTests(unittest.TestCase):
             with Image.open(result.path) as preview:
                 self.assertEqual(preview.mode, "RGB")
                 self.assertNotIn("exif", preview.info)
+
+    def test_existing_hard_link_destination_is_replaced_without_changing_source(self) -> None:
+        from PIL import Image
+        from local_gpu_imagegen.preview import create_preview
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "full.png"
+            destination = Path(directory) / "preview.jpg"
+            Image.new("RGB", (1000, 500), (40, 90, 150)).save(source, format="PNG")
+            original = source.read_bytes()
+            original_hash = hashlib.sha256(original).hexdigest()
+            os.link(source, destination)
+            self.assertTrue(os.path.samefile(source, destination))
+
+            result = create_preview(source, destination)
+
+            self.assertIsNone(result.warning)
+            self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), original_hash)
+            self.assertEqual(source.read_bytes(), original)
+            self.assertFalse(os.path.samefile(source, destination))
+            with Image.open(destination) as preview:
+                self.assertEqual(preview.format, "JPEG")
+
+    def test_retries_once_with_smaller_settings_after_first_size_limit(self) -> None:
+        from PIL import Image
+        from local_gpu_imagegen.preview import MAX_PREVIEW_BYTES, create_preview
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "full.png"
+            destination = Path(directory) / "preview.jpg"
+            Image.new("RGB", (1000, 500), (40, 90, 150)).save(source, format="PNG")
+            original = source.read_bytes()
+            attempts: list[tuple[Path, int, int]] = []
+
+            def deterministic_encode(
+                image_module: object,
+                source_image: object,
+                attempt_path: Path,
+                longest_edge: int,
+                quality: int,
+            ) -> tuple[int, int]:
+                attempts.append((attempt_path, longest_edge, quality))
+                if len(attempts) == 1:
+                    attempt_path.write_bytes(b"x" * (MAX_PREVIEW_BYTES + 1))
+                    return (768, 384)
+                attempt_path.write_bytes(b"bounded-jpeg")
+                return (640, 320)
+
+            with patch("local_gpu_imagegen.preview._encode_jpeg", side_effect=deterministic_encode):
+                result = create_preview(source, destination)
+
+            self.assertEqual([(edge, quality) for _, edge, quality in attempts], [(768, 88), (640, 80)])
+            self.assertTrue(all(path != destination for path, _, _ in attempts))
+            self.assertEqual(result.path, destination)
+            self.assertEqual((result.width, result.height), (640, 320))
+            self.assertEqual(destination.read_bytes(), b"bounded-jpeg")
+            self.assertEqual(source.read_bytes(), original)
+            self.assertFalse(list(destination.parent.glob(f".{destination.name}.*.tmp")))
+
+    def test_two_oversize_attempts_remove_preview_and_temporary_file(self) -> None:
+        from PIL import Image
+        from local_gpu_imagegen.preview import MAX_PREVIEW_BYTES, create_preview
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "full.png"
+            destination = Path(directory) / "preview.jpg"
+            Image.new("RGB", (1000, 500), (40, 90, 150)).save(source, format="PNG")
+            original = source.read_bytes()
+            attempts: list[tuple[Path, int, int]] = []
+
+            def deterministic_encode(
+                image_module: object,
+                source_image: object,
+                attempt_path: Path,
+                longest_edge: int,
+                quality: int,
+            ) -> tuple[int, int]:
+                attempts.append((attempt_path, longest_edge, quality))
+                attempt_path.write_bytes(b"x" * (MAX_PREVIEW_BYTES + 1))
+                return (longest_edge, longest_edge // 2)
+
+            with patch("local_gpu_imagegen.preview._encode_jpeg", side_effect=deterministic_encode):
+                result = create_preview(source, destination)
+
+            self.assertEqual([(edge, quality) for _, edge, quality in attempts], [(768, 88), (640, 80)])
+            self.assertTrue(all(path != destination for path, _, _ in attempts))
+            self.assertEqual(result.warning, "preview_unavailable:size_limit")
+            self.assertFalse(destination.exists())
+            self.assertFalse(list(destination.parent.glob(f".{destination.name}.*.tmp")))
+            self.assertEqual(source.read_bytes(), original)
 
     def test_encoding_failure_preserves_full_source_and_removes_preview(self) -> None:
         try:
