@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import base64
+import hashlib
 import os
 import shutil
 import struct
@@ -448,6 +449,65 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertIsNotNone(preview.data_base64)
         self.assertNotEqual(base64.b64decode(preview.data_base64), Path(first["full_image_path"]).read_bytes())
 
+    def test_completed_preview_returns_bytes_and_hash_from_one_descriptor(self) -> None:
+        started = self.start()
+        arguments = self.generate_arguments(started["run_id"])
+        first, _ = self.engine.generate_round(arguments)
+        run_root = self.output_root / "runs" / started["run_id"]
+        preview_path = run_root / first["round"]["preview"]["path"]
+        trusted_bytes = preview_path.read_bytes()
+        attacker_bytes = b"\xff\xd8attacker-controlled-preview\xff\xd9"
+        held_path = preview_path.with_name("held-trusted-preview.jpg")
+        original_read_bytes = Path.read_bytes
+
+        def swap_for_read(path: Path) -> bytes:
+            if path.resolve() != preview_path.resolve():
+                return original_read_bytes(path)
+            os.replace(preview_path, held_path)
+            preview_path.write_bytes(attacker_bytes)
+            try:
+                return original_read_bytes(preview_path)
+            finally:
+                preview_path.unlink()
+                os.replace(held_path, preview_path)
+
+        with patch.object(Path, "read_bytes", new=swap_for_read):
+            data, preview = self.engine.generate_round(arguments)
+
+        returned = base64.b64decode(preview.data_base64)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertEqual(returned, trusted_bytes)
+        self.assertNotEqual(returned, attacker_bytes)
+        self.assertEqual(data["round"]["preview"]["sha256"], hashlib.sha256(returned).hexdigest())
+
+    def test_completed_preview_path_swap_after_descriptor_read_forces_rebuild(self) -> None:
+        started = self.start()
+        arguments = self.generate_arguments(started["run_id"])
+        first, _ = self.engine.generate_round(arguments)
+        run_root = self.output_root / "runs" / started["run_id"]
+        preview_path = run_root / first["round"]["preview"]["path"]
+        held_path = preview_path.with_name("swapped-trusted-preview.jpg")
+        attacker_bytes = b"\xff\xd8replacement-after-read\xff\xd9"
+
+        def swap_and_reject(path: Path, descriptor_stat: object) -> bool:
+            os.replace(path, held_path)
+            path.write_bytes(attacker_bytes)
+            return False
+
+        with patch(
+            "local_gpu_imagegen.engine._path_matches_open_file",
+            create=True,
+            side_effect=swap_and_reject,
+        ) as identity_check:
+            data, preview = self.engine.generate_round(arguments)
+
+        returned = base64.b64decode(preview.data_base64)
+        self.assertEqual(identity_check.call_count, 1)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertNotEqual(returned, attacker_bytes)
+        self.assertEqual(returned, preview_path.read_bytes())
+        self.assertEqual(data["round"]["preview"]["sha256"], hashlib.sha256(returned).hexdigest())
+
     def test_review_and_weighted_eligible_selection_publish_final_atomically(self) -> None:
         started = self.start()
         run_id = started["run_id"]
@@ -519,6 +579,50 @@ class AssetRunEngineTests(unittest.TestCase):
             self.assertFalse((run_root / "final.pending.png").exists())
         finally:
             self.engine.store.fail_attempt(active, {"code": "cancelled", "message": "cleanup"})
+
+    def test_latest_generated_round_must_be_reviewed_before_selecting_earlier_round(self) -> None:
+        started = self.start()
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id))
+        self.review(run_id, 1)
+        self.engine.generate_round(self.generate_arguments(run_id, key="refine-unreviewed", action="refine"))
+        run_root = self.output_root / "runs" / run_id
+
+        with self.assertRaises(AssetEngineError) as raised:
+            self.engine.finalize_run({"run_id": run_id, "summary": "Round one only."})
+        self.assertEqual(raised.exception.code, "round_requires_review")
+        self.assertFalse((run_root / "final.png").exists())
+        self.assertFalse((run_root / "final.pending.png").exists())
+
+    def test_generation_completing_before_final_lock_rejects_preliminary_selection(self) -> None:
+        started = self.start()
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id))
+        self.review(run_id, 1)
+        run_root = self.output_root / "runs" / run_id
+        original_finalize = getattr(self.engine.store, "finalize_best_published", None)
+
+        def complete_generation_then_finalize(*args: object, **kwargs: object) -> dict[str, object]:
+            refine = self.engine.store.begin_attempt(run_id, "refine-before-final-lock", {
+                "action": "refine",
+                "seed": 42,
+                "plan": {"positive_prompt": "completed before final lock"},
+            })
+            self.engine.store.complete_attempt(refine, {"image": {"path": "round-02.png"}})
+            return original_finalize(*args, **kwargs)
+
+        with patch.object(
+            self.engine.store,
+            "finalize_best_published",
+            create=True,
+            side_effect=complete_generation_then_finalize,
+        ) as finalize_call:
+            with self.assertRaises(AssetEngineError) as raised:
+                self.engine.finalize_run({"run_id": run_id, "summary": "Raced selection."})
+        self.assertEqual(finalize_call.call_count, 1)
+        self.assertEqual(raised.exception.code, "round_requires_review")
+        self.assertFalse((run_root / "final.png").exists())
+        self.assertFalse((run_root / "final.pending.png").exists())
 
     def test_final_publication_rolls_back_engine_publisher_and_manifest_failures(self) -> None:
         for failure in ("publisher", "manifest"):
@@ -605,6 +709,31 @@ class AssetRunEngineTests(unittest.TestCase):
         run_root = self.output_root / "runs" / run_id
         self.assertTrue((run_root / "final.png").is_file())
         self.assertFalse((run_root / "final.pending.png").exists())
+
+    def test_post_commit_cleanup_failure_returns_warning_and_retains_backup(self) -> None:
+        started = self.start()
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id))
+        self.review(run_id, 1)
+        run_root = self.output_root / "runs" / run_id
+        (run_root / "final.png").write_bytes(b"prior-final-for-diagnosis")
+        original_unlink = Path.unlink
+
+        def fail_committed_backup_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+            if path.name.startswith(".final.rollback.") and path.exists():
+                raise OSError("cleanup failed")
+            original_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", new=fail_committed_backup_cleanup):
+            finalized = self.engine.finalize_run({"run_id": run_id, "summary": "Committed despite cleanup."})
+
+        self.assertEqual(finalized["state"], "finalized")
+        self.assertIn("finalize_cleanup_failed", finalized["warnings"])
+        self.assertEqual(finalized["finalize_cleanup_warning"]["code"], "finalize_cleanup_failed")
+        backups = list(run_root.glob(".final.rollback.*.png"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), b"prior-final-for-diagnosis")
+        self.assertEqual(self.engine.store.get(run_id)["state"], "finalized")
 
     def test_cleanup_requires_exact_confirmation(self) -> None:
         started = self.start()

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import os
 import secrets
 import shutil
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -186,30 +188,24 @@ class AssetRunEngine:
         summary = _required(arguments, "summary", str)
         if not summary.strip() or len(summary.strip()) > 2000:
             raise ValidationError("invalid_final_summary", "Final summary must be non-empty and concise.")
-        manifest = self.store.get(run_id)
-        if manifest.get("state") == "finalized" or manifest.get("final") is not None:
-            raise StateError("already_finalized", "Run already has a final selection.")
-        selected = _select_final_candidate(manifest)
         run_root = self._run_root(run_id)
-        image = selected.get("image")
-        if not isinstance(image, dict):
-            raise ArtifactError("invalid_image_metadata", "Selected round has no full image metadata.")
-        width = image.get("width")
-        height = image.get("height")
-        if not _exact_int(width) or not _exact_int(height) or width <= 0 or height <= 0:
-            raise ArtifactError("invalid_image_metadata", "Selected round image dimensions are invalid.")
-        source = self._validate_retained_image(run_root, image, width, height)
-        source_path = ensure_within(run_root, run_root / str(source["path"]))
         pending_path = ensure_within(run_root, run_root / "final.pending.png")
         final_path = ensure_within(run_root, run_root / "final.png")
         backup_path = ensure_within(run_root, run_root / f".final.rollback.{secrets.token_hex(8)}.png")
-        final_image = copy.deepcopy(source)
-        final_image["path"] = final_path.name
         backup_created = False
         final_published = False
 
-        def publish() -> None:
+        def publish(selected: dict[str, object]) -> dict[str, object]:
             nonlocal backup_created, final_published
+            image = selected.get("image")
+            if not isinstance(image, dict):
+                raise ArtifactError("invalid_image_metadata", "Selected round has no full image metadata.")
+            width = image.get("width")
+            height = image.get("height")
+            if not _exact_int(width) or not _exact_int(height) or width <= 0 or height <= 0:
+                raise ArtifactError("invalid_image_metadata", "Selected round image dimensions are invalid.")
+            source = self._validate_retained_image(run_root, image, width, height)
+            source_path = ensure_within(run_root, run_root / str(source["path"]))
             pending_path.unlink(missing_ok=True)
             backup_path.unlink(missing_ok=True)
             shutil.copyfile(source_path, pending_path)
@@ -219,6 +215,9 @@ class AssetRunEngine:
                 backup_created = True
             os.replace(pending_path, final_path)
             final_published = True
+            final_image = copy.deepcopy(source)
+            final_image["path"] = final_path.name
+            return final_image
 
         def rollback() -> None:
             if final_published:
@@ -230,11 +229,9 @@ class AssetRunEngine:
         def commit() -> None:
             backup_path.unlink(missing_ok=True)
 
-        finalized = self.store.finalize_published(
+        finalized = self.store.finalize_best_published(
             run_id,
-            int(selected["round_number"]),
             summary,
-            final_image,
             publish,
             rollback,
             commit,
@@ -615,15 +612,34 @@ def _load_retained_preview(
         return None
     try:
         path = ensure_within(run_root, run_root / candidate)
-        if path.is_symlink() or not path.is_file() or os.path.samefile(path, full_image_path):
+        if _path_is_link_like(path):
             return None
-        size = path.stat().st_size
-        if size <= 0 or size > MAX_PREVIEW_BYTES:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened_stat = os.fstat(descriptor)
+            full_stat = os.stat(full_image_path, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(opened_stat.st_mode)
+                or opened_stat.st_size <= 0
+                or opened_stat.st_size > MAX_PREVIEW_BYTES
+                or _same_file_identity(opened_stat, full_stat)
+            ):
+                return None
+            contents = _read_bounded_descriptor(descriptor)
+            final_stat = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        if (
+            len(contents) != opened_stat.st_size
+            or not _same_descriptor_state(opened_stat, final_stat)
+            or not _path_matches_open_file(path, final_stat)
+        ):
             return None
-        contents = path.read_bytes()
         if not contents.startswith(b"\xff\xd8") or not contents.endswith(b"\xff\xd9"):
             return None
-        if sha256_file(path) != preview["sha256"]:
+        if hashlib.sha256(contents).hexdigest() != preview["sha256"]:
             return None
         payload = base64.b64encode(contents).decode("ascii")
     except (ArtifactError, OSError):
@@ -636,6 +652,56 @@ def _load_retained_preview(
         preview.get("height") if _exact_int(preview.get("height")) else None,
         None,
     )
+
+
+def _read_bounded_descriptor(descriptor: int) -> bytes:
+    contents = bytearray()
+    while len(contents) <= MAX_PREVIEW_BYTES:
+        remaining = MAX_PREVIEW_BYTES + 1 - len(contents)
+        chunk = os.read(descriptor, min(64 * 1024, remaining))
+        if not chunk:
+            break
+        contents.extend(chunk)
+    return bytes(contents)
+
+
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        left.st_ino != 0
+        and right.st_ino != 0
+        and left.st_dev == right.st_dev
+        and left.st_ino == right.st_ino
+    )
+
+
+def _same_descriptor_state(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        _same_file_identity(left, right)
+        and left.st_size == right.st_size
+        and left.st_mtime_ns == right.st_mtime_ns
+    )
+
+
+def _path_is_link_like(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if callable(is_junction) and is_junction():
+        return True
+    path_stat = os.lstat(path)
+    attributes = getattr(path_stat, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse_flag and attributes & reparse_flag)
+
+
+def _path_matches_open_file(path: Path, descriptor_stat: os.stat_result) -> bool:
+    try:
+        if _path_is_link_like(path):
+            return False
+        current = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISREG(current.st_mode) and _same_file_identity(current, descriptor_stat)
 
 
 def _round_by_number(manifest: dict[str, object], round_number: int) -> dict[str, object]:

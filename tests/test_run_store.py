@@ -775,6 +775,26 @@ class RunStoreTransitionTests(unittest.TestCase):
         finally:
             self.store.fail_attempt(active, {"code": "cancelled", "message": "cleanup"})
 
+    def test_published_finalize_rejects_earlier_round_when_latest_is_unreviewed(self) -> None:
+        self.complete_marked_and_reviewed_initial()
+        refine = self.store.begin_attempt(self.manifest["run_id"], "refine-unreviewed-finalize", REFINE)
+        self.store.complete_attempt(refine, {"image": {"path": "round-02.png"}})
+        final_path, final_image = self.final_publication()
+        publish_calls = 0
+
+        def publish() -> None:
+            nonlocal publish_calls
+            publish_calls += 1
+            final_path.write_bytes(b"published final contents")
+
+        with self.assertRaises(StateError) as raised:
+            self.store.finalize_published(
+                self.manifest["run_id"], 1, "Earlier reviewed round.", final_image, publish, lambda: None
+            )
+        self.assertEqual(raised.exception.code, "round_requires_review")
+        self.assertEqual(publish_calls, 0)
+        self.assertFalse(final_path.exists())
+
     def test_published_finalize_repeated_and_concurrent_callers_publish_once(self) -> None:
         self.complete_marked_and_reviewed_initial()
         final_path, final_image = self.final_publication()

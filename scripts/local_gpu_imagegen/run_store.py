@@ -432,9 +432,52 @@ class RunStore:
                 if published:
                     rollback()
                 raise
-            if commit is not None:
-                commit()
-            return copy.deepcopy(manifest)
+            return self._finalize_result_after_commit(manifest, commit)
+        finally:
+            self._release_lock(lock_path, owner_token)
+
+    def finalize_best_published(
+        self,
+        run_id: str,
+        summary: str,
+        publish: Callable[[dict[str, object]], dict[str, object]],
+        rollback: Callable[[], object],
+        commit: Callable[[], object] | None = None,
+    ) -> dict[str, object]:
+        """Select and publish the best eligible round under one run lock."""
+        self._validate_final_summary(summary)
+        if not callable(publish) or not callable(rollback) or commit is not None and not callable(commit):
+            raise ValidationError("invalid_final_publisher", "Final publication callbacks must be callable.")
+
+        run_root = self._run_root(run_id)
+        lock_path, owner_token = self._acquire_lock(run_root)
+        published = False
+        try:
+            manifest = self._read_manifest(run_id)
+            selected = self._select_best_final_round(manifest)
+            round_number = selected.get("round_number")
+            if not isinstance(round_number, int) or isinstance(round_number, bool):
+                raise ArtifactError("corrupt_manifest", "Selected round number is invalid.")
+            self._select_final_round(manifest, round_number, summary)
+            try:
+                published = True
+                final_image = publish(copy.deepcopy(selected))
+                validated_image = self._validate_full_image(run_id, final_image)
+                final = manifest.get("final")
+                if not isinstance(final, dict):
+                    raise ArtifactError("corrupt_manifest", "Final selection metadata is missing.")
+                final["image"] = copy.deepcopy(validated_image)
+                final["path"] = validated_image["path"]
+                revision = manifest.get("manifest_revision")
+                if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+                    raise ArtifactError("corrupt_manifest", "Manifest revision is invalid.", {"run_id": run_id})
+                manifest["manifest_revision"] = revision + 1
+                atomic_write_json(self._manifest_path(run_id), manifest)
+            except Exception:
+                if published:
+                    rollback()
+                raise
+            return self._finalize_result_after_commit(manifest, commit)
         finally:
             self._release_lock(lock_path, owner_token)
 
@@ -1126,6 +1169,29 @@ class RunStore:
         if not isinstance(summary, str) or not summary.strip() or len(summary.strip()) > 2000:
             raise ValidationError("invalid_final_summary", "Final summary must be non-empty and concise.")
 
+    @staticmethod
+    def _finalize_result_after_commit(
+        manifest: dict[str, object],
+        commit: Callable[[], object] | None,
+    ) -> dict[str, object]:
+        result = copy.deepcopy(manifest)
+        if commit is None:
+            return result
+        try:
+            commit()
+        except Exception:
+            warnings = result.get("warnings")
+            if not isinstance(warnings, list):
+                warnings = []
+                result["warnings"] = warnings
+            if "finalize_cleanup_failed" not in warnings:
+                warnings.append("finalize_cleanup_failed")
+            result["finalize_cleanup_warning"] = {
+                "code": "finalize_cleanup_failed",
+                "message": "Final manifest committed, but rollback-artifact cleanup failed.",
+            }
+        return result
+
     def _select_final_round(
         self,
         manifest: dict[str, object],
@@ -1136,6 +1202,7 @@ class RunStore:
             raise StateError("already_finalized", "Run already has a final selection.")
         if manifest.get("active_attempt") is not None:
             raise ConflictError("run_busy", "Cannot finalize while a generation attempt is active.")
+        self._require_finalizable_state(manifest)
         selected = self._round_by_number(manifest, round_number)
         if selected is None:
             raise StateError("round_not_found", "Selected round does not exist.", {"round_number": round_number})
@@ -1156,6 +1223,68 @@ class RunStore:
         manifest["final"] = final
         manifest["state"] = "finalized"
         manifest["last_stable_state"] = "finalized"
+
+    def _require_finalizable_state(self, manifest: dict[str, object]) -> None:
+        if manifest.get("state") != "reviewed" or manifest.get("last_stable_state") != "reviewed":
+            raise StateError("round_requires_review", "Latest generated round must be reviewed before finalization.")
+        rounds = self._rounds(manifest)
+        if not rounds:
+            raise StateError("round_requires_review", "At least one generated round must be reviewed.")
+        latest_number = rounds[-1].get("round_number")
+        if not isinstance(latest_number, int) or not self._round_has_review(manifest, latest_number):
+            raise StateError("round_requires_review", "Latest generated round must be reviewed before finalization.")
+
+    def _select_best_final_round(self, manifest: dict[str, object]) -> dict[str, object]:
+        self._require_finalizable_state(manifest)
+        reviews = {
+            int(review["round_number"]): review
+            for review in self._reviews(manifest)
+            if isinstance(review.get("round_number"), int) and not isinstance(review.get("round_number"), bool)
+        }
+        reviewed = [
+            value for value in self._rounds(manifest)
+            if isinstance(value.get("round_number"), int) and value["round_number"] in reviews
+        ]
+        eligible = [
+            value for value in reviewed
+            if self._quality_status(manifest, reviews[int(value["round_number"])]) == "accepted"
+        ]
+        candidates = eligible
+        run_request = manifest.get("request")
+        if not isinstance(run_request, dict):
+            raise ArtifactError("corrupt_manifest", "Manifest request must be an object.")
+        max_rounds = run_request.get("max_rounds")
+        if not candidates:
+            if not isinstance(max_rounds, int) or isinstance(max_rounds, bool) or len(self._rounds(manifest)) < max_rounds:
+                raise StateError("no_eligible_round", "No eligible reviewed round is available before the budget is exhausted.")
+            candidates = reviewed
+        if not candidates:
+            raise StateError("round_requires_review", "At least one generated round must be reviewed.")
+        return copy.deepcopy(max(
+            candidates,
+            key=lambda value: (
+                self._weighted_review_score(manifest, reviews[int(value["round_number"])]),
+                -int(value["round_number"]),
+            ),
+        ))
+
+    def _weighted_review_score(self, manifest: dict[str, object], review: dict[str, object]) -> float:
+        run_request = manifest.get("request")
+        profile = run_request.get("merged_profile") if isinstance(run_request, dict) else None
+        rubric = profile.get("rubric") if isinstance(profile, dict) else None
+        scores = review.get("scores")
+        if not isinstance(rubric, dict) or not isinstance(scores, dict):
+            raise ArtifactError("corrupt_manifest", "Stored weighted review data is invalid.")
+        total = 0.0
+        for name, specification in rubric.items():
+            weight = specification.get("weight", 1) if isinstance(specification, dict) else 1
+            score = scores.get(name)
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                raise ArtifactError("corrupt_manifest", "Rubric weight must be numeric.")
+            if not isinstance(score, int) or isinstance(score, bool):
+                raise ArtifactError("corrupt_manifest", "Review score must be an integer.")
+            total += float(weight) * score
+        return total
 
     def _final_paths(self, run_root: Path, manifest: dict[str, object]) -> set[Path]:
         final = manifest.get("final")

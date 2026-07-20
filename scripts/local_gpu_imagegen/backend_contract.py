@@ -29,8 +29,22 @@ def validate_backend_result(
             {"fields": missing},
         )
     backend = value["backend"]
-    if backend not in {"webui", "diffusers"} or value["mode"] != expected_mode:
+    mode = value["mode"]
+    if (
+        not isinstance(backend, str)
+        or backend not in {"webui", "diffusers"}
+        or not isinstance(mode, str)
+        or not isinstance(expected_mode, str)
+        or mode != expected_mode
+    ):
         raise ArtifactError("invalid_backend_result", "Backend or mode does not match the request.")
+    if expected_backend is not None and not isinstance(expected_backend, str):
+        raise ArtifactError("invalid_backend_result", "Expected backend is invalid.")
+    if (
+        not isinstance(available_backends, (list, tuple, set, frozenset))
+        or not all(isinstance(candidate, str) for candidate in available_backends)
+    ):
+        raise ArtifactError("invalid_backend_result", "Advertised backends are invalid.")
     if expected_backend in {"webui", "diffusers"} and backend != expected_backend:
         raise ArtifactError("invalid_backend_result", "Backend does not match the requested backend.")
     if expected_backend == "auto" and (backend not in available_backends or backend not in {"webui", "diffusers"}):
@@ -38,7 +52,9 @@ def validate_backend_result(
     if expected_backend not in {None, "auto", "webui", "diffusers"}:
         raise ArtifactError("invalid_backend_result", "Expected backend is invalid.")
     if (
-        type(value["width"]) is not int
+        type(expected_width) is not int
+        or type(expected_height) is not int
+        or type(value["width"]) is not int
         or type(value["height"]) is not int
         or value["width"] != expected_width
         or value["height"] != expected_height
@@ -48,6 +64,8 @@ def validate_backend_result(
         raise ArtifactError("invalid_backend_result", "Backend path must be non-empty.")
     if type(value["seed"]) not in {int, type(None)}:
         raise ArtifactError("invalid_backend_result", "Backend seed must be an integer or null.")
+    if type(expected_seed) not in {int, type(None)}:
+        raise ArtifactError("invalid_backend_result", "Expected seed is invalid.")
     if expected_seed is not None and value["seed"] != expected_seed:
         raise ArtifactError("invalid_backend_result", "Backend seed does not match the request.")
     return copy.deepcopy(value)
