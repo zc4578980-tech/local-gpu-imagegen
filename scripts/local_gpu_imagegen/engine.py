@@ -180,7 +180,16 @@ class AssetRunEngine:
                 backend_result = _existing_backend_result(handle, mode, width, height, seed, plan, request)
             else:
                 pending_path.unlink(missing_ok=True)
-                command = _backend_arguments(execution_plan, seed, run_root, pending_path.name, width, height, mode)
+                command = _backend_arguments(
+                    execution_plan,
+                    seed,
+                    run_root,
+                    pending_path.name,
+                    width,
+                    height,
+                    mode,
+                    request.get("model_record"),
+                )
                 return_code, stdout, stderr = self.backend_runner(command)
                 if return_code != 0:
                     raise AssetEngineError(
@@ -848,6 +857,7 @@ def _backend_arguments(
     width: int,
     height: int,
     mode: str,
+    model_record: object,
 ) -> list[str]:
     parameters = plan["parameters"]
     assert isinstance(parameters, dict)
@@ -862,8 +872,13 @@ def _backend_arguments(
         ("--output-dir", str(output_dir)),
         ("--filename", filename),
     ]
-    if plan["model_choice"] is not None:
-        values.insert(2, ("--model", plan["model_choice"]))
+    model_choice = plan["model_choice"]
+    if plan["backend"] == "webui" and isinstance(model_record, dict):
+        discovery_names = model_record.get("local_discovery_names")
+        if isinstance(discovery_names, list) and discovery_names and isinstance(discovery_names[0], str):
+            model_choice = discovery_names[0]
+    if model_choice is not None:
+        values.insert(2, ("--model", model_choice))
     mappings = {
         "steps": "--steps",
         "guidance_scale": "--guidance-scale",

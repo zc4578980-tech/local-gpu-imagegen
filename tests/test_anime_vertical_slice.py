@@ -535,7 +535,10 @@ class AnimeVerticalSliceTests(unittest.TestCase):
 
         self.assertEqual(len(runner.calls), 2)
         self.assertEqual([call[call.index("--seed") + 1] for call in runner.calls], ["42", "42"])
-        self.assertEqual([call[call.index("--model") + 1] for call in runner.calls], [MODEL_ID, MODEL_ID])
+        self.assertEqual(
+            [call[call.index("--model") + 1] for call in runner.calls],
+            ["approved-test-anime", "approved-test-anime"],
+        )
         self.assertEqual(len(adapter.upscale_calls), 1)
         self.assertEqual(manifest["final"]["round_number"], 2)
         self.assertEqual(manifest["final"]["quality_status"], "accepted")

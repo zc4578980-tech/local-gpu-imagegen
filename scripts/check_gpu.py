@@ -51,7 +51,7 @@ def main() -> int:
         "webui": check_webui(),
     }
 
-    if report["python_packages"]["torch"]:
+    if report["python_packages"]["torch"] and not report["webui"]["available"]:
         import torch
 
         cuda_available = bool(torch.cuda.is_available())

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "civitai/anything-v5@30163",
+  "kind": "model",
+  "source": "local-webui",
+  "upstream_source": "https://civitai.com/models/9409?modelVersionId=30163",
+  "sha256": "7f96a1a9ca9b3a3242a9ae95d19284f0d2da8d5282b42d2d974398bf7663a252",
+  "license_id": "Civitai model permissions for model 9409",
+  "license_url": "https://civitai.com/models/9409?modelVersionId=30163",
+  "license_status": "approved",
+  "output_redistribution_status": "approved",
+  "backends": ["webui"],
+  "local_discovery_names": ["sd1.5\\anything-v5.safetensors [7f96a1a9ca]"],
+  "strengths": [
+    "Existing local anime checkpoint suitable for illustration and visual-asset acceptance runs."
+  ],
+  "limitations": [
+    "Image quality remains subject to per-run review and retained acceptance evidence.",
+    "Model weights are not distributed by this repository."
+  ],
+  "use_cases": [
+    "standalone-illustration",
+    "presentation-visual",
+    "ui-visual-asset"
+  ],
+  "styles": ["anime"],
+  "recommended": {
+    "resolution": {"width": 768, "height": 432},
+    "steps": 24,
+    "guidance": 5.5,
+    "sampler": "DPM++ 2M",
+    "scheduler": null
+  },
+  "known_local": true,
+  "enabled": true
+}

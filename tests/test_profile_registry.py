@@ -39,6 +39,31 @@ class ProfileRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "model_not_enabled"):
             self.registry.validate_model_choice("stabilityai/sd-turbo")
 
+    def test_approved_anything_v5_model_matches_observed_authority(self) -> None:
+        catalog = self.registry.list_catalog()
+
+        self.assertIn("civitai/anything-v5@30163", catalog["models"])
+        model = catalog["models"]["civitai/anything-v5@30163"]
+        self.assertEqual(model["source"], "local-webui")
+        self.assertEqual(
+            model["upstream_source"],
+            "https://civitai.com/models/9409?modelVersionId=30163",
+        )
+        self.assertEqual(
+            model["sha256"],
+            "7f96a1a9ca9b3a3242a9ae95d19284f0d2da8d5282b42d2d974398bf7663a252",
+        )
+        self.assertEqual(model["license_id"], "Civitai model permissions for model 9409")
+        self.assertEqual(model["license_status"], "approved")
+        self.assertEqual(model["output_redistribution_status"], "approved")
+        self.assertEqual(model["backends"], ["webui"])
+        self.assertEqual(
+            model["local_discovery_names"],
+            [r"sd1.5\anything-v5.safetensors [7f96a1a9ca]"],
+        )
+        self.assertTrue(model["known_local"])
+        self.assertTrue(model["enabled"])
+
     def test_model_runtime_fields_match_published_schema(self) -> None:
         schema = json.loads((ROOT / "profiles" / "schemas" / "model.schema.json").read_text(encoding="utf-8"))
 
