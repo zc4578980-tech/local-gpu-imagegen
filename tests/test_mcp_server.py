@@ -25,6 +25,9 @@ EXPECTED_TOOLS = {
     "local_gpu_list_profiles",
     "local_gpu_start_run",
     "local_gpu_get_run",
+    "local_gpu_branch_run",
+    "local_gpu_prepare_mask",
+    "local_gpu_confirm_mask",
     "local_gpu_generate_round",
     "local_gpu_record_review",
     "local_gpu_finalize_run",
@@ -82,11 +85,19 @@ class McpServerUnitTests(unittest.TestCase):
                 "upscale_policy",
             },
             "local_gpu_get_run": {"run_id"},
+            "local_gpu_branch_run": {
+                "parent_run_id", "parent_round", "contract", "max_rounds", "edit_mode",
+                "denoising_strength",
+            },
+            "local_gpu_prepare_mask": {"run_id", "user_mask_path", "geometry", "feather_pixels"},
+            "local_gpu_confirm_mask": {"run_id", "mask_id"},
             "local_gpu_generate_round": {
-                "run_id", "idempotency_key", "action", "edit_mode", "plan", "seed", "change_summary",
+                "run_id", "idempotency_key", "action", "edit_mode", "mask_id", "plan", "seed",
+                "change_summary",
             },
             "local_gpu_record_review": {
-                "run_id", "round_number", "scores", "hard_failures", "critique", "constraint_results", "next_action",
+                "run_id", "round_number", "scores", "hard_failures", "critique", "constraint_results",
+                "preservation_results", "next_action",
             },
             "local_gpu_finalize_run": {"run_id", "round_number", "summary", "postprocess"},
             "local_gpu_cleanup_run": {"run_id", "scope", "confirmation"},
@@ -98,8 +109,34 @@ class McpServerUnitTests(unittest.TestCase):
                     continue
                 schema = tools[name]["inputSchema"]
                 self.assertEqual(set(schema["properties"]), fields)
-                required = fields - {"postprocess"}
+                optional = {
+                    "local_gpu_branch_run": {"denoising_strength"},
+                    "local_gpu_prepare_mask": {"user_mask_path", "geometry", "feather_pixels"},
+                    "local_gpu_generate_round": {"mask_id"},
+                    "local_gpu_record_review": {"preservation_results"},
+                    "local_gpu_finalize_run": {"postprocess"},
+                }.get(name, set())
+                required = fields - optional
                 self.assertEqual(set(schema.get("required", [])), required)
+
+    def test_revision_and_mask_schemas_are_exact(self) -> None:
+        tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
+        branch = tools["local_gpu_branch_run"]["inputSchema"]
+        self.assertEqual(branch["properties"]["edit_mode"]["enum"], ["prompt-refine", "img2img", "inpaint"])
+        self.assertEqual(branch["properties"]["denoising_strength"]["exclusiveMinimum"], 0)
+        self.assertEqual(branch["properties"]["denoising_strength"]["maximum"], 1)
+        self.assertFalse(branch["properties"]["contract"]["additionalProperties"])
+
+        prepare = tools["local_gpu_prepare_mask"]["inputSchema"]
+        self.assertEqual(prepare["properties"]["feather_pixels"]["maximum"], 64)
+        geometry = prepare["properties"]["geometry"]
+        self.assertEqual(geometry["type"], "array")
+        self.assertEqual(geometry["minItems"], 1)
+        self.assertFalse(geometry["items"]["additionalProperties"])
+
+        generate = tools["local_gpu_generate_round"]["inputSchema"]
+        self.assertEqual(generate["properties"]["edit_mode"]["enum"], ["txt2img", "img2img", "inpaint"])
+        self.assertNotIn("mask_id", generate["required"])
 
     def test_finalize_postprocess_schema_is_optional_and_exact(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
@@ -134,8 +171,14 @@ class McpServerUnitTests(unittest.TestCase):
                 "upscale_policy": "auto",
             }),
             ("local_gpu_get_run", {"run_id": 1}),
+            ("local_gpu_branch_run", {
+                "parent_run_id": "run-1", "parent_round": 1, "contract": {}, "max_rounds": 1,
+                "edit_mode": "erase",
+            }),
+            ("local_gpu_prepare_mask", {"run_id": "run-1"}),
+            ("local_gpu_confirm_mask", {"run_id": "run-1", "mask_id": 1}),
             ("local_gpu_generate_round", {
-                "run_id": "run-1", "idempotency_key": "key", "action": "initial", "edit_mode": "img2img",
+                "run_id": "run-1", "idempotency_key": "key", "action": "initial", "edit_mode": "erase",
                 "plan": {}, "seed": 1, "change_summary": "Initial.",
             }),
             ("local_gpu_record_review", {
@@ -330,6 +373,68 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertEqual(result["structuredContent"]["error"]["code"], "invalid_confirmation")
         get_engine.assert_not_called()
 
+    def test_revision_and_mask_tools_dispatch_exact_arguments(self) -> None:
+        branch_arguments = {
+            "parent_run_id": "run-parent",
+            "parent_round": 1,
+            "contract": {
+                "preserve": [{"target": "subject", "strength": "hard"}],
+                "change": ["calmer lighting"],
+            },
+            "max_rounds": 2,
+            "edit_mode": "img2img",
+            "denoising_strength": 0.25,
+        }
+        confirm_arguments = {"run_id": "run-child", "mask_id": "mask-01"}
+        engine = Mock()
+        engine.branch_run.return_value = {"ok": True, "run_id": "run-child", "state": "created", "warnings": []}
+        engine.confirm_mask.return_value = {
+            "ok": True,
+            "run_id": "run-child",
+            "mask_id": "mask-01",
+            "confirmed": True,
+            "warnings": [],
+        }
+        with patch.object(mcp_server, "get_asset_engine", return_value=engine):
+            branch_result = mcp_server.handle_tool_call({
+                "name": "local_gpu_branch_run",
+                "arguments": branch_arguments,
+            })
+            confirm_result = mcp_server.handle_tool_call({
+                "name": "local_gpu_confirm_mask",
+                "arguments": confirm_arguments,
+            })
+
+        self.assertFalse(branch_result["isError"])
+        self.assertFalse(confirm_result["isError"])
+        engine.branch_run.assert_called_once_with(branch_arguments)
+        engine.confirm_mask.assert_called_once_with(confirm_arguments)
+
+    def test_prepare_mask_returns_text_then_jpeg_overlay(self) -> None:
+        data = {
+            "ok": True,
+            "run_id": "run-child",
+            "mask_id": "mask-01",
+            "confirmed": False,
+            "warnings": [],
+        }
+        preview = PreviewResult(Path("mask-01-overlay.jpg"), "image/jpeg", "b3ZlcmxheQ==", 32, 32, None)
+        engine = Mock()
+        engine.prepare_mask.return_value = (data, preview)
+        arguments = {
+            "run_id": "run-child",
+            "geometry": [{"type": "rectangle", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2}],
+            "feather_pixels": 0,
+        }
+        with patch.object(mcp_server, "get_asset_engine", return_value=engine):
+            result = mcp_server.handle_tool_call({"name": "local_gpu_prepare_mask", "arguments": arguments})
+
+        self.assertFalse(result["isError"])
+        self.assertEqual([block["type"] for block in result["content"]], ["text", "image"])
+        self.assertEqual(result["content"][1]["mimeType"], "image/jpeg")
+        self.assertEqual(result["content"][1]["data"], "b3ZlcmxheQ==")
+        engine.prepare_mask.assert_called_once_with(arguments)
+
     def test_generate_round_returns_text_then_bounded_jpeg_image(self) -> None:
         data = {
             "ok": True,
@@ -359,6 +464,37 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertEqual(result["content"][1]["mimeType"], "image/jpeg")
         self.assertEqual(result["content"][1]["data"], "amFzZw==")
         self.assertNotIn("data", result["structuredContent"])
+
+    def test_child_review_forwards_optional_preservation_results(self) -> None:
+        preservation_results = [
+            {"target": "subject", "status": "preserved", "observation": "Identity matches."},
+        ]
+        arguments = {
+            "run_id": "run-child",
+            "round_number": 1,
+            "scores": {"composition": 4},
+            "hard_failures": [],
+            "critique": "Reviewed child candidate.",
+            "constraint_results": {},
+            "preservation_results": preservation_results,
+            "next_action": "finalize",
+        }
+        engine = Mock()
+        engine.record_review.return_value = {
+            "ok": True,
+            "run_id": "run-child",
+            "state": "reviewed",
+            "rounds": [],
+            "reviews": [],
+            "recoverable_next_actions": ["finalize_run"],
+            "warnings": [],
+        }
+        with patch.object(mcp_server, "get_asset_engine", return_value=engine):
+            result = mcp_server.handle_tool_call({"name": "local_gpu_record_review", "arguments": arguments})
+
+        self.assertFalse(result["isError"])
+        forwarded = engine.record_review.call_args.args[0]
+        self.assertEqual(forwarded["review"]["preservation_results"], preservation_results)
 
     def test_generate_round_rejects_nested_non_txt2img_mode_before_engine_work(self) -> None:
         for nested_mode in ("img2img", "inpaint"):

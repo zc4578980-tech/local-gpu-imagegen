@@ -161,6 +161,40 @@ class MaskService:
         self.store.update(run_id, confirm_mask)
         return copy.deepcopy(result_box)
 
+    def confirmed_for_generation(self, run_id: str, mask_id: str) -> dict[str, object]:
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValidationError("invalid_run_id", "run_id must be a non-empty string.")
+        if not isinstance(mask_id, str) or MASK_ID_PATTERN.fullmatch(mask_id) is None:
+            raise ValidationError("invalid_mask_id", "mask_id has an invalid format.")
+        manifest = self.store.get(run_id)
+        run_root = self.store.run_root(run_id)
+        source_record, source_path = _revision_source(manifest, run_root)
+        masks = manifest.get("masks")
+        if not isinstance(masks, list) or not all(isinstance(item, dict) for item in masks):
+            raise ArtifactError("corrupt_manifest", "Manifest masks must be an array of objects.")
+        record = next((item for item in masks if item.get("mask_id") == mask_id), None)
+        if record is None:
+            raise StateError("mask_not_found", "Prepared mask does not exist.", {"mask_id": mask_id})
+        if record.get("confirmed") is not True:
+            raise StateError(
+                "mask_not_confirmed",
+                "Prepared mask requires explicit confirmation before inpaint generation.",
+                {"mask_id": mask_id},
+            )
+        if _mask_changed(
+            record,
+            run_root,
+            source_path,
+            source_record["width"],
+            source_record["height"],
+        ):
+            raise ConflictError(
+                "mask_changed_since_prepare",
+                "Source image or mask bytes changed after the overlay was prepared.",
+                {"mask_id": mask_id},
+            )
+        return _external_record(record, run_root)
+
 
 def _validate_prepare_arguments(arguments: object) -> dict[str, object]:
     allowed = {"run_id", "user_mask_path", "geometry", "feather_pixels"}

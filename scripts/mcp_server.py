@@ -306,6 +306,26 @@ def tool_schema() -> list[dict[str, Any]]:
     json_object = {"type": "object", "additionalProperties": True}
     json_value = {"type": ["object", "array", "string", "number", "boolean", "null"]}
     json_array = {"type": "array", "items": json_value}
+    preserve_item = _object_schema({
+        "target": {"type": "string", "minLength": 1},
+        "strength": {"type": "string", "enum": ["hard", "soft"]},
+    }, ["target", "strength"])
+    revision_contract = _object_schema({
+        "preserve": {"type": "array", "items": preserve_item},
+        "change": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    }, ["preserve", "change"])
+    point = _object_schema({
+        "x": {"type": "number", "minimum": 0, "maximum": 1},
+        "y": {"type": "number", "minimum": 0, "maximum": 1},
+    }, ["x", "y"])
+    geometry_item = _object_schema({
+        "type": {"type": "string", "enum": ["rectangle", "polygon"]},
+        "x": {"type": "number", "minimum": 0, "maximum": 1},
+        "y": {"type": "number", "minimum": 0, "maximum": 1},
+        "width": {"type": "number", "minimum": 0, "maximum": 1},
+        "height": {"type": "number", "minimum": 0, "maximum": 1},
+        "points": {"type": "array", "minItems": 3, "items": point},
+    }, ["type"])
     run_manifest_properties = {
         "run_id": {"type": "string"},
         "schema_version": {"type": "integer"},
@@ -314,6 +334,7 @@ def tool_schema() -> list[dict[str, Any]]:
         "last_stable_state": {"type": "string"},
         "active_attempt": json_value,
         "parent": json_value,
+        "revision": json_value,
         "request": json_object,
         "attempts": json_array,
         "rounds": json_array,
@@ -364,13 +385,72 @@ def tool_schema() -> list[dict[str, Any]]:
             "outputSchema": _output_schema(run_manifest_properties, ["run_id", "state", "rounds", "recoverable_next_actions"]),
         },
         {
+            "name": "local_gpu_branch_run",
+            "description": "Create an immutable child revision run from one reviewed parent round.",
+            "inputSchema": _object_schema({
+                "parent_run_id": {"type": "string", "minLength": 1},
+                "parent_round": {"type": "integer", "minimum": 1, "maximum": 3},
+                "contract": revision_contract,
+                "max_rounds": {"type": "integer", "minimum": 1, "maximum": 3},
+                "edit_mode": {"type": "string", "enum": ["prompt-refine", "img2img", "inpaint"]},
+                "denoising_strength": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            }, ["parent_run_id", "parent_round", "contract", "max_rounds", "edit_mode"]),
+            "outputSchema": _output_schema(
+                run_manifest_properties,
+                ["run_id", "state", "parent", "revision"],
+            ),
+        },
+        {
+            "name": "local_gpu_prepare_mask",
+            "description": "Prepare an unconfirmed child-run inpaint mask and return its JPEG overlay.",
+            "inputSchema": _object_schema({
+                "run_id": {"type": "string", "minLength": 1},
+                "user_mask_path": {"type": "string", "minLength": 1},
+                "geometry": {"type": "array", "minItems": 1, "items": geometry_item},
+                "feather_pixels": {"type": "integer", "minimum": 0, "maximum": 64},
+            }, ["run_id"]),
+            "outputSchema": _output_schema({
+                "mask_id": {"type": "string"},
+                "source": {"type": "string", "enum": ["geometry", "user"]},
+                "source_image_sha256": {"type": "string"},
+                "mask_sha256": {"type": "string"},
+                "geometry": json_value,
+                "feather_pixels": {"type": "integer"},
+                "mask_path": {"type": "string"},
+                "overlay_path": {"type": "string"},
+                "confirmed": {"type": "boolean"},
+                "confirmed_at": json_value,
+            }, ["mask_id", "mask_path", "overlay_path", "confirmed"]),
+        },
+        {
+            "name": "local_gpu_confirm_mask",
+            "description": "Confirm an unchanged prepared mask after explicit overlay approval.",
+            "inputSchema": _object_schema({
+                "run_id": {"type": "string", "minLength": 1},
+                "mask_id": {"type": "string", "minLength": 1},
+            }, ["run_id", "mask_id"]),
+            "outputSchema": _output_schema({
+                "mask_id": {"type": "string"},
+                "source": {"type": "string", "enum": ["geometry", "user"]},
+                "source_image_sha256": {"type": "string"},
+                "mask_sha256": {"type": "string"},
+                "geometry": json_value,
+                "feather_pixels": {"type": "integer"},
+                "mask_path": {"type": "string"},
+                "overlay_path": {"type": "string"},
+                "confirmed": {"type": "boolean"},
+                "confirmed_at": json_value,
+            }, ["mask_id", "mask_path", "overlay_path", "confirmed"]),
+        },
+        {
             "name": "local_gpu_generate_round",
-            "description": "Generate one confirmed txt2img round and return an optional bounded JPEG preview.",
+            "description": "Generate one root or immutable revision round and return an optional bounded JPEG preview.",
             "inputSchema": _object_schema({
                 "run_id": {"type": "string", "minLength": 1},
                 "idempotency_key": {"type": "string", "minLength": 1},
                 "action": {"type": "string", "enum": ["initial", "refine", "explore"]},
-                "edit_mode": {"type": "string", "const": "txt2img"},
+                "edit_mode": {"type": "string", "enum": ["txt2img", "img2img", "inpaint"]},
+                "mask_id": {"type": "string", "minLength": 1},
                 "plan": json_object,
                 "seed": {"type": "integer"},
                 "change_summary": {"type": "string", "minLength": 1},
@@ -393,6 +473,7 @@ def tool_schema() -> list[dict[str, Any]]:
                 "hard_failures": {"type": "array", "items": {"type": "string"}},
                 "critique": {"type": "string", "minLength": 1},
                 "constraint_results": json_object,
+                "preservation_results": {"type": "array", "items": json_object},
                 "next_action": {"type": "string", "enum": ["refine", "explore", "finalize"]},
             }, ["run_id", "round_number", "scores", "hard_failures", "critique", "constraint_results", "next_action"]),
             "outputSchema": _output_schema(run_manifest_properties, ["run_id", "state", "rounds", "reviews", "recoverable_next_actions"]),
@@ -556,6 +637,13 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
                 {"field": field, "allowed": field_schema["enum"]},
             )
         if expected_type in ("integer", "number"):
+            if "exclusiveMinimum" in field_schema and value <= field_schema["exclusiveMinimum"]:
+                return tool_error(
+                    "invalid_argument_value",
+                    "validation",
+                    f"{field} must be greater than {field_schema['exclusiveMinimum']}.",
+                    {"field": field, "exclusiveMinimum": field_schema["exclusiveMinimum"]},
+                )
             if "minimum" in field_schema and value < field_schema["minimum"]:
                 return tool_error(
                     "invalid_argument_value",
@@ -585,6 +673,13 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
                 {"field": field},
             )
         if expected_type == "array" and "items" in field_schema:
+            if "minItems" in field_schema and len(value) < field_schema["minItems"]:
+                return tool_error(
+                    "invalid_argument_value",
+                    "validation",
+                    f"{field} must contain at least {field_schema['minItems']} item(s).",
+                    {"field": field, "minItems": field_schema["minItems"]},
+                )
             item_type = field_schema["items"].get("type")
             if item_type and not all(schema_type_matches(item, item_type) for item in value):
                 return tool_error(
@@ -609,6 +704,28 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
                 "validation",
                 "model_choice must name a registered, enabled model with an approved license.",
                 {"field": "model_choice", "allowed": approved_model_ids},
+            )
+
+    if tool["name"] == "local_gpu_branch_run":
+        edit_mode = arguments.get("edit_mode")
+        has_strength = "denoising_strength" in arguments
+        if edit_mode == "prompt-refine" and has_strength or edit_mode in {"img2img", "inpaint"} and not has_strength:
+            return tool_error(
+                "invalid_denoising_strength",
+                "validation",
+                "denoising_strength is required only for img2img and inpaint revisions.",
+                {"field": "denoising_strength", "edit_mode": edit_mode},
+            )
+
+    if tool["name"] == "local_gpu_prepare_mask":
+        has_user_mask = "user_mask_path" in arguments
+        has_geometry = "geometry" in arguments
+        if has_user_mask == has_geometry:
+            return tool_error(
+                "invalid_mask_source",
+                "validation",
+                "Provide exactly one of user_mask_path or geometry.",
+                {"fields": ["user_mask_path", "geometry"]},
             )
 
     prompt = arguments.get("prompt")
@@ -786,13 +903,26 @@ def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
         if name == "local_gpu_get_run":
             data = _successful_engine_data(engine.get_run(arguments))
             return tool_success(data)
+        if name == "local_gpu_branch_run":
+            data = _successful_engine_data(engine.branch_run(arguments))
+            return tool_success(data)
+        if name == "local_gpu_prepare_mask":
+            data, preview = engine.prepare_mask(arguments)
+            return tool_success(_successful_engine_data(data), _preview_block(preview))
+        if name == "local_gpu_confirm_mask":
+            data = _successful_engine_data(engine.confirm_mask(arguments))
+            return tool_success(data)
         if name == "local_gpu_generate_round":
             data, preview = engine.generate_round(arguments)
             return tool_success(_successful_engine_data(data), _preview_block(preview))
         if name == "local_gpu_record_review":
             review = {
                 field: arguments[field]
-                for field in ("scores", "hard_failures", "critique", "constraint_results", "next_action")
+                for field in (
+                    "scores", "hard_failures", "critique", "constraint_results",
+                    "preservation_results", "next_action",
+                )
+                if field in arguments
             }
             data = _successful_engine_data(engine.record_review({
                 "run_id": arguments["run_id"],

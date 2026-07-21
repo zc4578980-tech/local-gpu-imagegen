@@ -231,6 +231,59 @@ class AssetRunEngineTests(unittest.TestCase):
             ),
         }
 
+    def branch_arguments(
+        self,
+        parent_run_id: str,
+        *,
+        edit_mode: str,
+        max_rounds: int = 1,
+    ) -> dict[str, object]:
+        arguments: dict[str, object] = {
+            "parent_run_id": parent_run_id,
+            "parent_round": 1,
+            "contract": {
+                "preserve": [
+                    {"target": "subject identity", "strength": "hard"},
+                    {"target": "composition", "strength": "soft"},
+                ],
+                "change": ["simplify the background"],
+            },
+            "max_rounds": max_rounds,
+            "edit_mode": edit_mode,
+        }
+        if edit_mode in {"img2img", "inpaint"}:
+            arguments["denoising_strength"] = 0.25
+        return arguments
+
+    def reviewed_parent(self) -> str:
+        parent = self.start(max_rounds=1)
+        parent_id = str(parent["run_id"])
+        self.engine.generate_round(self.generate_arguments(parent_id, max_rounds=1))
+        self.review(parent_id, 1)
+        return parent_id
+
+    def branch(self, edit_mode: str) -> str:
+        child = self.engine.branch_run(self.branch_arguments(
+            self.reviewed_parent(),
+            edit_mode=edit_mode,
+        ))
+        return str(child["run_id"])
+
+    def child_generate_arguments(
+        self,
+        run_id: str,
+        edit_mode: str,
+        *,
+        mask_id: str | None = None,
+        seed: int = 42,
+    ) -> dict[str, object]:
+        arguments = self.generate_arguments(run_id, max_rounds=1, seed=seed)
+        arguments["edit_mode"] = edit_mode
+        arguments["plan"]["parameters"] = {"steps": 8, "guidance_scale": 6.0}
+        if mask_id is not None:
+            arguments["mask_id"] = mask_id
+        return arguments
+
     def start(
         self,
         *,
@@ -278,6 +331,52 @@ class AssetRunEngineTests(unittest.TestCase):
             self.engine.registry.list_catalog()["profiles"]["standalone-illustration"]["defaults"]["aspect_ratio"],
             "mutated",
         )
+
+    def test_revision_and_mask_injection_preserves_existing_constructor_arguments(self) -> None:
+        revisions = object()
+        masks = object()
+        engine = AssetRunEngine(
+            self.registry,
+            self.engine.store,
+            self.runner,
+            lambda: self.capabilities,
+            self.postprocessor,
+            revisions=revisions,
+            masks=masks,
+        )
+
+        self.assertIs(engine.registry, self.registry)
+        self.assertIs(engine.store, self.engine.store)
+        self.assertIs(engine.backend_runner, self.runner)
+        self.assertIs(engine.postprocessor, self.postprocessor)
+        self.assertIs(engine.revisions, revisions)
+        self.assertIs(engine.masks, masks)
+
+    def test_branch_prepare_and_confirm_delegate_to_injected_services(self) -> None:
+        class Revisions:
+            def branch(self, arguments: dict[str, object]) -> dict[str, object]:
+                return {"service": "revisions", "arguments": arguments}
+
+        class Masks:
+            def prepare(self, arguments: dict[str, object]) -> tuple[dict[str, object], None]:
+                return {"service": "masks", "arguments": arguments}, None
+
+            def confirm(self, arguments: dict[str, object]) -> dict[str, object]:
+                return {"service": "confirm", "arguments": arguments}
+
+        engine = AssetRunEngine(
+            self.registry,
+            self.engine.store,
+            self.runner,
+            lambda: self.capabilities,
+            self.postprocessor,
+            revisions=Revisions(),
+            masks=Masks(),
+        )
+
+        self.assertEqual(engine.branch_run({"value": 1})["service"], "revisions")
+        self.assertEqual(engine.prepare_mask({"value": 2})[0]["service"], "masks")
+        self.assertEqual(engine.confirm_mask({"value": 3})["service"], "confirm")
 
     def prepare_anime_run(self, *, upscale_policy: str = "auto") -> str:
         started = self.start(style="anime", upscale_policy=upscale_policy)
@@ -518,6 +617,133 @@ class AssetRunEngineTests(unittest.TestCase):
                 self.assertEqual(manifest["state"], "created")
                 self.assertEqual(manifest["attempts"], [])
                 self.assertEqual(runner.calls, [])
+
+    def test_root_runs_remain_txt2img(self) -> None:
+        run_id = str(self.start(max_rounds=1)["run_id"])
+
+        self.engine.generate_round(self.generate_arguments(run_id, max_rounds=1))
+
+        command = self.runner.calls[-1]
+        self.assertEqual(command[command.index("--mode") + 1], "txt2img")
+        self.assertNotIn("--input-image", command)
+        self.assertNotIn("--mask-image", command)
+        self.assertNotIn("--strength", command)
+
+    def test_child_edit_modes_inject_only_branch_owned_backend_inputs(self) -> None:
+        prompt_child = self.branch("prompt-refine")
+        self.engine.generate_round(self.child_generate_arguments(prompt_child, "txt2img"))
+        prompt_command = self.runner.calls[-1]
+        self.assertEqual(prompt_command[prompt_command.index("--mode") + 1], "txt2img")
+        self.assertNotIn("--input-image", prompt_command)
+        self.assertNotIn("--mask-image", prompt_command)
+        self.assertNotIn("--strength", prompt_command)
+
+        img_child = self.branch("img2img")
+        self.engine.generate_round(self.child_generate_arguments(img_child, "img2img"))
+        img_command = self.runner.calls[-1]
+        img_source = Path(img_command[img_command.index("--input-image") + 1])
+        self.assertEqual(img_command[img_command.index("--mode") + 1], "img2img")
+        self.assertEqual(img_source.name, "parent-source.png")
+        self.assertEqual(img_command[img_command.index("--strength") + 1], "0.25")
+        self.assertNotIn("--mask-image", img_command)
+
+        inpaint_child = self.branch("inpaint")
+        prepared, _ = self.engine.prepare_mask({
+            "run_id": inpaint_child,
+            "geometry": [{"type": "rectangle", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2}],
+            "feather_pixels": 0,
+        })
+        self.engine.confirm_mask({"run_id": inpaint_child, "mask_id": prepared["mask_id"]})
+        self.engine.generate_round(self.child_generate_arguments(
+            inpaint_child,
+            "inpaint",
+            mask_id=str(prepared["mask_id"]),
+        ))
+        inpaint_command = self.runner.calls[-1]
+        mask_path = Path(inpaint_command[inpaint_command.index("--mask-image") + 1])
+        self.assertEqual(inpaint_command[inpaint_command.index("--mode") + 1], "inpaint")
+        self.assertEqual(Path(inpaint_command[inpaint_command.index("--input-image") + 1]).name, "parent-source.png")
+        self.assertEqual(mask_path.name, "mask-01.png")
+        self.assertEqual(inpaint_command[inpaint_command.index("--strength") + 1], "0.25")
+
+    def test_inpaint_mask_failures_happen_before_backend_invocation(self) -> None:
+        inpaint_child = self.branch("inpaint")
+        before = len(self.runner.calls)
+        with self.assertRaisesRegex(AssetEngineError, "inpaint_mask_required"):
+            self.engine.generate_round(self.child_generate_arguments(inpaint_child, "inpaint"))
+        self.assertEqual(len(self.runner.calls), before)
+
+        prepared, _ = self.engine.prepare_mask({
+            "run_id": inpaint_child,
+            "geometry": [{"type": "rectangle", "x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2}],
+        })
+        with self.assertRaisesRegex(AssetEngineError, "mask_not_confirmed"):
+            self.engine.generate_round(self.child_generate_arguments(
+                inpaint_child,
+                "inpaint",
+                mask_id=str(prepared["mask_id"]),
+            ))
+        self.assertEqual(len(self.runner.calls), before)
+
+        foreign_child = self.branch("inpaint")
+        with self.assertRaisesRegex(AssetEngineError, "mask_not_found"):
+            self.engine.generate_round(self.child_generate_arguments(
+                foreign_child,
+                "inpaint",
+                mask_id=str(prepared["mask_id"]),
+            ))
+        self.assertEqual(len(self.runner.calls), before + 1)
+
+        self.engine.confirm_mask({"run_id": inpaint_child, "mask_id": prepared["mask_id"]})
+        Path(str(prepared["mask_path"])).write_bytes(b"changed")
+        with self.assertRaisesRegex(AssetEngineError, "mask_changed_since_prepare"):
+            self.engine.generate_round(self.child_generate_arguments(
+                inpaint_child,
+                "inpaint",
+                mask_id=str(prepared["mask_id"]),
+            ))
+        self.assertEqual(len(self.runner.calls), before + 1)
+
+    def test_inpaint_mask_id_participates_in_idempotency_hash(self) -> None:
+        child_id = self.branch("inpaint")
+        prepared_masks = []
+        for x in (0.1, 0.5):
+            prepared, _ = self.engine.prepare_mask({
+                "run_id": child_id,
+                "geometry": [{"type": "rectangle", "x": x, "y": 0.1, "width": 0.2, "height": 0.2}],
+            })
+            self.engine.confirm_mask({"run_id": child_id, "mask_id": prepared["mask_id"]})
+            prepared_masks.append(str(prepared["mask_id"]))
+        self.engine.generate_round(self.child_generate_arguments(
+            child_id,
+            "inpaint",
+            mask_id=prepared_masks[0],
+        ))
+        before = len(self.runner.calls)
+
+        with self.assertRaisesRegex(AssetEngineError, "idempotency_conflict"):
+            self.engine.generate_round(self.child_generate_arguments(
+                child_id,
+                "inpaint",
+                mask_id=prepared_masks[1],
+            ))
+
+        self.assertEqual(len(self.runner.calls), before)
+        manifest = self.engine.get_run({"run_id": child_id})
+        self.assertEqual(manifest["rounds"][0]["mask_id"], prepared_masks[0])
+
+    def test_root_and_child_requests_cannot_override_fixed_edit_mode(self) -> None:
+        root_id = str(self.start(max_rounds=1)["run_id"])
+        before = len(self.runner.calls)
+        with self.assertRaisesRegex(AssetEngineError, "root_edit_mode_invalid"):
+            self.engine.generate_round(self.child_generate_arguments(root_id, "img2img"))
+        self.assertEqual(len(self.runner.calls), before)
+
+        child_id = self.branch("img2img")
+        before = len(self.runner.calls)
+        with self.assertRaisesRegex(AssetEngineError, "revision_edit_mode_mismatch"):
+            self.engine.generate_round(self.child_generate_arguments(child_id, "txt2img"))
+        self.assertEqual(len(self.runner.calls), before)
 
     def test_backend_result_must_match_requested_backend_seed_and_integer_dimensions(self) -> None:
         mismatches = {

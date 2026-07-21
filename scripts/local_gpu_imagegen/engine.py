@@ -15,6 +15,7 @@ from .artifacts import ensure_within, sha256_file, validate_png
 from .backend_contract import validate_backend_result
 from .errors import ArtifactError, AssetEngineError, ConflictError, StateError, ValidationError
 from .generation_plan import validate_confirmed_run_request, validate_generation_plan
+from .masks import MaskService
 from .preview import MAX_PREVIEW_BYTES, PreviewResult, create_preview
 from .postprocess import (
     POSTPROCESS_CLEANUP_WARNING,
@@ -23,6 +24,7 @@ from .postprocess import (
     remove_postprocess_artifact,
 )
 from .profile_registry import ProfileRegistry
+from .revisions import RevisionService
 from .run_store import AttemptHandle, RunStore
 
 
@@ -38,12 +40,16 @@ class AssetRunEngine:
         backend_runner: BackendRunner,
         capability_provider: CapabilityProvider,
         postprocessor: RealEsrganAdapter | None = None,
+        revisions: RevisionService | None = None,
+        masks: MaskService | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
         self.backend_runner = backend_runner
         self.capability_provider = capability_provider
         self.postprocessor = postprocessor if postprocessor is not None else RealEsrganAdapter.from_environment()
+        self.revisions = revisions if revisions is not None else RevisionService(store)
+        self.masks = masks if masks is not None else MaskService(store)
 
     def list_profiles(self) -> dict[str, object]:
         capabilities = copy.deepcopy(self.capability_provider())
@@ -101,12 +107,27 @@ class AssetRunEngine:
         manifest = self.store.get(run_id)
         return {**manifest, "recoverable_next_actions": recoverable_next_actions(manifest)}
 
+    def branch_run(self, arguments: dict[str, object]) -> dict[str, object]:
+        return self.revisions.branch(arguments)
+
+    def prepare_mask(
+        self,
+        arguments: dict[str, object],
+    ) -> tuple[dict[str, object], PreviewResult | None]:
+        return self.masks.prepare(arguments)
+
+    def confirm_mask(self, arguments: dict[str, object]) -> dict[str, object]:
+        return self.masks.confirm(arguments)
+
     def generate_round(self, arguments: dict[str, object]) -> tuple[dict[str, object], PreviewResult | None]:
         arguments = _arguments(arguments)
         run_id = _required(arguments, "run_id", str)
         idempotency_key = _required(arguments, "idempotency_key", str)
         action = _required(arguments, "action", str)
         edit_mode = _required(arguments, "edit_mode", str)
+        mask_id = _optional(arguments, "mask_id", str, None)
+        if mask_id is not None and not mask_id.strip():
+            raise ValidationError("invalid_mask_id", "mask_id must be a non-empty prepared mask ID.")
         seed = _required(arguments, "seed", int, reject_bool=True)
         plan_value = _required(arguments, "plan", dict)
         change_summary = _required(arguments, "change_summary", str)
@@ -121,10 +142,20 @@ class AssetRunEngine:
         request = manifest.get("request")
         if not isinstance(request, dict):
             raise ArtifactError("corrupt_manifest", "Manifest request must be an object.")
+        run_root = self._run_root(run_id)
+        mode, execution_parameters = self._revision_execution(
+            manifest,
+            run_root,
+            edit_mode,
+            mask_id,
+            seed,
+        )
         plan = validate_generation_plan(plan_value, request, action, edit_mode)
         width, height = _dimensions(plan)
-        mode = edit_mode
-        run_root = self._run_root(run_id)
+        execution_plan = copy.deepcopy(plan)
+        execution_plan_parameters = execution_plan.get("parameters")
+        assert isinstance(execution_plan_parameters, dict)
+        execution_plan_parameters.update(execution_parameters)
         round_number = _next_round_number(manifest)
         final_path = ensure_within(run_root, run_root / f"round-{round_number:02d}.png")
         pending_path = ensure_within(run_root, run_root / f"round-{round_number:02d}.pending.png")
@@ -134,6 +165,8 @@ class AssetRunEngine:
             "plan": plan,
             "change_summary": change_summary.strip(),
         }
+        if mask_id is not None:
+            attempt_request["mask_id"] = mask_id
         handle = self.store.begin_attempt(run_id, idempotency_key, attempt_request)
         if handle.status == "busy":
             raise ConflictError("run_busy", "The idempotent generation attempt is still running.", {"run_id": run_id})
@@ -147,7 +180,7 @@ class AssetRunEngine:
                 backend_result = _existing_backend_result(handle, mode, width, height, seed, plan, request)
             else:
                 pending_path.unlink(missing_ok=True)
-                command = _backend_arguments(plan, seed, run_root, pending_path.name, width, height, mode)
+                command = _backend_arguments(execution_plan, seed, run_root, pending_path.name, width, height, mode)
                 return_code, stdout, stderr = self.backend_runner(command)
                 if return_code != 0:
                     raise AssetEngineError(
@@ -193,6 +226,85 @@ class AssetRunEngine:
             completed = self._append_warnings(run_id, warnings)
         round_value = _round_by_number(completed, round_number)
         return _generation_result(completed, round_value, final_path), preview
+
+    def _revision_execution(
+        self,
+        manifest: dict[str, object],
+        run_root: Path,
+        requested_mode: str,
+        mask_id: str | None,
+        seed: int,
+    ) -> tuple[str, dict[str, object]]:
+        parent = manifest.get("parent")
+        revision = manifest.get("revision")
+        if parent is None and revision is None:
+            if requested_mode != "txt2img":
+                raise ValidationError(
+                    "root_edit_mode_invalid",
+                    "Root runs support only txt2img generation.",
+                    {"edit_mode": requested_mode},
+                )
+            if mask_id is not None:
+                raise ValidationError("mask_not_allowed", "Root txt2img runs do not accept mask_id.")
+            return "txt2img", {}
+        if not isinstance(parent, dict) or not isinstance(revision, dict):
+            raise ArtifactError("corrupt_manifest", "Revision lineage metadata is incomplete.")
+
+        branch_mode = revision.get("edit_mode")
+        expected_mode = {
+            "prompt-refine": "txt2img",
+            "img2img": "img2img",
+            "inpaint": "inpaint",
+        }.get(branch_mode)
+        if expected_mode is None:
+            raise ArtifactError("corrupt_manifest", "Revision edit mode is invalid.")
+        if requested_mode != expected_mode:
+            raise ValidationError(
+                "revision_edit_mode_mismatch",
+                "Generation edit_mode must match the immutable revision contract.",
+                {"edit_mode": requested_mode, "expected": expected_mode},
+            )
+        if expected_mode != "inpaint" and mask_id is not None:
+            raise ValidationError("mask_not_allowed", "mask_id is accepted only by inpaint revisions.")
+
+        if branch_mode == "prompt-refine":
+            rounds = manifest.get("rounds")
+            if not isinstance(rounds, list):
+                raise ArtifactError("corrupt_manifest", "Manifest rounds must be an array.")
+            if not rounds:
+                parent_run_id = parent.get("run_id")
+                parent_round = parent.get("round")
+                if not isinstance(parent_run_id, str) or type(parent_round) is not int:
+                    raise ArtifactError("corrupt_manifest", "Revision parent reference is invalid.")
+                selected = _round_by_number(self.store.get(parent_run_id), parent_round)
+                parent_seed = selected.get("seed")
+                if type(parent_seed) is not int:
+                    raise ArtifactError("corrupt_manifest", "Revision parent seed is invalid.")
+                if seed != parent_seed:
+                    raise StateError(
+                        "revision_seed_mismatch",
+                        "The first prompt-refine round must inherit the parent seed.",
+                        {"expected_seed": parent_seed},
+                    )
+            return "txt2img", {}
+
+        source_path = _validated_revision_source(manifest, run_root)
+        strength = revision.get("denoising_strength")
+        if not isinstance(strength, (int, float)) or isinstance(strength, bool):
+            raise ArtifactError("corrupt_manifest", "Revision denoising strength is invalid.")
+        parameters: dict[str, object] = {
+            "input_image": str(source_path),
+            "strength": strength,
+        }
+        if expected_mode == "inpaint":
+            if mask_id is None:
+                raise ValidationError(
+                    "inpaint_mask_required",
+                    "Inpaint revisions require one confirmed child mask_id.",
+                )
+            mask = self.masks.confirmed_for_generation(str(manifest.get("run_id")), mask_id)
+            parameters["mask_image"] = mask["mask_path"]
+        return expected_mode, parameters
 
     def record_review(self, arguments: dict[str, object]) -> dict[str, object]:
         arguments = _arguments(arguments)
@@ -691,6 +803,41 @@ def _dimensions(plan: dict[str, object]) -> tuple[int, int]:
     if width % 8 != 0 or height % 8 != 0:
         raise ValidationError("invalid_dimensions", "Width and height must be divisible by 8.")
     return width, height
+
+
+def _validated_revision_source(manifest: dict[str, object], run_root: Path) -> Path:
+    revision = manifest.get("revision")
+    source = revision.get("source_image") if isinstance(revision, dict) else None
+    if not isinstance(source, dict):
+        raise ArtifactError("corrupt_manifest", "Revision source image metadata is missing.")
+    path_value = source.get("path")
+    width = source.get("width")
+    height = source.get("height")
+    stored_hash = source.get("sha256")
+    if (
+        not isinstance(path_value, str)
+        or Path(path_value).is_absolute()
+        or type(width) is not int
+        or width <= 0
+        or type(height) is not int
+        or height <= 0
+        or not isinstance(stored_hash, str)
+    ):
+        raise ArtifactError("corrupt_manifest", "Revision source image metadata is invalid.")
+    source_path = ensure_within(run_root, run_root / path_value)
+    try:
+        metadata = validate_png(source_path, width, height)
+    except AssetEngineError as error:
+        raise ConflictError(
+            "revision_source_changed",
+            "Revision source image changed after the child run was created.",
+        ) from error
+    if metadata["sha256"] != stored_hash:
+        raise ConflictError(
+            "revision_source_changed",
+            "Revision source image changed after the child run was created.",
+        )
+    return source_path
 
 
 def _backend_arguments(

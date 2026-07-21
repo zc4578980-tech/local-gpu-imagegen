@@ -291,6 +291,8 @@ class RunStore:
                 "status": "running",
                 "started_at": utc_now(),
             }
+            if "mask_id" in normalized_request:
+                active["mask_id"] = normalized_request["mask_id"]
             status = "started"
             existing_round = None
             if resumable is not None:
@@ -349,6 +351,8 @@ class RunStore:
                 "generation_plan": copy.deepcopy(active["generation_plan"]),
                 "change_summary": active["change_summary"],
             })
+            if "mask_id" in active:
+                round_value["mask_id"] = active["mask_id"]
             rounds.append(round_value)
 
             archived = copy.deepcopy(active)
@@ -908,12 +912,18 @@ class RunStore:
                 "invalid_change_summary",
                 "Attempt change_summary must be non-empty and concise.",
             )
-        return {
+        normalized = {
             "action": request.get("action"),
             "seed": request.get("seed"),
             "generation_plan": copy.deepcopy(plan),
             "change_summary": change_summary.strip(),
         }
+        if "mask_id" in request:
+            mask_id = request["mask_id"]
+            if not isinstance(mask_id, str) or not mask_id.strip():
+                raise ValidationError("invalid_mask_id", "Attempt mask_id must be a non-empty string.")
+            normalized["mask_id"] = mask_id
+        return normalized
 
     def _validate_attempt_transition(self, manifest: dict[str, object], request: dict[str, object]) -> None:
         if manifest.get("state") == "finalized" or manifest.get("final") is not None:
