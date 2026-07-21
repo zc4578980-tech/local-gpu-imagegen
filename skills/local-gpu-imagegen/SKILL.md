@@ -9,7 +9,7 @@ description: Use when a user asks to create, generate, draw, render, transform, 
 
 Brief first, confirm once, then run a bounded generate-review loop. Never substitute guesses for missing high-impact intent or visual evidence.
 
-The plugin exposes exactly nine MCP tools: `local_gpu_imagegen_check`, `local_gpu_generate_image`, `local_gpu_list_profiles`, `local_gpu_start_run`, `local_gpu_get_run`, `local_gpu_generate_round`, `local_gpu_record_review`, `local_gpu_finalize_run`, and `local_gpu_cleanup_run`. Use the seven high-level profile/run tools for adaptive runs. The check and direct-generation tools are compatibility tools, not shortcuts around briefing and confirmation.
+The plugin exposes exactly twelve MCP tools: `local_gpu_imagegen_check`, `local_gpu_generate_image`, `local_gpu_list_profiles`, `local_gpu_start_run`, `local_gpu_get_run`, `local_gpu_branch_run`, `local_gpu_prepare_mask`, `local_gpu_confirm_mask`, `local_gpu_generate_round`, `local_gpu_record_review`, `local_gpu_finalize_run`, and `local_gpu_cleanup_run`. Use the ten high-level profile/run/revision tools for adaptive runs. The check and direct-generation tools are compatibility tools, not shortcuts around briefing and confirmation.
 
 ## Adaptive Brief
 
@@ -76,6 +76,27 @@ For each generation, use a unique idempotency key and a plan bound to the confir
 - A retained image consumes one successful round regardless of visual quality. Do not relabel it as a failed attempt to evade the budget.
 - Eligible means no hard failures and every critical rubric score is at least 3. Stop early when an eligible reviewed result exists and further GPU use is unlikely to help.
 
+## Hot Revision
+
+When the user likes part of a reviewed or finalized candidate but wants another part changed, create an auditable preserve/change contract for an immutable child run. Extract what the user likes, what must remain, what must change, and whether every preserved target is hard or soft. Ask only for missing high-impact boundaries, including a revision budget of one to three successful rounds. Do not ask again for values already stated.
+
+Present the concise preserve/change contract, selected parent round, edit mode, denoising strength when applicable, and revision budget. Call `local_gpu_branch_run` only after the user confirms that summary or directly instructs immediate use of the displayed defaults. The order is:
+
+```text
+extract likes/remain/change -> present the concise preserve/change contract
+-> user confirms -> `local_gpu_branch_run` -> immutable child run
+```
+
+Choose the least destructive supported mode in this order: `prompt refinement -> low-strength img2img -> confirmed inpaint`.
+
+- Use prompt refinement for semantic, lighting, or wording changes that can retain the parent seed; the child branch uses `prompt-refine` and generation uses `txt2img` without a source image.
+- Use low-strength img2img when rendering must change broadly; the child contract fixes the source image and denoising strength.
+- Use confirmed inpaint only when the requested change is local and spatially identifiable. Preservation without a mask is best-effort. Do not promise pixel-perfect no-mask preservation.
+
+Prefer a user-provided mask. For Agent-proposed rectangles or polygons, call `local_gpu_prepare_mask`, show the mask overlay, and wait for explicit approval. Do not call `local_gpu_confirm_mask` based on silence, prior consent, or the Agent's own judgment. A requested change to geometry, source, or feathering must prepare a new unconfirmed mask and repeat overlay approval. Do not perform automatic segmentation.
+
+Run the immutable child with the same bounded initial/refine/explore state rules as a root run. On a vision-capable host, record one observable `preservation_results` entry per preserved target. A changed hard target is a hard failure, and an uncertain hard target cannot be auto-accepted. Text-only hosts must not invent preservation results; return the child output for user review without claiming the preserve/change contract passed.
+
 ## Review Evidence
 
 On a vision-capable host, inspect the actual returned preview or accessible full image. Record the complete returned rubric with evidence-based 1-to-5 scores, hard failures, explicit-constraint results, a concise critique, and the next action. Do not store chain-of-thought; store only conclusions, observed evidence, and the concise preserve/change intent.
@@ -89,6 +110,7 @@ For a vision-reviewed eligible result, finalize the nominated reviewed round and
 - No hidden downloads. Do not enable downloads or suggest that a remote-looking model ID is locally available. Report unavailable dependencies/models and stop.
 - Do not silently fall back to CPU or switch the confirmed model/backend policy.
 - `upscale_policy: auto` records permission only; it does not prove a compatible upscaler is installed or that upscaling occurred.
-- Do not promise masks, child revisions, or hot revision tools. Record only current-run refine/explore intent; those revision features are outside this workflow.
+- Do not promise pixel-perfect no-mask preservation or describe best-effort semantic preservation as guaranteed.
+- Do not perform automatic segmentation or imply that a geometry mask was approved before the returned overlay received explicit user approval.
 - A preview path is not visual evidence. One-turn urgency is not confirmation. A nearly-good last round is not authority to exceed the budget.
 - Do not describe Codex or any other host as verified, and do not claim real image acceptance without retained acceptance evidence.

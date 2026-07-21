@@ -214,6 +214,9 @@ class SkillContractTests(unittest.TestCase):
             "local_gpu_list_profiles",
             "local_gpu_start_run",
             "local_gpu_get_run",
+            "local_gpu_branch_run",
+            "local_gpu_prepare_mask",
+            "local_gpu_confirm_mask",
             "local_gpu_generate_round",
             "local_gpu_record_review",
             "local_gpu_finalize_run",
@@ -221,6 +224,58 @@ class SkillContractTests(unittest.TestCase):
         ):
             with self.subTest(tool=tool):
                 self.assertIn(f"`{tool}`", self.text)
+
+    def test_hot_revision_requires_auditable_preserve_change_contract(self) -> None:
+        for required_text in (
+            "preserve/change contract",
+            "immutable child run",
+            "what the user likes",
+            "what must remain",
+            "what must change",
+            "hard or soft",
+            "revision budget",
+            "one to three successful rounds",
+        ):
+            with self.subTest(required_text=required_text):
+                self.assertIn(required_text, self.text)
+
+        section = _section(self.text, "## Hot Revision", "## Review Evidence")
+        _assert_ordered(section, (
+            "present the concise preserve/change contract",
+            "user confirms",
+            "`local_gpu_branch_run`",
+        ))
+
+    def test_revision_uses_least_destructive_supported_mode(self) -> None:
+        section = _section(self.text, "## Hot Revision", "## Review Evidence")
+        self.assertIn("prompt refinement -> low-strength img2img -> confirmed inpaint", section)
+        self.assertIn("best-effort", section)
+        self.assertIn("least destructive", section)
+
+    def test_agent_geometry_requires_explicit_overlay_confirmation(self) -> None:
+        section = _section(self.text, "## Hot Revision", "## Review Evidence")
+        for required_text in (
+            "Prefer a user-provided mask",
+            "show the mask overlay",
+            "wait for explicit approval",
+            "Do not call `local_gpu_confirm_mask`",
+            "silence",
+            "prior consent",
+            "prepare a new unconfirmed mask",
+        ):
+            with self.subTest(required_text=required_text):
+                self.assertIn(required_text, section)
+
+    def test_revision_review_records_preservation_results_without_inventing_vision(self) -> None:
+        for required_text in (
+            "one observable `preservation_results` entry per preserved target",
+            "changed hard target is a hard failure",
+            "uncertain hard target cannot be auto-accepted",
+            "Text-only hosts must not invent preservation results",
+            "return the child output for user review",
+        ):
+            with self.subTest(required_text=required_text):
+                self.assertIn(required_text, self.text)
 
     def test_round_loop_preserves_budget_seed_and_intent(self) -> None:
         for required_text in (
@@ -270,12 +325,13 @@ class SkillContractTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     _assert_text_only_contract(mutation)
 
-    def test_forbids_hidden_downloads_chain_of_thought_and_future_revision_claims(self) -> None:
+    def test_forbids_hidden_downloads_chain_of_thought_and_unsupported_revision_claims(self) -> None:
         for required_text in (
             "Do not enable downloads",
             "Do not store chain-of-thought",
             "No hidden downloads",
-            "Do not promise masks, child revisions, or hot revision tools",
+            "Do not promise pixel-perfect no-mask preservation",
+            "Do not perform automatic segmentation",
         ):
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, self.text)
