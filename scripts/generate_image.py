@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import binascii
 import json
 import os
 import re
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
+
+from local_gpu_imagegen.backends.webui import WebUIAdapter
+from local_gpu_imagegen.errors import AssetEngineError
 
 
 DEFAULT_DIFFUSERS_MODEL = "stabilityai/sd-turbo"
@@ -90,99 +89,57 @@ def output_path_for(args: argparse.Namespace) -> Path:
     return output_dir / filename
 
 
-def image_to_base64(path: str) -> str:
-    return base64.b64encode(Path(path).read_bytes()).decode("ascii")
-
-
-def webui_api_get(base_url: str, path: str, timeout: int = 10) -> object:
-    url = base_url.rstrip("/") + path
-    with urllib.request.urlopen(url, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def webui_api_post(base_url: str, path: str, payload: dict[str, object], timeout: int = 600) -> object:
-    url = base_url.rstrip("/") + path
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
 def webui_available(base_url: str) -> bool:
     try:
-        webui_api_get(base_url, "/sdapi/v1/options")
-    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        WebUIAdapter(base_url).probe()
+    except (AssetEngineError, OSError, TimeoutError, ValueError):
         return False
     return True
 
 
 def generate_with_webui(args: argparse.Namespace) -> dict[str, object]:
-    output_path = output_path_for(args)
-    payload: dict[str, object] = {
-        "prompt": args.prompt,
+    adapter = WebUIAdapter(args.webui_url)
+    models = adapter.discover()
+    requested_model = args.model
+    if requested_model is None:
+        probe = adapter.probe()
+        loaded_model = probe.get("loaded_model")
+        requested_model = loaded_model if isinstance(loaded_model, str) else None
+    selected = next(
+        (
+            model
+            for model in models
+            if model.get("backend_model_id") == requested_model
+        ),
+        None,
+    )
+    if selected is None:
+        raise RuntimeError(
+            f"WebUI model '{requested_model or 'current'}' is not available in the API inventory."
+        )
+    return adapter.generate({
+        "backend": "webui",
+        "model": selected,
+        "mode": args.mode,
+        "positive_prompt": args.prompt,
         "negative_prompt": args.negative_prompt,
         "width": args.width,
         "height": args.height,
         "steps": args.steps if args.steps is not None else 20,
-        "cfg_scale": args.guidance_scale if args.guidance_scale is not None else 7.0,
-        "sampler_name": args.sampler_name,
-        "batch_size": 1,
-        "n_iter": 1,
-        "save_images": True,
-    }
-    if args.seed is not None:
-        payload["seed"] = args.seed
-    if args.model:
-        payload["override_settings"] = {"sd_model_checkpoint": args.model}
-        payload["override_settings_restore_afterwards"] = True
-
-    endpoint = "/sdapi/v1/txt2img"
-    if args.mode in ("img2img", "inpaint"):
-        endpoint = "/sdapi/v1/img2img"
-        payload["init_images"] = [image_to_base64(args.input_image)]
-        payload["denoising_strength"] = args.strength if args.strength is not None else 0.75
-        if args.mode == "inpaint":
-            payload["mask"] = image_to_base64(args.mask_image)
-            payload["inpainting_fill"] = 1
-            payload["inpaint_full_res"] = True
-
-    response = webui_api_post(args.webui_url, endpoint, payload)
-    images = response.get("images") if isinstance(response, dict) else None
-    if not images:
-        raise RuntimeError("WebUI API did not return an image.")
-
-    encoded = str(images[0])
-    if "," in encoded:
-        encoded = encoded.split(",")[-1]
-    try:
-        image_bytes = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise RuntimeError("WebUI API returned invalid base64 image data.") from exc
-    if not image_bytes:
-        raise RuntimeError("WebUI API returned empty image data.")
-    output_path.write_bytes(image_bytes)
-
-    info: dict[str, object] = {}
-    if isinstance(response, dict) and response.get("info"):
-        try:
-            info = json.loads(str(response["info"]))
-        except json.JSONDecodeError:
-            info = {"raw": response["info"]}
-
-    return {
-        "ok": True,
-        "path": str(output_path.resolve()),
-        "backend": "webui",
-        "mode": args.mode,
-        "webui_url": args.webui_url,
-        "model": info.get("sd_model_name") or args.model,
-        "width": args.width,
-        "height": args.height,
-        "steps": payload["steps"],
-        "guidance_scale": payload["cfg_scale"],
-        "strength": payload.get("denoising_strength"),
-        "seed": info.get("seed", args.seed),
-    }
+        "guidance_scale": args.guidance_scale if args.guidance_scale is not None else 7.0,
+        "sampler": args.sampler_name,
+        "seed": args.seed,
+        "source_path": args.input_image,
+        "mask_path": args.mask_image,
+        "strength": (
+            args.strength
+            if args.strength is not None
+            else 0.75 if args.mode in ("img2img", "inpaint") else None
+        ),
+        "output_path": str(output_path_for(args)),
+        "prompt_compiler_id": "direct-v1",
+        "prompt_compiler_version": 1,
+    })
 
 
 def apply_scheduler(pipeline: object, scheduler: str) -> None:
@@ -327,7 +284,7 @@ def main() -> int:
     if args.backend in ("auto", "webui") and webui_available(args.webui_url):
         try:
             result = generate_with_webui(args)
-        except (OSError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+        except (AssetEngineError, OSError, TimeoutError, RuntimeError) as exc:
             raise SystemExit(f"WebUI generation failed: {exc}") from exc
     elif args.backend == "webui":
         raise SystemExit(f"WebUI API is not available at {args.webui_url}. Start WebUI with API enabled or use --backend diffusers.")
