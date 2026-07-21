@@ -47,6 +47,11 @@ class CheckGpuTests(unittest.TestCase):
                 "check_webui",
                 return_value={"url": "http://127.0.0.1:7860", "available": True, "model": "approved", "api_error": None},
             ),
+            patch.object(
+                check_gpu,
+                "check_comfyui",
+                return_value={"url": "http://127.0.0.1:8188", "available": False, "api_error": "backend_request_failed"},
+            ),
             patch.dict(sys.modules, {"torch": fake_torch}),
             redirect_stdout(output),
         ):
@@ -55,6 +60,36 @@ class CheckGpuTests(unittest.TestCase):
         report = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertTrue(report["webui_ready"])
+        self.assertFalse(fake_cuda.called)
+
+    def test_ready_comfyui_does_not_probe_optional_torch_runtime(self) -> None:
+        fake_cuda = FakeCuda()
+        fake_torch = ModuleType("torch")
+        fake_torch.cuda = fake_cuda
+        fake_torch.__version__ = "test"
+
+        output = io.StringIO()
+        with (
+            patch.object(check_gpu, "module_available", return_value=True),
+            patch.object(
+                check_gpu,
+                "check_webui",
+                return_value={"url": "http://127.0.0.1:7860", "available": False, "model": None, "api_error": "stopped"},
+            ),
+            patch.object(
+                check_gpu,
+                "check_comfyui",
+                return_value={"backend": "comfyui", "available": True, "api_error": None},
+            ),
+            patch.dict(sys.modules, {"torch": fake_torch}),
+            redirect_stdout(output),
+        ):
+            exit_code = check_gpu.main()
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(report["comfyui_ready"])
+        self.assertFalse(report["webui_ready"])
         self.assertFalse(fake_cuda.called)
 
 

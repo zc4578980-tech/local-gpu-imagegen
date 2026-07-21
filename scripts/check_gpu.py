@@ -8,6 +8,9 @@ import sys
 import urllib.error
 import urllib.request
 
+from local_gpu_imagegen.backends.comfyui import ComfyUIAdapter
+from local_gpu_imagegen.errors import AssetEngineError
+
 
 def module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
@@ -31,6 +34,27 @@ def check_webui() -> dict[str, object]:
     return report
 
 
+def check_comfyui() -> dict[str, object]:
+    base_url = os.environ.get(
+        "LOCAL_GPU_IMAGEGEN_COMFYUI_URL",
+        "http://127.0.0.1:8188",
+    )
+    try:
+        adapter = ComfyUIAdapter(base_url, timeout=5)
+        return {
+            **adapter.probe(),
+            "url": adapter.base_url,
+            "available": True,
+            "api_error": None,
+        }
+    except AssetEngineError as error:
+        return {
+            "url": base_url,
+            "available": False,
+            "api_error": error.code,
+        }
+
+
 def main() -> int:
     report: dict[str, object] = {
         "python": {
@@ -49,9 +73,14 @@ def main() -> int:
             "devices": [],
         },
         "webui": check_webui(),
+        "comfyui": check_comfyui(),
     }
 
-    if report["python_packages"]["torch"] and not report["webui"]["available"]:
+    if (
+        report["python_packages"]["torch"]
+        and not report["webui"]["available"]
+        and not report["comfyui"]["available"]
+    ):
         import torch
 
         cuda_available = bool(torch.cuda.is_available())
@@ -76,9 +105,11 @@ def main() -> int:
 
     diffusers_ready = all(report["python_packages"].values()) and bool(report["cuda"]["available"])
     webui_ready = bool(report["webui"]["available"])
-    ready = diffusers_ready or webui_ready
+    comfyui_ready = bool(report["comfyui"]["available"])
+    ready = diffusers_ready or webui_ready or comfyui_ready
     report["diffusers_ready"] = diffusers_ready
     report["webui_ready"] = webui_ready
+    report["comfyui_ready"] = comfyui_ready
     report["ready"] = ready
     print(json.dumps(report, indent=2))
     return 0 if ready else 1
