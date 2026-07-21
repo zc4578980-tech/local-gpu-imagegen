@@ -24,6 +24,14 @@ def result(**changes: object) -> dict[str, object]:
         "seed": 42,
         "width": 256,
         "height": 256,
+        "model": "anything-v5.safetensors",
+        "endpoint_identity": "endpoint:test",
+        "model_identity_token": "model:test",
+        "identity_strength": "cryptographic",
+        "workflow_template_id": None,
+        "workflow_template_version": None,
+        "prompt_compiler_id": "sd15-tags-v1",
+        "prompt_compiler_version": 1,
     }
     value.update(changes)
     return value
@@ -45,16 +53,53 @@ class BackendContractTests(unittest.TestCase):
     def test_required_fields_are_the_normalized_cross_backend_contract(self) -> None:
         self.assertEqual(
             BACKEND_RESULT_REQUIRED,
-            {"ok", "path", "backend", "mode", "seed", "width", "height"},
+            {
+                "ok", "path", "backend", "mode", "seed", "width", "height", "model",
+                "endpoint_identity", "model_identity_token", "identity_strength",
+                "workflow_template_id", "workflow_template_version", "prompt_compiler_id",
+                "prompt_compiler_version",
+            },
         )
 
-    def test_accepts_webui_and_diffusers_results_and_returns_a_copy(self) -> None:
-        for backend in ("webui", "diffusers"):
+    def test_accepts_all_registered_backends_and_returns_a_copy(self) -> None:
+        for backend in ("webui", "diffusers", "comfyui"):
             with self.subTest(backend=backend):
-                original = result(backend=backend)
-                validated = validate(original, backend=backend)
+                changes: dict[str, object] = {"backend": backend}
+                if backend == "comfyui":
+                    changes.update({
+                        "workflow_template_id": "sd15-txt2img-v1",
+                        "workflow_template_version": 1,
+                        "workflow_job_id": "prompt-1",
+                    })
+                original = result(**changes)
+                validated = validate_backend_result(
+                    original,
+                    "txt2img",
+                    256,
+                    256,
+                    expected_seed=42,
+                    expected_backend=backend,
+                    available_backends=["webui", "diffusers", "comfyui"],
+                )
                 self.assertEqual(validated, original)
                 self.assertIsNot(validated, original)
+
+    def test_comfyui_requires_a_workflow_job_id(self) -> None:
+        with self.assertRaises(ArtifactError) as raised:
+            validate_backend_result(
+                result(
+                    backend="comfyui",
+                    workflow_template_id="sd15-txt2img-v1",
+                    workflow_template_version=1,
+                ),
+                "txt2img",
+                256,
+                256,
+                expected_seed=42,
+                expected_backend="comfyui",
+                available_backends=["comfyui"],
+            )
+        self.assertEqual(raised.exception.code, "invalid_backend_result")
 
     def test_rejects_invalid_results_with_stable_error_code(self) -> None:
         cases: dict[str, object] = {
@@ -101,18 +146,18 @@ class BackendContractTests(unittest.TestCase):
             validate(result(backend="diffusers"), backend="webui")
         self.assertEqual(raised.exception.code, "invalid_backend_result")
 
-    def test_auto_backend_accepts_only_advertised_supported_resolution(self) -> None:
+    def test_exact_backend_must_be_advertised(self) -> None:
         accepted = validate_backend_result(
             result(backend="diffusers"),
             "txt2img",
             256,
             256,
             expected_seed=42,
-            expected_backend="auto",
+            expected_backend="diffusers",
             available_backends=["diffusers"],
         )
         self.assertEqual(accepted["backend"], "diffusers")
-        for actual, advertised in (("webui", ["diffusers"]), ("comfyui", ["comfyui"])):
+        for actual, advertised in (("webui", ["diffusers"]), ("diffusers", ["webui"])):
             with self.subTest(actual=actual, advertised=advertised):
                 with self.assertRaises(ArtifactError) as raised:
                     validate_backend_result(
@@ -121,7 +166,7 @@ class BackendContractTests(unittest.TestCase):
                         256,
                         256,
                         expected_seed=42,
-                        expected_backend="auto",
+                        expected_backend=actual,
                         available_backends=advertised,
                     )
                 self.assertEqual(raised.exception.code, "invalid_backend_result")

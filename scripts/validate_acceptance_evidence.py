@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import stat
 import struct
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,7 @@ EVIDENCE_KEYS = {
     "style",
     "backend",
     "model",
+    "route",
     "environment",
     "started_at",
     "completed_at",
@@ -33,6 +36,29 @@ EVIDENCE_KEYS = {
     "decision_summary",
 }
 CORE_PACKAGE_FILES = {"evidence.json", "brief.json", "manifest.json", "mcp-final-result.json"}
+PUBLIC_ROUTE_KEYS = {
+    "authorization_scope",
+    "backend",
+    "model_id",
+    "sha256",
+    "identity_strength",
+    "workflow_template_id",
+    "workflow_template_version",
+    "prompt_compiler_id",
+    "prompt_compiler_version",
+}
+PRIVATE_EVIDENCE_KEYS = frozenset({
+    "backend_model_id",
+    "base_url",
+    "comfyui_url",
+    "endpoint_identity",
+    "identity_token",
+    "local_path",
+    "model_identity_token",
+    "model_record",
+    "route_token",
+    "webui_url",
+})
 
 
 class EvidenceError(Exception):
@@ -242,6 +268,10 @@ def _validate_package(
         raise EvidenceError("invalid_evidence_limitations", "Known limitations must be recorded.")
     _validate_host_environment(evidence)
     _validate_backend_model(evidence, authority)
+    route = _validate_public_route(evidence.get("route"), authority)
+    _reject_private_values(evidence)
+    _reject_private_values(manifest)
+    _reject_private_values(mcp_result)
 
     files = evidence.get("files")
     if not isinstance(files, dict) or set(files) != {"brief", "manifest", "mcp_final_result", "final"}:
@@ -274,6 +304,8 @@ def _validate_package(
             raise EvidenceError("profile_evidence_mismatch", f"Manifest {key} differs from the fixture.")
     if request.get("model_choice") != evidence["model"]["id"]:
         raise EvidenceError("model_evidence_mismatch", "Manifest model choice differs from evidence metadata.")
+    if request.get("backend") != route["backend"] or request.get("route") != route:
+        raise EvidenceError("route_authority_mismatch", "Manifest route differs from public evidence metadata.")
     if is_mock_marker(str(request.get("backend", ""))):
         raise EvidenceError("mock_evidence_forbidden", "Mock backend markers are forbidden in real evidence.")
 
@@ -299,6 +331,8 @@ def _validate_package(
                     raise EvidenceError("mock_evidence_forbidden", "Mock backend markers are forbidden in real evidence.")
             if "path" in backend_result:
                 referenced_files.add(_relative_file(package, backend_result["path"]))
+            if backend_result.get("backend") != route["backend"] or backend_result.get("model") != route["model_id"]:
+                raise EvidenceError("route_authority_mismatch", "Backend result differs from the public route.")
         referenced_files.add(_validate_artifact(package, round_value.get("image"), "image/png"))
         preview = round_value.get("preview")
         if isinstance(preview, dict):
@@ -441,6 +475,76 @@ def _validate_backend_model(evidence: dict[str, object], authority: dict[str, ob
     for key in ("sha256", "source", "license_id", "license_url"):
         if model.get(key) != approved.get(key):
             raise EvidenceError("model_authority_mismatch", "Observed model facts differ from approved authority.")
+
+
+def _validate_public_route(value: object, authority: dict[str, object]) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != PUBLIC_ROUTE_KEYS:
+        raise EvidenceError("route_authority_mismatch", "Public route shape is invalid.")
+    workflow_id = value.get("workflow_template_id")
+    workflow_version = value.get("workflow_template_version")
+    if (
+        value.get("authorization_scope") != "public_evidence"
+        or value.get("identity_strength") != "cryptographic"
+        or not _valid_sha(value.get("sha256"))
+        or not _nonempty(value.get("model_id"))
+        or not _nonempty(value.get("backend"))
+        or not _nonempty(value.get("prompt_compiler_id"))
+        or type(value.get("prompt_compiler_version")) is not int
+        or int(value["prompt_compiler_version"]) < 1
+        or ((workflow_id is None) != (workflow_version is None))
+        or (workflow_id is not None and (not _nonempty(workflow_id) or type(workflow_version) is not int))
+    ):
+        raise EvidenceError("route_authority_mismatch", "Public route values are invalid.")
+    backend = authority.get("backend")
+    approved = next(
+        (
+            item
+            for item in authority.get("models", [])
+            if isinstance(item, dict) and item.get("id") == value.get("model_id")
+        ),
+        None,
+    )
+    if (
+        not isinstance(backend, dict)
+        or value.get("backend") != backend.get("type")
+        or not isinstance(approved, dict)
+        or value.get("sha256") != approved.get("sha256")
+    ):
+        raise EvidenceError("route_authority_mismatch", "Public route differs from acceptance authority.")
+    return value
+
+
+def _reject_private_values(value: object) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if isinstance(child, str) and _is_absolute_path(child):
+                raise EvidenceError("absolute_evidence_path", "Public evidence contains an absolute path.")
+            if key in PRIVATE_EVIDENCE_KEYS or (isinstance(child, str) and _private_string(child)):
+                raise EvidenceError("private_evidence_value", "Public evidence contains a private runtime value.")
+            _reject_private_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            if isinstance(child, str) and _is_absolute_path(child):
+                raise EvidenceError("absolute_evidence_path", "Public evidence contains an absolute path.")
+            if isinstance(child, str) and _private_string(child):
+                raise EvidenceError("private_evidence_value", "Public evidence contains a private runtime value.")
+            _reject_private_values(child)
+
+
+def _private_string(value: str) -> bool:
+    try:
+        host = urlsplit(value).hostname
+    except ValueError:
+        return False
+    if host is None:
+        return False
+    if host.casefold() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return not address.is_global
 
 
 def _validate_host_environment(evidence: dict[str, object]) -> None:

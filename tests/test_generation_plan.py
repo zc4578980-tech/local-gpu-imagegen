@@ -22,11 +22,33 @@ class GenerationPlanTests(unittest.TestCase):
             "style": None,
             "intent": "A sailor looking over a calm sea.",
             "constraints": {"aspect_ratio": "1:1"},
-            "model_choice": None,
+            "model_choice": "local:test-model",
             "max_rounds": 2,
             "upscale_policy": "off",
-            "backend": "auto",
-            "available_backends": ["webui"],
+            "backend": "comfyui",
+            "available_backends": ["comfyui"],
+            "authorization_scope": "private",
+            "route_token": "route:test",
+            "endpoint_identity": "endpoint:test",
+            "model_identity_token": "model:test",
+            "identity_strength": "cryptographic",
+            "workflow_template_id": "sd15-txt2img-v1",
+            "workflow_template_version": 1,
+            "prompt_compiler_id": "sd15-tags-v1",
+            "prompt_compiler_version": 1,
+            "route": {
+                "authorization_scope": "private",
+                "route_token": "route:test",
+                "model_id": "local:test-model",
+                "backend": "comfyui",
+                "endpoint_identity": "endpoint:test",
+                "identity_token": "model:test",
+                "identity_strength": "cryptographic",
+                "workflow_template_id": "sd15-txt2img-v1",
+                "workflow_template_version": 1,
+                "prompt_compiler_id": "sd15-tags-v1",
+                "prompt_compiler_version": 1,
+            },
             "merged_profile": {"refine_mutable": ["denoise_strength"], "explore_mutable": ["seed"]},
         }
         self.plan = {
@@ -36,8 +58,17 @@ class GenerationPlanTests(unittest.TestCase):
             "positive_prompt": "a sailor looking over a calm sea, illustration",
             "negative_prompt": "",
             "constraints": {"aspect_ratio": "1:1"},
-            "model_choice": None,
-            "backend": "webui",
+            "model_choice": "local:test-model",
+            "backend": "comfyui",
+            "authorization_scope": "private",
+            "route_token": "route:test",
+            "endpoint_identity": "endpoint:test",
+            "model_identity_token": "model:test",
+            "identity_strength": "cryptographic",
+            "workflow_template_id": "sd15-txt2img-v1",
+            "workflow_template_version": 1,
+            "prompt_compiler_id": "sd15-tags-v1",
+            "prompt_compiler_version": 1,
             "parameters": {},
             "max_rounds": 2,
             "upscale_policy": "off",
@@ -46,7 +77,7 @@ class GenerationPlanTests(unittest.TestCase):
     def test_accepts_complete_plan_matching_confirmed_run(self) -> None:
         validated = validate_generation_plan(self.plan, self.run_request, "initial")
         self.assertEqual(validated["positive_prompt"], self.plan["positive_prompt"])
-        self.assertIsNone(validated["model_choice"])
+        self.assertEqual(validated["model_choice"], "local:test-model")
         self.assertEqual(validated["upscale_policy"], "off")
 
     def test_rejects_nested_mode_that_disagrees_with_authoritative_txt2img(self) -> None:
@@ -74,7 +105,7 @@ class GenerationPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "invalid_backend"):
             validate_generation_plan({**self.plan, "backend": []}, self.run_request, "initial")
 
-    def test_auto_backend_requires_an_advertised_resolution(self) -> None:
+    def test_confirmed_backend_must_remain_advertised(self) -> None:
         unavailable = {**self.run_request, "available_backends": []}
         with self.assertRaisesRegex(ValidationError, "invalid_backend"):
             validate_generation_plan(self.plan, unavailable, "initial")
@@ -87,7 +118,8 @@ class GenerationPlanTests(unittest.TestCase):
     def test_rejects_incomplete_confirmed_run_request(self) -> None:
         required = (
             "profile", "style", "intent", "constraints", "model_choice", "max_rounds",
-            "upscale_policy", "backend", "available_backends",
+            "upscale_policy", "backend", "available_backends", "authorization_scope",
+            "route_token", "route",
         )
         for field in required:
             with self.subTest(field=field):
@@ -99,9 +131,9 @@ class GenerationPlanTests(unittest.TestCase):
         invalid = (
             {**self.run_request, "intent": "   "},
             {**self.run_request, "model_choice": 42},
-            {**self.run_request, "backend": "comfyui"},
+            {**self.run_request, "backend": "auto"},
             {**self.run_request, "upscale_policy": "sometimes"},
-            {**self.run_request, "available_backends": ["comfyui"]},
+            {**self.run_request, "available_backends": ["unknown"]},
         )
         for request in invalid:
             with self.subTest(request=request):

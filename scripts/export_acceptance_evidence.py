@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
 import shutil
 import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from urllib.parse import urlsplit
 
 from validate_acceptance_evidence import (
     EvidenceError,
@@ -29,6 +31,29 @@ METADATA_KEYS = {
     "known_limitations",
     "decision_summary",
 }
+PUBLIC_ROUTE_KEYS = (
+    "authorization_scope",
+    "backend",
+    "model_id",
+    "sha256",
+    "identity_strength",
+    "workflow_template_id",
+    "workflow_template_version",
+    "prompt_compiler_id",
+    "prompt_compiler_version",
+)
+PRIVATE_EVIDENCE_KEYS = frozenset({
+    "backend_model_id",
+    "base_url",
+    "comfyui_url",
+    "endpoint_identity",
+    "identity_token",
+    "local_path",
+    "model_identity_token",
+    "model_record",
+    "route_token",
+    "webui_url",
+})
 
 
 class EvidenceExportError(Exception):
@@ -76,7 +101,7 @@ def export_run(
         authority = validate_authority(authority_path, Path(brief_path))
     except EvidenceError as error:
         raise EvidenceExportError(error.code, str(error)) from error
-    _match_authority(manifest, metadata, authority)
+    public_route = _match_authority(manifest, metadata, authority)
 
     mcp_result_source = source_root / "mcp-final-result.json"
     if not mcp_result_source.is_file() or _link_like(mcp_result_source):
@@ -99,6 +124,8 @@ def export_run(
         _copy_manifest_artifacts(source_root, temporary, exported_manifest, copied, source_hashes)
         exported_mcp_result = copy.deepcopy(mcp_result)
         _rewrite_result_paths(source_root, temporary, exported_mcp_result, copied, source_hashes)
+        _sanitize_public_document(exported_manifest, public_route)
+        _sanitize_public_document(exported_mcp_result, public_route)
         _reject_absolute_strings(exported_manifest)
         _reject_absolute_strings(exported_mcp_result)
 
@@ -117,7 +144,7 @@ def export_run(
                 "Child run export requires --parent-evidence.",
             )
 
-        evidence = _build_evidence(exported_manifest, brief, metadata)
+        evidence = _build_evidence(exported_manifest, brief, metadata, public_route)
         _write_json(temporary / "evidence.json", evidence)
         parent_package = Path(parent_evidence_path).parent if parent_evidence_path is not None else None
         try:
@@ -311,6 +338,7 @@ def _build_evidence(
     manifest: dict[str, object],
     brief: dict[str, object],
     metadata: dict[str, object],
+    public_route: dict[str, object],
 ) -> dict[str, object]:
     attempts = manifest.get("attempts")
     started_at = next(
@@ -330,6 +358,7 @@ def _build_evidence(
         "style": brief["style"],
         "backend": copy.deepcopy(metadata["backend"]),
         "model": copy.deepcopy(metadata["model"]),
+        "route": copy.deepcopy(public_route),
         "environment": copy.deepcopy(metadata["environment"]),
         "started_at": started_at,
         "completed_at": final["finalized_at"],
@@ -350,7 +379,7 @@ def _match_authority(
     manifest: dict[str, object],
     metadata: dict[str, object],
     authority: dict[str, object],
-) -> None:
+) -> dict[str, object]:
     backend = metadata.get("backend")
     approved_backend = authority.get("backend")
     if not isinstance(backend, dict) or not isinstance(approved_backend, dict):
@@ -373,6 +402,82 @@ def _match_authority(
     request = manifest.get("request")
     if not isinstance(request, dict) or request.get("model_choice") != model.get("id"):
         raise EvidenceExportError("model_authority_mismatch", "Manifest model differs from observed metadata.")
+    route = request.get("route")
+    if not isinstance(route, dict):
+        raise EvidenceExportError("route_authority_mismatch", "Manifest route is missing.")
+    if route.get("authorization_scope") != "public_evidence" or route.get("identity_strength") != "cryptographic":
+        raise EvidenceExportError(
+            "public_model_evidence_forbidden",
+            "Public evidence requires a cryptographic public-evidence route.",
+        )
+    if (
+        route.get("backend") != backend.get("type")
+        or route.get("backend") != approved_backend.get("type")
+        or route.get("model_id") != model.get("id")
+        or route.get("sha256") != model.get("sha256")
+        or route.get("sha256") != approved.get("sha256")
+    ):
+        raise EvidenceExportError("route_authority_mismatch", "Manifest route differs from acceptance authority.")
+    public_route = {key: copy.deepcopy(route.get(key)) for key in PUBLIC_ROUTE_KEYS}
+    _validate_public_route_shape(public_route)
+    return public_route
+
+
+def _validate_public_route_shape(route: dict[str, object]) -> None:
+    workflow_id = route.get("workflow_template_id")
+    workflow_version = route.get("workflow_template_version")
+    if (
+        route.get("authorization_scope") != "public_evidence"
+        or route.get("identity_strength") != "cryptographic"
+        or not isinstance(route.get("backend"), str)
+        or not isinstance(route.get("model_id"), str)
+        or not isinstance(route.get("sha256"), str)
+        or len(str(route["sha256"])) != 64
+        or not isinstance(route.get("prompt_compiler_id"), str)
+        or type(route.get("prompt_compiler_version")) is not int
+        or int(route["prompt_compiler_version"]) < 1
+        or ((workflow_id is None) != (workflow_version is None))
+        or (workflow_id is not None and (not isinstance(workflow_id, str) or type(workflow_version) is not int))
+    ):
+        raise EvidenceExportError("route_authority_mismatch", "Manifest route is incomplete or invalid.")
+
+
+def _sanitize_public_document(value: object, public_route: dict[str, object], parent_key: str | None = None) -> None:
+    if isinstance(value, dict):
+        for key in list(value):
+            child = value[key]
+            if key in PRIVATE_EVIDENCE_KEYS or (isinstance(child, str) and _private_string(child)):
+                del value[key]
+                continue
+            if key == "route" and isinstance(child, dict):
+                value[key] = copy.deepcopy(public_route)
+                continue
+            _sanitize_public_document(child, public_route, key)
+        if parent_key == "backend_result":
+            value["model"] = public_route["model_id"]
+    elif isinstance(value, list):
+        value[:] = [child for child in value if not (isinstance(child, str) and _private_string(child))]
+        for child in value:
+            _sanitize_public_document(child, public_route, parent_key)
+
+
+def _private_string(value: str) -> bool:
+    if Path(value).is_absolute() or PureWindowsPath(value).is_absolute():
+        return True
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+    except ValueError:
+        return False
+    if host is None:
+        return False
+    if host.casefold() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return not address.is_global
 
 
 def _reject_mock_manifest(manifest: dict[str, object]) -> None:

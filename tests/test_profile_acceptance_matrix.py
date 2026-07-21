@@ -15,7 +15,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from local_gpu_imagegen.artifacts import sha256_file  # noqa: E402
 from local_gpu_imagegen.engine import AssetRunEngine  # noqa: E402
 from local_gpu_imagegen.profile_registry import ProfileRegistry  # noqa: E402
+from local_gpu_imagegen.prompt_compilers import PromptCompilerRegistry  # noqa: E402
 from local_gpu_imagegen.run_store import RunStore  # noqa: E402
+from tests.test_asset_run_engine import FakeCatalog, FakeRouter  # noqa: E402
 from tests.test_anime_vertical_slice import (  # noqa: E402
     FakeBackendRunner,
     FakePostprocessor,
@@ -46,12 +48,17 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
 
     def _engine(self, fixture_id: str) -> tuple[AssetRunEngine, FakeBackendRunner]:
         runner = FakeBackendRunner()
+        catalog = FakeCatalog()
+        router = FakeRouter(catalog)
         engine = AssetRunEngine(
             ProfileRegistry(self.registry_root),
             RunStore(self.temporary_root / fixture_id),
             runner,
             lambda: {"available_backends": ["webui"], "cuda": True},
             FakePostprocessor(available=False),
+            catalog=catalog,
+            router=router,
+            compilers=PromptCompilerRegistry(),
         )
         return engine, runner
 
@@ -66,7 +73,7 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
         }
 
     def _start(self, engine: AssetRunEngine, brief: dict[str, object], max_rounds: int) -> str:
-        result = engine.start_run({
+        arguments: dict[str, object] = {
             "profile": brief["profile"],
             "style": brief["style"],
             "subtype": brief["subtype"],
@@ -76,7 +83,11 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
             "backend": "webui",
             "upscale_policy": "off",
             "max_rounds": max_rounds,
-        })
+            "authorization_scope": "private",
+        }
+        route = engine.router.issue(arguments)
+        arguments["route_token"] = route["route_token"]
+        result = engine.start_run(arguments)
         return str(result["run_id"])
 
     def _plan(
@@ -85,6 +96,7 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
         *,
         max_rounds: int,
         parameters: dict[str, object],
+        route: dict[str, object],
     ) -> dict[str, object]:
         return {
             "profile": brief["profile"],
@@ -95,6 +107,15 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
             "constraints": self._constraints(brief),
             "model_choice": MODEL_ID,
             "backend": "webui",
+            "authorization_scope": route["authorization_scope"],
+            "route_token": route["route_token"],
+            "endpoint_identity": route["endpoint_identity"],
+            "model_identity_token": route["identity_token"],
+            "identity_strength": route["identity_strength"],
+            "workflow_template_id": route["workflow_template_id"],
+            "workflow_template_version": route["workflow_template_version"],
+            "prompt_compiler_id": route["prompt_compiler_id"],
+            "prompt_compiler_version": route["prompt_compiler_version"],
             "parameters": parameters,
             "max_rounds": max_rounds,
             "upscale_policy": "off",
@@ -109,6 +130,7 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
         edit_mode: str,
         mask_id: str | None = None,
     ) -> tuple[dict[str, object], object]:
+        route = engine.get_run({"run_id": run_id})["request"]["route"]
         arguments: dict[str, object] = {
             "run_id": run_id,
             "idempotency_key": f"{brief['id']}-{edit_mode}-1",
@@ -116,7 +138,12 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
             "edit_mode": edit_mode,
             "seed": 42,
             "change_summary": "Create the contract candidate.",
-            "plan": self._plan(brief, max_rounds=1 if edit_mode != "txt2img" else 2, parameters={}),
+            "plan": self._plan(
+                brief,
+                max_rounds=1 if edit_mode != "txt2img" else 2,
+                parameters={},
+                route=route,
+            ),
         }
         if mask_id is not None:
             arguments["mask_id"] = mask_id

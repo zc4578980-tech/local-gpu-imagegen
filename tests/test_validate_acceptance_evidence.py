@@ -42,6 +42,22 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(EvidenceError, "mock_evidence_forbidden"):
             validate_evidence(root, FIXTURE_PATH, strict=True)
 
+    def test_rejects_route_that_does_not_match_acceptance_authority(self) -> None:
+        root = build_complete_matrix(self.temp_path)
+        edit_json(root / "runs" / "ui-hero" / "evidence.json", ["route", "sha256"], "0" * 64)
+        with self.assertRaisesRegex(EvidenceError, "route_authority_mismatch"):
+            validate_evidence(root, FIXTURE_PATH, strict=True)
+
+    def test_rejects_private_endpoint_fields_in_exported_manifest(self) -> None:
+        root = build_complete_matrix(self.temp_path)
+        edit_json(
+            root / "runs" / "ui-hero" / "manifest.json",
+            ["request", "endpoint_identity"],
+            "http://192.168.1.20:7860",
+        )
+        with self.assertRaisesRegex(EvidenceError, "private_evidence_value"):
+            validate_evidence(root, FIXTURE_PATH, strict=True)
+
     def test_rejects_absolute_publishable_path(self) -> None:
         root = build_complete_matrix(self.temp_path)
         edit_json(root / "runs" / "ui-hero" / "evidence.json", ["files", "final"], r"D:\private\final.png")

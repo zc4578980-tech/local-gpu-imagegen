@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
-import json
 import os
 import secrets
 import shutil
@@ -28,7 +27,7 @@ from .revisions import RevisionService
 from .run_store import AttemptHandle, RunStore
 
 
-BackendRunner = Callable[[list[str]], tuple[int, str, str]]
+BackendRunner = Callable[[dict[str, object]], dict[str, object]]
 CapabilityProvider = Callable[[], dict[str, object]]
 
 
@@ -42,16 +41,25 @@ class AssetRunEngine:
         postprocessor: RealEsrganAdapter | None = None,
         revisions: RevisionService | None = None,
         masks: MaskService | None = None,
+        *,
+        catalog: object,
+        router: object,
+        compilers: object,
+        workflows: object | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
         self.backend_runner = backend_runner
         self.capability_provider = capability_provider
+        self.catalog = catalog
+        self.router = router
+        self.compilers = compilers
+        self.workflows = workflows if workflows is not None else getattr(catalog, "workflows", None)
         self.postprocessor = postprocessor if postprocessor is not None else RealEsrganAdapter.from_environment()
         self.revisions = revisions if revisions is not None else RevisionService(store)
         self.masks = masks if masks is not None else MaskService(store)
 
-    def list_profiles(self) -> dict[str, object]:
+    def list_profiles(self, authorization_scope: str = "private") -> dict[str, object]:
         capabilities = copy.deepcopy(self.capability_provider())
         models = sorted(self.postprocessor.available_models())
         capabilities["postprocessors"] = {
@@ -59,6 +67,10 @@ class AssetRunEngine:
         }
         return {
             **self.registry.list_catalog(),
+            "models": {
+                str(model["id"]): model
+                for model in self.catalog.list_models(authorization_scope)
+            },
             "capabilities": capabilities,
         }
 
@@ -70,10 +82,11 @@ class AssetRunEngine:
         _required(arguments, "intent", str)
         _required(arguments, "backend", str)
         _required(arguments, "upscale_policy", str)
+        authorization_scope = _required(arguments, "authorization_scope", str)
+        route_token = _required(arguments, "route_token", str)
         model_choice = _required(arguments, "model_choice", str)
         if not model_choice.strip():
             raise ValidationError("invalid_model_choice", "model_choice must be a non-empty registered model ID.")
-        model_record = self.registry.validate_model_choice(model_choice)
         max_rounds = _optional(arguments, "max_rounds", int, 3, reject_bool=True)
         if not 1 <= max_rounds <= 3:
             raise ValidationError("invalid_round_budget", "max_rounds must be an integer from 1 to 3.")
@@ -82,6 +95,11 @@ class AssetRunEngine:
         if not isinstance(capabilities, dict) or not isinstance(capabilities.get("available_backends"), list):
             raise ValidationError("invalid_capabilities", "Capability provider must advertise available_backends.")
         available_backends = capabilities["available_backends"]
+        route = self.router.confirm(route_token, model_choice)
+        if not isinstance(route, dict):
+            raise ValidationError("invalid_route", "Confirmed model route must be an object.")
+        _validate_start_route(route, arguments, merged, authorization_scope)
+        model_record = self.catalog.resolve(model_choice, authorization_scope)
         request = {
             **copy.deepcopy(arguments),
             "merged_profile": merged,
@@ -89,6 +107,14 @@ class AssetRunEngine:
             "model_choice": model_choice,
             "model_record": copy.deepcopy(model_record),
             "available_backends": copy.deepcopy(available_backends),
+            "route": copy.deepcopy(route),
+            "endpoint_identity": route.get("endpoint_identity"),
+            "model_identity_token": route.get("identity_token"),
+            "identity_strength": route.get("identity_strength"),
+            "workflow_template_id": route.get("workflow_template_id"),
+            "workflow_template_version": route.get("workflow_template_version"),
+            "prompt_compiler_id": route.get("prompt_compiler_id"),
+            "prompt_compiler_version": route.get("prompt_compiler_version"),
         }
         request = validate_confirmed_run_request(request)
         manifest = self.store.create(request)
@@ -142,6 +168,9 @@ class AssetRunEngine:
         request = manifest.get("request")
         if not isinstance(request, dict):
             raise ArtifactError("corrupt_manifest", "Manifest request must be an object.")
+        route = request.get("route")
+        if not isinstance(route, dict):
+            raise ArtifactError("corrupt_manifest", "Manifest route must be an object.")
         run_root = self._run_root(run_id)
         mode, execution_parameters = self._revision_execution(
             manifest,
@@ -152,6 +181,19 @@ class AssetRunEngine:
         )
         plan = validate_generation_plan(plan_value, request, action, edit_mode)
         width, height = _dimensions(plan)
+        current_model = self.catalog.verify_locked_route(route)
+        if not isinstance(current_model, dict):
+            raise ArtifactError("invalid_model_identity", "Verified model identity must be an object.")
+        compiled_prompt = self.compilers.compile(
+            str(route.get("prompt_compiler_id")),
+            str(plan["positive_prompt"]),
+            str(plan["negative_prompt"]),
+        )
+        if compiled_prompt.get("compiler_version") != route.get("prompt_compiler_version"):
+            raise ConflictError(
+                "prompt_compiler_drifted",
+                "Confirmed prompt compiler version changed before generation.",
+            )
         execution_plan = copy.deepcopy(plan)
         execution_plan_parameters = execution_plan.get("parameters")
         assert isinstance(execution_plan_parameters, dict)
@@ -164,6 +206,8 @@ class AssetRunEngine:
             "seed": seed,
             "plan": plan,
             "change_summary": change_summary.strip(),
+            "route": copy.deepcopy(route),
+            "compiled_prompt": copy.deepcopy(compiled_prompt),
         }
         if mask_id is not None:
             attempt_request["mask_id"] = mask_id
@@ -180,25 +224,29 @@ class AssetRunEngine:
                 backend_result = _existing_backend_result(handle, mode, width, height, seed, plan, request)
             else:
                 pending_path.unlink(missing_ok=True)
-                command = _backend_arguments(
+                backend_request = _backend_request(
                     execution_plan,
+                    compiled_prompt,
+                    route,
+                    current_model,
+                    self.workflows,
+                    idempotency_key,
                     seed,
-                    run_root,
-                    pending_path.name,
+                    pending_path,
                     width,
                     height,
                     mode,
-                    request.get("model_record"),
                 )
-                return_code, stdout, stderr = self.backend_runner(command)
-                if return_code != 0:
-                    raise AssetEngineError(
-                        "backend_command_failed",
-                        "Image backend command failed.",
-                        "backend",
-                        {"exit_code": return_code, "stderr": stderr},
-                    )
-                backend_result = _parse_backend_stdout(stdout, mode, width, height, seed, plan, request)
+                backend_result = validate_backend_result(
+                    self.backend_runner(backend_request),
+                    mode,
+                    width,
+                    height,
+                    expected_seed=seed,
+                    expected_backend=str(route["backend"]),
+                    available_backends=request["available_backends"],
+                )
+                _validate_locked_backend_result(backend_result, route, current_model)
                 backend_path = Path(str(backend_result["path"]))
                 if not backend_path.is_absolute():
                     backend_path = run_root / backend_path
@@ -233,6 +281,12 @@ class AssetRunEngine:
 
         if warnings:
             completed = self._append_warnings(run_id, warnings)
+        self.catalog.record_observation(
+            str(route["model_id"]),
+            str(route["identity_token"]),
+            mode,
+            run_id,
+        )
         round_value = _round_by_number(completed, round_number)
         return _generation_result(completed, round_value, final_path), preview
 
@@ -849,78 +903,127 @@ def _validated_revision_source(manifest: dict[str, object], run_root: Path) -> P
     return source_path
 
 
-def _backend_arguments(
+def _validate_start_route(
+    route: dict[str, object],
+    arguments: dict[str, object],
+    merged: dict[str, object],
+    authorization_scope: str,
+) -> None:
+    constraints = merged.get("constraints")
+    if not isinstance(constraints, dict):
+        raise ValidationError("invalid_profile_document", "Merged profile constraints are missing.")
+    expected = {
+        "route_token": arguments.get("route_token"),
+        "model_id": arguments.get("model_choice"),
+        "authorization_scope": authorization_scope,
+        "operation": "txt2img",
+        "profile": arguments.get("profile"),
+        "style": arguments.get("style"),
+        "width": constraints.get("width"),
+        "height": constraints.get("height"),
+        "backend": arguments.get("backend"),
+    }
+    for field, value in expected.items():
+        if route.get(field) != value:
+            raise ConflictError(
+                "route_confirmation_mismatch",
+                "Confirmed route does not match the displayed run boundary.",
+                {"field": field},
+            )
+
+
+def _backend_request(
     plan: dict[str, object],
+    compiled_prompt: dict[str, object],
+    route: dict[str, object],
+    model: dict[str, object],
+    workflows: object | None,
+    idempotency_key: str,
     seed: int,
-    output_dir: Path,
-    filename: str,
+    output_path: Path,
     width: int,
     height: int,
     mode: str,
-    model_record: object,
-) -> list[str]:
+) -> dict[str, object]:
     parameters = plan["parameters"]
     assert isinstance(parameters, dict)
-    values: list[tuple[str, object]] = [
-        ("--prompt", plan["positive_prompt"]),
-        ("--negative-prompt", plan["negative_prompt"]),
-        ("--backend", plan["backend"]),
-        ("--mode", mode),
-        ("--width", width),
-        ("--height", height),
-        ("--seed", seed),
-        ("--output-dir", str(output_dir)),
-        ("--filename", filename),
-    ]
-    model_choice = plan["model_choice"]
-    if plan["backend"] == "webui" and isinstance(model_record, dict):
-        discovery_names = model_record.get("local_discovery_names")
-        if isinstance(discovery_names, list) and discovery_names and isinstance(discovery_names[0], str):
-            model_choice = discovery_names[0]
-    if model_choice is not None:
-        values.insert(2, ("--model", model_choice))
-    mappings = {
-        "steps": "--steps",
-        "guidance_scale": "--guidance-scale",
-        "scheduler": "--scheduler",
-        "input_image": "--input-image",
-        "mask_image": "--mask-image",
-        "strength": "--strength",
+    recommended = model.get("recommended")
+    if not isinstance(recommended, dict):
+        recommended = {}
+    steps = parameters.get("steps", recommended.get("steps", 20))
+    guidance = parameters.get("guidance_scale", recommended.get("guidance", 7.0))
+    sampler = parameters.get("sampler", recommended.get("sampler") or "Euler a")
+    scheduler = parameters.get("scheduler", recommended.get("scheduler") or "normal")
+    request: dict[str, object] = {
+        "backend": route["backend"],
+        "idempotency_key": idempotency_key,
+        "model": copy.deepcopy(model),
+        "mode": mode,
+        "positive_prompt": compiled_prompt["positive_prompt"],
+        "negative_prompt": compiled_prompt["negative_prompt"],
+        "width": width,
+        "height": height,
+        "steps": steps,
+        "guidance_scale": guidance,
+        "sampler": sampler,
+        "scheduler": scheduler,
+        "seed": seed,
+        "source_path": parameters.get("input_image"),
+        "mask_path": parameters.get("mask_image"),
+        "strength": parameters.get("strength"),
+        "output_path": str(output_path),
+        "prompt_compiler_id": route["prompt_compiler_id"],
+        "prompt_compiler_version": route["prompt_compiler_version"],
     }
-    for name, flag in mappings.items():
-        if name in parameters and parameters[name] is not None:
-            values.append((flag, parameters[name]))
-    command: list[str] = []
-    for flag, value in values:
-        command.extend((flag, str(value)))
-    return command
+    if route["backend"] == "comfyui":
+        template_id = route.get("workflow_template_id")
+        if workflows is None or not isinstance(template_id, str):
+            raise ArtifactError(
+                "invalid_workflow_template",
+                "Confirmed ComfyUI workflow is unavailable.",
+            )
+        request["workflow"] = workflows.resolve(
+            template_id,
+            str(model.get("backend_model_id")),
+            mode,
+            {
+                "positive_prompt": request["positive_prompt"],
+                "negative_prompt": request["negative_prompt"],
+                "seed": seed,
+                "steps": steps,
+                "guidance_scale": guidance,
+                "sampler": sampler,
+                "scheduler": scheduler,
+                "width": width,
+                "height": height,
+            },
+        )
+    return request
 
 
-def _parse_backend_stdout(
-    stdout: str,
-    mode: str,
-    width: int,
-    height: int,
-    seed: int,
-    plan: dict[str, object],
-    request: dict[str, object],
-) -> dict[str, object]:
-    try:
-        value = json.loads(stdout)
-    except (json.JSONDecodeError, TypeError) as error:
-        raise ArtifactError("invalid_backend_result", "Backend stdout must be one JSON result object.") from error
-    available = request.get("available_backends")
-    if not isinstance(available, list):
-        raise ArtifactError("corrupt_manifest", "Confirmed available_backends must be an array.")
-    return validate_backend_result(
-        value,
-        mode,
-        width,
-        height,
-        expected_seed=seed,
-        expected_backend=str(plan["backend"]),
-        available_backends=available,
-    )
+def _validate_locked_backend_result(
+    result: dict[str, object],
+    route: dict[str, object],
+    model: dict[str, object],
+) -> None:
+    expected = {
+        "backend": route.get("backend"),
+        "endpoint_identity": route.get("endpoint_identity"),
+        "model_identity_token": route.get("identity_token"),
+        "identity_strength": route.get("identity_strength"),
+        "workflow_template_id": route.get("workflow_template_id"),
+        "workflow_template_version": route.get("workflow_template_version"),
+        "prompt_compiler_id": route.get("prompt_compiler_id"),
+        "prompt_compiler_version": route.get("prompt_compiler_version"),
+        "model": model.get("backend_model_id"),
+    }
+    for field, value in expected.items():
+        if result.get(field) != value:
+            raise ArtifactError(
+                "invalid_backend_result",
+                "Backend result changed the confirmed model route.",
+                {"field": field},
+            )
 
 
 def _existing_image(handle: AttemptHandle) -> dict[str, object]:
@@ -945,7 +1048,7 @@ def _existing_backend_result(
     available = request.get("available_backends")
     if not isinstance(available, list):
         raise ArtifactError("corrupt_manifest", "Confirmed available_backends must be an array.")
-    return validate_backend_result(
+    result = validate_backend_result(
         value,
         mode,
         width,
@@ -954,6 +1057,12 @@ def _existing_backend_result(
         expected_backend=str(plan["backend"]),
         available_backends=available,
     )
+    route = request.get("route")
+    model = request.get("model_record")
+    if not isinstance(route, dict) or not isinstance(model, dict):
+        raise ArtifactError("corrupt_manifest", "Confirmed model route is missing.")
+    _validate_locked_backend_result(result, route, model)
+    return result
 
 
 def _backend_round_fields(result: dict[str, object]) -> dict[str, object]:
@@ -984,13 +1093,15 @@ def _registry_metadata(request: dict[str, object]) -> dict[str, object]:
             raise ArtifactError("corrupt_manifest", "Registry identity metadata is invalid.")
         return {"id": identifier, "schema_version": schema_version}
 
-    model_fields = ("id", "source", "license_id", "license_url", "license_status")
-    if any(field not in model for field in model_fields):
+    if not isinstance(model.get("id"), str) or not isinstance(model.get("source"), str):
         raise ArtifactError("corrupt_manifest", "Run model metadata is incomplete.")
     return {
         "profile": identity(profile),
         "style": identity(style) if isinstance(style, dict) else None,
-        "model": {field: copy.deepcopy(model[field]) for field in model_fields},
+        "model": {
+            field: copy.deepcopy(model.get(field))
+            for field in ("id", "source", "license_id", "license_url", "license_status")
+        },
     }
 
 

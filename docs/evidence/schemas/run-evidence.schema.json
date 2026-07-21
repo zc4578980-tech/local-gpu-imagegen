@@ -15,13 +15,29 @@
     "model": {"type": "object"},
     "profile": {"minLength": 1, "type": "string"},
     "quality_status": {"const": "accepted"},
+    "route": {
+      "additionalProperties": false,
+      "properties": {
+        "authorization_scope": {"const": "public_evidence"},
+        "backend": {"enum": ["webui", "diffusers", "comfyui"], "type": "string"},
+        "identity_strength": {"const": "cryptographic"},
+        "model_id": {"minLength": 1, "type": "string"},
+        "prompt_compiler_id": {"minLength": 1, "type": "string"},
+        "prompt_compiler_version": {"minimum": 1, "type": "integer"},
+        "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "workflow_template_id": {"type": ["string", "null"]},
+        "workflow_template_version": {"type": ["integer", "null"]}
+      },
+      "required": ["authorization_scope", "backend", "model_id", "sha256", "identity_strength", "workflow_template_id", "workflow_template_version", "prompt_compiler_id", "prompt_compiler_version"],
+      "type": "object"
+    },
     "run_id": {"minLength": 1, "type": "string"},
     "schema_version": {"const": 1},
     "selected_round": {"maximum": 3, "minimum": 1, "type": "integer"},
     "started_at": {"format": "date-time", "type": "string"},
     "style": {"type": ["string", "null"]}
   },
-  "required": ["schema_version", "evidence_class", "brief_id", "run_id", "host", "profile", "style", "backend", "model", "environment", "started_at", "completed_at", "files", "selected_round", "quality_status", "known_limitations", "decision_summary"],
+  "required": ["schema_version", "evidence_class", "brief_id", "run_id", "host", "profile", "style", "backend", "model", "route", "environment", "started_at", "completed_at", "files", "selected_round", "quality_status", "known_limitations", "decision_summary"],
   "title": "Local GPU Imagegen run evidence",
   "type": "object"
 }

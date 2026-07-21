@@ -110,6 +110,12 @@ class RevisionServiceTests(unittest.TestCase):
             "available_backends": ["webui"],
             "upscale_policy": "auto",
             "max_rounds": 3,
+            "route": {
+                "route_token": "route:test",
+                "model_id": "test/approved-anime",
+                "backend": "webui",
+                "identity_token": "model:test",
+            },
             "merged_profile": {
                 "rubric": {"intent_adherence": {"weight": 1, "critical": True}},
                 "hard_failures": [],
@@ -182,6 +188,7 @@ class RevisionServiceTests(unittest.TestCase):
             "image_sha256": self.source_hash,
         })
         self.assertEqual(child["request"]["max_rounds"], 2)
+        self.assertEqual(child["request"]["route"], self.parent["request"]["route"])
         self.assertEqual(child["revision"]["contract"], VALID_CONTRACT)
         self.assertEqual(child["revision"]["edit_mode"], "img2img")
         self.assertEqual(child["revision"]["denoising_strength"], 0.25)
@@ -206,6 +213,14 @@ class RevisionServiceTests(unittest.TestCase):
         for updates, error_code in cases:
             with self.subTest(updates=updates), self.assertRaisesRegex(ValidationError, error_code):
                 self.service.branch(self.branch_arguments(**updates))
+
+    def test_branch_rejects_route_overrides(self) -> None:
+        for field in ("route", "route_token", "model_choice", "backend"):
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValidationError,
+                "invalid_revision_arguments",
+            ):
+                self.service.branch(self.branch_arguments(**{field: "override"}))
 
     def test_branch_rejects_changed_parent_image_without_leaving_child(self) -> None:
         self.source_path.write_bytes(_png_bytes() + b"changed")

@@ -291,6 +291,9 @@ class RunStore:
                 "status": "running",
                 "started_at": utc_now(),
             }
+            for field in ("route", "compiled_prompt"):
+                if field in normalized_request:
+                    active[field] = copy.deepcopy(normalized_request[field])
             if "mask_id" in normalized_request:
                 active["mask_id"] = normalized_request["mask_id"]
             status = "started"
@@ -351,6 +354,9 @@ class RunStore:
                 "generation_plan": copy.deepcopy(active["generation_plan"]),
                 "change_summary": active["change_summary"],
             })
+            for field in ("route", "compiled_prompt"):
+                if field in active:
+                    round_value[field] = copy.deepcopy(active[field])
             if "mask_id" in active:
                 round_value["mask_id"] = active["mask_id"]
             rounds.append(round_value)
@@ -918,6 +924,15 @@ class RunStore:
             "generation_plan": copy.deepcopy(plan),
             "change_summary": change_summary.strip(),
         }
+        for field in ("route", "compiled_prompt"):
+            if field in request:
+                value = request[field]
+                if not isinstance(value, dict):
+                    raise ValidationError(
+                        "invalid_attempt_request",
+                        f"Attempt {field} must be an object.",
+                    )
+                normalized[field] = copy.deepcopy(value)
         if "mask_id" in request:
             mask_id = request["mask_id"]
             if not isinstance(mask_id, str) or not mask_id.strip():

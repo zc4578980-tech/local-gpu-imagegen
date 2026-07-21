@@ -22,8 +22,10 @@ from local_gpu_imagegen.artifacts import validate_png  # noqa: E402
 from local_gpu_imagegen.engine import AssetRunEngine  # noqa: E402
 from local_gpu_imagegen.errors import AssetEngineError  # noqa: E402
 from local_gpu_imagegen.preview import MAX_PREVIEW_BYTES  # noqa: E402
-from local_gpu_imagegen.profile_registry import MODEL_REQUIRED, ProfileRegistry  # noqa: E402
+from local_gpu_imagegen.profile_registry import ProfileRegistry  # noqa: E402
+from local_gpu_imagegen.prompt_compilers import PromptCompilerRegistry  # noqa: E402
 from local_gpu_imagegen.run_store import RunStore  # noqa: E402
+from tests.test_asset_run_engine import FakeCatalog, FakeRouter  # noqa: E402
 
 
 MODEL_ID = "test/approved-anime"
@@ -78,28 +80,34 @@ def _png_hash(width: int, height: int, pixel: bytes) -> str:
 
 class FakeBackendRunner:
     def __init__(self) -> None:
-        self.calls: list[list[str]] = []
+        self.calls: list[dict[str, object]] = []
 
-    def __call__(self, arguments: list[str]) -> tuple[int, str, str]:
-        self.calls.append(list(arguments))
-        output = (
-            Path(arguments[arguments.index("--output-dir") + 1])
-            / arguments[arguments.index("--filename") + 1]
-        )
-        width = int(arguments[arguments.index("--width") + 1])
-        height = int(arguments[arguments.index("--height") + 1])
+    def __call__(self, arguments: dict[str, object]) -> dict[str, object]:
+        self.calls.append(copy.deepcopy(arguments))
+        output = Path(str(arguments["output_path"]))
+        width = int(arguments["width"])
+        height = int(arguments["height"])
         output.write_bytes(_png_bytes(width, height, ROUND_PIXELS[len(self.calls) - 1]))
+        model = arguments["model"]
+        assert isinstance(model, dict)
         result = {
             "ok": True,
             "path": str(output),
-            "backend": arguments[arguments.index("--backend") + 1],
-            "mode": arguments[arguments.index("--mode") + 1],
-            "seed": int(arguments[arguments.index("--seed") + 1]),
+            "backend": arguments["backend"],
+            "mode": arguments["mode"],
+            "seed": arguments["seed"],
             "width": width,
             "height": height,
-            "model": arguments[arguments.index("--model") + 1],
+            "model": model["backend_model_id"],
+            "endpoint_identity": model["endpoint_identity"],
+            "model_identity_token": model["identity_token"],
+            "identity_strength": model["identity_strength"],
+            "workflow_template_id": None,
+            "workflow_template_version": None,
+            "prompt_compiler_id": arguments["prompt_compiler_id"],
+            "prompt_compiler_version": arguments["prompt_compiler_version"],
         }
-        return 0, json.dumps(result), ""
+        return result
 
 
 class FakePostprocessor:
@@ -159,27 +167,36 @@ class AnimeVerticalSliceTests(unittest.TestCase):
     ) -> tuple[AssetRunEngine, FakeBackendRunner, FakePostprocessor]:
         runner = FakeBackendRunner()
         adapter = postprocessor or FakePostprocessor()
+        catalog = FakeCatalog()
+        router = FakeRouter(catalog)
         engine = AssetRunEngine(
             ProfileRegistry(self.registry_root),
             RunStore(self.temporary_root / output_name),
             runner,
             lambda: {"available_backends": ["webui"], "cuda": True},
             adapter,
+            catalog=catalog,
+            router=router,
+            compilers=PromptCompilerRegistry(),
         )
         return engine, runner, adapter
 
     def _start(self, engine: AssetRunEngine, *, max_rounds: int = 2) -> str:
-        started = engine.start_run({
+        arguments: dict[str, object] = {
             "profile": self.brief["profile"],
             "style": self.brief["style"],
             "subtype": self.brief["subtype"],
             "intent": self.brief["user_request"],
-            "constraints": self.brief["constraints"],
+            "constraints": {**self.brief["constraints"], "width": IMAGE_WIDTH, "height": IMAGE_HEIGHT},
             "model_choice": MODEL_ID,
             "backend": "webui",
             "upscale_policy": "auto",
             "max_rounds": max_rounds,
-        })
+            "authorization_scope": "private",
+        }
+        route = engine.router.issue(arguments)
+        arguments["route_token"] = route["route_token"]
+        started = engine.start_run(arguments)
         self.assertEqual(started["state"], "created")
         self.assertEqual(started["max_rounds"], max_rounds)
         return str(started["run_id"])
@@ -190,6 +207,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         action: str,
         max_rounds: int,
         parameters: dict[str, object],
+        route: dict[str, object],
     ) -> dict[str, object]:
         refining = action == "refine"
         return {
@@ -211,6 +229,15 @@ class AnimeVerticalSliceTests(unittest.TestCase):
             },
             "model_choice": MODEL_ID,
             "backend": "webui",
+            "authorization_scope": route["authorization_scope"],
+            "route_token": route["route_token"],
+            "endpoint_identity": route["endpoint_identity"],
+            "model_identity_token": route["identity_token"],
+            "identity_strength": route["identity_strength"],
+            "workflow_template_id": route["workflow_template_id"],
+            "workflow_template_version": route["workflow_template_version"],
+            "prompt_compiler_id": route["prompt_compiler_id"],
+            "prompt_compiler_version": route["prompt_compiler_version"],
             "parameters": parameters,
             "max_rounds": max_rounds,
             "upscale_policy": "auto",
@@ -231,6 +258,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
             if action == "initial"
             else {"steps": 12, "guidance_scale": 6.5}
         )
+        route = engine.get_run({"run_id": run_id})["request"]["route"]
         arguments: dict[str, object] = {
             "run_id": run_id,
             "idempotency_key": key,
@@ -238,7 +266,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
             "edit_mode": "txt2img",
             "seed": 42,
             "change_summary": summary,
-            "plan": self._plan(action=action, max_rounds=max_rounds, parameters=parameters),
+            "plan": self._plan(action=action, max_rounds=max_rounds, parameters=parameters, route=route),
         }
         expected_plan = copy.deepcopy(arguments["plan"])
         result, preview = engine.generate_round(arguments)
@@ -343,6 +371,14 @@ class AnimeVerticalSliceTests(unittest.TestCase):
                         "status": "pass",
                         "observation": "No generated text is visible in the retained image.",
                     },
+                    "width": {
+                        "status": "pass",
+                        "observation": "The retained image matches the confirmed width.",
+                    },
+                    "height": {
+                        "status": "pass",
+                        "observation": "The retained image matches the confirmed height.",
+                    },
                 },
                 "next_action": next_action,
             },
@@ -357,7 +393,6 @@ class AnimeVerticalSliceTests(unittest.TestCase):
             "constraints": {"aspect_ratio": "16:9", "generated_text": False},
             "max_rounds": 2,
         })
-        self.assertEqual(set(self.model_fixture), MODEL_REQUIRED)
         self.assertEqual(self.model_fixture["id"], MODEL_ID)
         self.assertEqual(self.model_fixture["source"], "test-fixture")
         self.assertEqual(self.model_fixture["license_id"], "test-only")
@@ -366,9 +401,8 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         self.assertIs(self.model_fixture["known_local"], True)
         self.assertIs(self.model_fixture["enabled"], True)
 
-        production_catalog = ProfileRegistry(ROOT / "profiles").list_catalog()
-        self.assertNotIn(MODEL_ID, production_catalog["models"])
-        self.assertIn(MODEL_ID, ProfileRegistry(self.registry_root).list_catalog()["models"])
+        self.assertEqual(set(ProfileRegistry(ROOT / "profiles").list_catalog()), {"profiles", "styles"})
+        self.assertEqual(set(ProfileRegistry(self.registry_root).list_catalog()), {"profiles", "styles"})
         publishable_roots = (
             ROOT / "profiles",
             ROOT / "scripts",
@@ -393,8 +427,6 @@ class AnimeVerticalSliceTests(unittest.TestCase):
 
     def test_two_round_anime_loop_records_evidence_and_exact_upscaled_final(self) -> None:
         engine, runner, adapter = self._engine("accepted-output")
-        catalog_copy = engine.registry.list_catalog()
-        catalog_copy["models"][MODEL_ID]["license_id"] = "mutated-copy"
         run_id = self._start(engine)
         self.assertEqual(engine.get_run({"run_id": run_id})["recoverable_next_actions"], ["generate_round"])
 
@@ -502,7 +534,13 @@ class AnimeVerticalSliceTests(unittest.TestCase):
             },
         }
         self.assertEqual([value["registry_metadata"] for value in manifest["rounds"]], [registry_metadata] * 2)
-        self.assertEqual(manifest["request"]["model_record"], self.model_fixture)
+        self.assertEqual(manifest["request"]["model_record"]["id"], MODEL_ID)
+        self.assertEqual(manifest["request"]["model_record"]["source"], "test-fixture")
+        self.assertEqual(manifest["request"]["model_record"]["license_id"], "test-only")
+        self.assertEqual(
+            manifest["request"]["model_record"]["identity_token"],
+            manifest["request"]["route"]["identity_token"],
+        )
         self.assertEqual(
             [value["generation_plan"] for value in manifest["rounds"]],
             [expected_initial_plan, expected_refine_plan],
@@ -534,10 +572,10 @@ class AnimeVerticalSliceTests(unittest.TestCase):
             validate_png(run_root / expected_image, IMAGE_WIDTH, IMAGE_HEIGHT)
 
         self.assertEqual(len(runner.calls), 2)
-        self.assertEqual([call[call.index("--seed") + 1] for call in runner.calls], ["42", "42"])
+        self.assertEqual([call["seed"] for call in runner.calls], [42, 42])
         self.assertEqual(
-            [call[call.index("--model") + 1] for call in runner.calls],
-            ["approved-test-anime", "approved-test-anime"],
+            [call["model"]["backend_model_id"] for call in runner.calls],
+            ["actual-loaded-model", "actual-loaded-model"],
         )
         self.assertEqual(len(adapter.upscale_calls), 1)
         self.assertEqual(manifest["final"]["round_number"], 2)

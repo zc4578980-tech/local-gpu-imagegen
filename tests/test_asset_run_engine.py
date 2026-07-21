@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import base64
+import copy
 import hashlib
 import os
 import shutil
@@ -22,13 +23,16 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from local_gpu_imagegen.engine import AssetRunEngine  # noqa: E402
 import local_gpu_imagegen.engine as engine_module  # noqa: E402
 from local_gpu_imagegen.artifacts import validate_png  # noqa: E402
-from local_gpu_imagegen.errors import AssetEngineError, ValidationError  # noqa: E402
+from local_gpu_imagegen.errors import AssetEngineError, ConflictError, ValidationError  # noqa: E402
 from local_gpu_imagegen.preview import MAX_PREVIEW_BYTES, PreviewResult  # noqa: E402
 from local_gpu_imagegen.profile_registry import ProfileRegistry  # noqa: E402
+from local_gpu_imagegen.prompt_compilers import PromptCompilerRegistry  # noqa: E402
 from local_gpu_imagegen.run_store import RunStore  # noqa: E402
 
 
 TEST_MODEL_ID = "test/approved-anime"
+TEST_ENDPOINT = "endpoint:test"
+TEST_IDENTITY = "model:" + "a" * 64
 
 
 def _chunk(kind: bytes, data: bytes) -> bytes:
@@ -49,31 +53,141 @@ def write_test_png(
 
 class FakeBackendRunner:
     def __init__(self) -> None:
-        self.calls: list[list[str]] = []
+        self.calls: list[dict[str, object]] = []
         self.exit_code = 0
         self.stderr = ""
         self.path_override: Path | None = None
         self.result_overrides: dict[str, object] = {}
 
-    def __call__(self, args: list[str]) -> tuple[int, str, str]:
-        self.calls.append(list(args))
-        output_dir = Path(args[args.index("--output-dir") + 1])
-        filename = args[args.index("--filename") + 1]
-        output_path = output_dir / filename
-        if self.exit_code == 0:
-            write_test_png(output_path)
+    def __call__(self, request: dict[str, object]) -> dict[str, object]:
+        self.calls.append(copy.deepcopy(request))
+        if self.exit_code != 0:
+            raise AssetEngineError(
+                "backend_command_failed",
+                "Image backend command failed.",
+                "backend",
+                {"exit_code": self.exit_code, "stderr": self.stderr},
+            )
+        output_path = Path(str(request["output_path"]))
+        write_test_png(output_path, int(request["width"]), int(request["height"]))
+        model = request["model"]
+        assert isinstance(model, dict)
         result = {
             "ok": True,
             "path": str(self.path_override or output_path),
-            "backend": args[args.index("--backend") + 1],
-            "mode": args[args.index("--mode") + 1],
-            "seed": int(args[args.index("--seed") + 1]),
-            "width": int(args[args.index("--width") + 1]),
-            "height": int(args[args.index("--height") + 1]),
-            "model": "actual-loaded-model",
+            "backend": request["backend"],
+            "mode": request["mode"],
+            "seed": request["seed"],
+            "width": request["width"],
+            "height": request["height"],
+            "model": model["backend_model_id"],
+            "endpoint_identity": model["endpoint_identity"],
+            "model_identity_token": model["identity_token"],
+            "identity_strength": model["identity_strength"],
+            "workflow_template_id": None,
+            "workflow_template_version": None,
+            "prompt_compiler_id": request["prompt_compiler_id"],
+            "prompt_compiler_version": request["prompt_compiler_version"],
         }
         result.update(self.result_overrides)
-        return self.exit_code, json.dumps(result), self.stderr
+        return result
+
+
+class FakeCatalog:
+    def __init__(self) -> None:
+        self.identity_token = TEST_IDENTITY
+        self.observations: list[tuple[str, str, str, str]] = []
+        self.workflows = None
+
+    def model(self) -> dict[str, object]:
+        return {
+            "id": TEST_MODEL_ID,
+            "source": "test-fixture",
+            "license_id": "test-only",
+            "license_url": None,
+            "license_status": "approved",
+            "backend": "webui",
+            "endpoint_identity": TEST_ENDPOINT,
+            "backend_model_id": "actual-loaded-model",
+            "format": ".safetensors",
+            "byte_size": 1,
+            "modified_ns": 1,
+            "sha256": "b" * 64,
+            "identity_strength": "cryptographic",
+            "metadata": {},
+            "identity_token": self.identity_token,
+            "public_evidence_eligible": True,
+            "recommended": {
+                "resolution": {"width": 256, "height": 256},
+                "steps": 4,
+                "guidance": 6.0,
+                "sampler": "Euler a",
+                "scheduler": None,
+            },
+        }
+
+    def list_models(self, scope: str) -> list[dict[str, object]]:
+        if scope not in {"private", "public_evidence"}:
+            raise ValidationError("invalid_authorization_scope", "Invalid test scope.")
+        return [self.model()]
+
+    def resolve(self, model_id: str, scope: str) -> dict[str, object]:
+        if model_id != TEST_MODEL_ID or scope not in {"private", "public_evidence"}:
+            raise ValidationError("model_not_eligible", "Model is not eligible.")
+        return self.model()
+
+    def verify_locked_route(self, route: dict[str, object]) -> dict[str, object]:
+        if route.get("identity_token") != self.identity_token:
+            raise ConflictError("model_identity_drifted", "Confirmed model identity changed.")
+        return self.model()
+
+    def record_observation(self, model_id: str, identity: str, operation: str, run_id: str) -> None:
+        self.observations.append((model_id, identity, operation, run_id))
+
+    def drift(self) -> None:
+        self.identity_token = "model:" + "c" * 64
+
+
+class FakeRouter:
+    def __init__(self, catalog: FakeCatalog) -> None:
+        self.catalog = catalog
+        self.routes: dict[str, dict[str, object]] = {}
+        self.counter = 0
+
+    def issue(self, arguments: dict[str, object]) -> dict[str, object]:
+        self.counter += 1
+        token = f"route:test-{self.counter}"
+        constraints = arguments["constraints"]
+        assert isinstance(constraints, dict)
+        route = {
+            "requirements": {},
+            "route_token": token,
+            "expires_at": 9999999999.0,
+            "model_id": arguments["model_choice"],
+            "authorization_scope": arguments["authorization_scope"],
+            "operation": "txt2img",
+            "profile": arguments["profile"],
+            "style": arguments["style"],
+            "width": constraints["width"],
+            "height": constraints["height"],
+            "backend": arguments["backend"],
+            "endpoint_identity": TEST_ENDPOINT,
+            "identity_token": self.catalog.identity_token,
+            "identity_strength": "cryptographic",
+            "sha256": "b" * 64,
+            "workflow_template_id": None,
+            "workflow_template_version": None,
+            "prompt_compiler_id": "sd15-tags-v1",
+            "prompt_compiler_version": 1,
+        }
+        self.routes[token] = route
+        return copy.deepcopy(route)
+
+    def confirm(self, route_token: str, model_id: str) -> dict[str, object]:
+        route = self.routes.get(route_token)
+        if route is None or route["model_id"] != model_id:
+            raise ConflictError("route_confirmation_expired", "Route changed or expired.")
+        return copy.deepcopy(route)
 
 
 class FakePostprocessor:
@@ -153,6 +267,9 @@ class AssetRunEngineTests(unittest.TestCase):
         self.registry = ProfileRegistry(profiles_root)
         self.runner = FakeBackendRunner()
         self.postprocessor = FakePostprocessor()
+        self.catalog = FakeCatalog()
+        self.router = FakeRouter(self.catalog)
+        self.compilers = PromptCompilerRegistry()
         self.capabilities = {"available_backends": ["webui", "diffusers"], "cuda": True}
         self.engine = AssetRunEngine(
             self.registry,
@@ -160,6 +277,9 @@ class AssetRunEngineTests(unittest.TestCase):
             self.runner,
             lambda: self.capabilities,
             self.postprocessor,
+            catalog=self.catalog,
+            router=self.router,
+            compilers=self.compilers,
         )
 
     def tearDown(self) -> None:
@@ -172,7 +292,7 @@ class AssetRunEngineTests(unittest.TestCase):
         style: str | None = None,
         upscale_policy: str = "off",
     ) -> dict[str, object]:
-        return {
+        arguments: dict[str, object] = {
             "profile": "standalone-illustration",
             "style": style,
             "intent": "A calm coast at dawn.",
@@ -181,7 +301,11 @@ class AssetRunEngineTests(unittest.TestCase):
             "backend": "webui",
             "upscale_policy": upscale_policy,
             "max_rounds": max_rounds,
+            "authorization_scope": "private",
         }
+        route = self.router.issue(arguments)
+        arguments["route_token"] = route["route_token"]
+        return arguments
 
     def plan(
         self,
@@ -190,7 +314,10 @@ class AssetRunEngineTests(unittest.TestCase):
         parameters: dict[str, object] | None = None,
         style: str | None = None,
         upscale_policy: str = "off",
+        route: dict[str, object] | None = None,
     ) -> dict[str, object]:
+        if route is None:
+            route = list(self.router.routes.values())[-1]
         return {
             "profile": "standalone-illustration",
             "style": style,
@@ -200,6 +327,15 @@ class AssetRunEngineTests(unittest.TestCase):
             "constraints": {"width": 256, "height": 256},
             "model_choice": TEST_MODEL_ID,
             "backend": "webui",
+            "authorization_scope": route["authorization_scope"],
+            "route_token": route["route_token"],
+            "endpoint_identity": route["endpoint_identity"],
+            "model_identity_token": route["identity_token"],
+            "identity_strength": route["identity_strength"],
+            "workflow_template_id": route["workflow_template_id"],
+            "workflow_template_version": route["workflow_template_version"],
+            "prompt_compiler_id": route["prompt_compiler_id"],
+            "prompt_compiler_version": route["prompt_compiler_version"],
             "parameters": parameters or {"mode": "txt2img", "scheduler": "euler"},
             "max_rounds": max_rounds,
             "upscale_policy": upscale_policy,
@@ -343,6 +479,9 @@ class AssetRunEngineTests(unittest.TestCase):
             self.postprocessor,
             revisions=revisions,
             masks=masks,
+            catalog=self.catalog,
+            router=self.router,
+            compilers=self.compilers,
         )
 
         self.assertIs(engine.registry, self.registry)
@@ -372,6 +511,9 @@ class AssetRunEngineTests(unittest.TestCase):
             self.postprocessor,
             revisions=Revisions(),
             masks=Masks(),
+            catalog=self.catalog,
+            router=self.router,
+            compilers=self.compilers,
         )
 
         self.assertEqual(engine.branch_run({"value": 1})["service"], "revisions")
@@ -416,9 +558,34 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(fetched["request"]["model_record"]["license_id"], "test-only")
         self.assertEqual(fetched["request"]["upscale_policy"], "off")
         self.assertEqual(fetched["request"]["available_backends"], ["webui", "diffusers"])
+        self.assertEqual(fetched["request"]["route"]["identity_token"], TEST_IDENTITY)
+        self.assertEqual(fetched["request"]["prompt_compiler_id"], "sd15-tags-v1")
         fetched["request"]["model_record"]["recommended"]["steps"] = 99
         fresh = self.engine.get_run({"run_id": started["run_id"]})
         self.assertEqual(fresh["request"]["model_record"]["recommended"]["steps"], 4)
+
+    def test_generation_rechecks_route_and_never_calls_backend_after_drift(self) -> None:
+        run_id = str(self.start()["run_id"])
+        self.catalog.drift()
+
+        with self.assertRaisesRegex(ConflictError, "model_identity_drifted"):
+            self.engine.generate_round(self.generate_arguments(run_id))
+
+        self.assertEqual(self.runner.calls, [])
+        self.assertEqual(self.engine.get_run({"run_id": run_id})["attempts"], [])
+
+    def test_success_retains_route_compiled_prompt_and_records_observation(self) -> None:
+        run_id = str(self.start(max_rounds=1)["run_id"])
+
+        result, _ = self.engine.generate_round(self.generate_arguments(run_id, max_rounds=1))
+
+        retained = result["round"]["backend_result"]
+        self.assertEqual(retained["model_identity_token"], TEST_IDENTITY)
+        self.assertEqual(retained["endpoint_identity"], TEST_ENDPOINT)
+        manifest = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(manifest["attempts"][0]["route"], manifest["request"]["route"])
+        self.assertEqual(manifest["attempts"][0]["compiled_prompt"]["compiler_id"], "sd15-tags-v1")
+        self.assertEqual(self.catalog.observations, [(TEST_MODEL_ID, TEST_IDENTITY, "txt2img", run_id)])
 
     def test_start_rejects_invalid_round_budget_before_creating_run(self) -> None:
         arguments = self.start_arguments(max_rounds=4)
@@ -443,23 +610,24 @@ class AssetRunEngineTests(unittest.TestCase):
                 capabilities.assert_not_called()
                 self.assertFalse((self.output_root / "runs").exists())
 
-    def test_start_rejects_disabled_production_model_before_engine_work(self) -> None:
+    def test_start_rejects_model_choice_that_differs_from_route(self) -> None:
         output_root = Path(self.temporary_directory.name) / "production-output"
         engine = AssetRunEngine(
             ProfileRegistry(ROOT / "profiles"),
             RunStore(output_root),
             self.runner,
             lambda: self.capabilities,
+            catalog=self.catalog,
+            router=self.router,
+            compilers=self.compilers,
         )
         arguments = self.start_arguments()
         arguments["model_choice"] = "stabilityai/sd-turbo"
 
-        with patch.object(engine, "capability_provider") as capabilities:
-            with self.assertRaises(ValidationError) as raised:
-                engine.start_run(arguments)
+        with self.assertRaises(ConflictError) as raised:
+            engine.start_run(arguments)
 
-        self.assertEqual(raised.exception.code, "model_not_enabled")
-        capabilities.assert_not_called()
+        self.assertEqual(raised.exception.code, "route_confirmation_expired")
         self.assertEqual(self.runner.calls, [])
         self.assertFalse((output_root / "runs").exists())
 
@@ -483,14 +651,17 @@ class AssetRunEngineTests(unittest.TestCase):
                         RunStore(output_root),
                         FakeBackendRunner(),
                         lambda: self.capabilities,
+                        catalog=self.catalog,
+                        router=self.router,
+                        compilers=self.compilers,
                     )
                     arguments = {**self.start_arguments(), **changes}
-                    with self.assertRaises(ValidationError):
+                    with self.assertRaises(AssetEngineError):
                         engine.start_run(arguments)
                     self.assertFalse((output_root / "runs").exists())
 
     def test_start_rejects_invalid_provider_capabilities(self) -> None:
-        for advertised in ([], ["webui", "diffusers", "diffusers"], ["webui", "comfyui"]):
+        for advertised in ([], ["webui", "diffusers", "diffusers"], ["comfyui"]):
             with self.subTest(advertised=advertised):
                 with tempfile.TemporaryDirectory() as directory:
                     output_root = Path(directory) / "output"
@@ -499,6 +670,9 @@ class AssetRunEngineTests(unittest.TestCase):
                         RunStore(output_root),
                         FakeBackendRunner(),
                         lambda: {"available_backends": advertised},
+                        catalog=self.catalog,
+                        router=self.router,
+                        compilers=self.compilers,
                     )
                     with self.assertRaises(ValidationError) as raised:
                         engine.start_run(self.start_arguments())
@@ -544,11 +718,9 @@ class AssetRunEngineTests(unittest.TestCase):
         data, preview = self.engine.generate_round(self.generate_arguments(started["run_id"]))
         run_root = self.output_root / "runs" / started["run_id"]
         self.assertEqual(len(self.runner.calls), 1)
-        self.assertEqual(
-            self.runner.calls[0][self.runner.calls[0].index("--model") + 1],
-            TEST_MODEL_ID,
-        )
-        self.assertEqual(self.runner.calls[0][self.runner.calls[0].index("--filename") + 1], "round-01.pending.png")
+        request = self.runner.calls[0]
+        self.assertEqual(request["model"]["backend_model_id"], "actual-loaded-model")
+        self.assertEqual(Path(str(request["output_path"])).name, "round-01.pending.png")
         self.assertFalse((run_root / "round-01.pending.png").exists())
         self.assertTrue((run_root / "round-01.png").is_file())
         self.assertEqual(data["round"]["image"]["path"], "round-01.png")
@@ -571,8 +743,7 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(manifest["rounds"][0]["change_summary"], "Initial candidate.")
 
     def test_completed_round_copies_immutable_registry_metadata(self) -> None:
-        start_arguments = self.start_arguments()
-        start_arguments["style"] = "anime"
+        start_arguments = self.start_arguments(style="anime")
         started = self.engine.start_run(start_arguments)
         generation_arguments = self.generate_arguments(started["run_id"])
         generation_arguments["plan"]["style"] = "anime"
@@ -604,6 +775,9 @@ class AssetRunEngineTests(unittest.TestCase):
                     RunStore(Path(directory) / "output"),
                     runner,
                     lambda: self.capabilities,
+                    catalog=self.catalog,
+                    router=self.router,
+                    compilers=self.compilers,
                 )
                 started = engine.start_run(self.start_arguments())
                 arguments = self.generate_arguments(started["run_id"])
@@ -623,29 +797,29 @@ class AssetRunEngineTests(unittest.TestCase):
 
         self.engine.generate_round(self.generate_arguments(run_id, max_rounds=1))
 
-        command = self.runner.calls[-1]
-        self.assertEqual(command[command.index("--mode") + 1], "txt2img")
-        self.assertNotIn("--input-image", command)
-        self.assertNotIn("--mask-image", command)
-        self.assertNotIn("--strength", command)
+        request = self.runner.calls[-1]
+        self.assertEqual(request["mode"], "txt2img")
+        self.assertIsNone(request["source_path"])
+        self.assertIsNone(request["mask_path"])
+        self.assertIsNone(request["strength"])
 
     def test_child_edit_modes_inject_only_branch_owned_backend_inputs(self) -> None:
         prompt_child = self.branch("prompt-refine")
         self.engine.generate_round(self.child_generate_arguments(prompt_child, "txt2img"))
-        prompt_command = self.runner.calls[-1]
-        self.assertEqual(prompt_command[prompt_command.index("--mode") + 1], "txt2img")
-        self.assertNotIn("--input-image", prompt_command)
-        self.assertNotIn("--mask-image", prompt_command)
-        self.assertNotIn("--strength", prompt_command)
+        prompt_request = self.runner.calls[-1]
+        self.assertEqual(prompt_request["mode"], "txt2img")
+        self.assertIsNone(prompt_request["source_path"])
+        self.assertIsNone(prompt_request["mask_path"])
+        self.assertIsNone(prompt_request["strength"])
 
         img_child = self.branch("img2img")
         self.engine.generate_round(self.child_generate_arguments(img_child, "img2img"))
-        img_command = self.runner.calls[-1]
-        img_source = Path(img_command[img_command.index("--input-image") + 1])
-        self.assertEqual(img_command[img_command.index("--mode") + 1], "img2img")
+        img_request = self.runner.calls[-1]
+        img_source = Path(str(img_request["source_path"]))
+        self.assertEqual(img_request["mode"], "img2img")
         self.assertEqual(img_source.name, "parent-source.png")
-        self.assertEqual(img_command[img_command.index("--strength") + 1], "0.25")
-        self.assertNotIn("--mask-image", img_command)
+        self.assertEqual(img_request["strength"], 0.25)
+        self.assertIsNone(img_request["mask_path"])
 
         inpaint_child = self.branch("inpaint")
         prepared, _ = self.engine.prepare_mask({
@@ -659,12 +833,12 @@ class AssetRunEngineTests(unittest.TestCase):
             "inpaint",
             mask_id=str(prepared["mask_id"]),
         ))
-        inpaint_command = self.runner.calls[-1]
-        mask_path = Path(inpaint_command[inpaint_command.index("--mask-image") + 1])
-        self.assertEqual(inpaint_command[inpaint_command.index("--mode") + 1], "inpaint")
-        self.assertEqual(Path(inpaint_command[inpaint_command.index("--input-image") + 1]).name, "parent-source.png")
+        inpaint_request = self.runner.calls[-1]
+        mask_path = Path(str(inpaint_request["mask_path"]))
+        self.assertEqual(inpaint_request["mode"], "inpaint")
+        self.assertEqual(Path(str(inpaint_request["source_path"])).name, "parent-source.png")
         self.assertEqual(mask_path.name, "mask-01.png")
-        self.assertEqual(inpaint_command[inpaint_command.index("--strength") + 1], "0.25")
+        self.assertEqual(inpaint_request["strength"], 0.25)
 
     def test_inpaint_mask_failures_happen_before_backend_invocation(self) -> None:
         inpaint_child = self.branch("inpaint")
@@ -763,6 +937,9 @@ class AssetRunEngineTests(unittest.TestCase):
                         RunStore(output_root),
                         runner,
                         lambda: self.capabilities,
+                        catalog=self.catalog,
+                        router=self.router,
+                        compilers=self.compilers,
                     )
                     started = engine.start_run(self.start_arguments())
                     with self.assertRaises(AssetEngineError) as raised:
@@ -1821,6 +1998,9 @@ class AssetRunEngineTests(unittest.TestCase):
                         RunStore(output_root),
                         FakeBackendRunner(),
                         lambda: self.capabilities,
+                        catalog=self.catalog,
+                        router=self.router,
+                        compilers=self.compilers,
                     )
                     started = engine.start_run(self.start_arguments())
                     run_id = started["run_id"]

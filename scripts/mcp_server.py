@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from local_gpu_imagegen.errors import AssetEngineError
+from local_gpu_imagegen.model_identity import identity_token
 from local_gpu_imagegen.postprocess import SUPPORTED_MODELS
 
 
@@ -20,6 +21,7 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("LOCAL_GPU_IMAGEGEN_COMMAND
 MAX_PREVIEW_BASE64_CHARS = 4 * ((1024 * 1024 + 2) // 3)
 SERVER_VERSION = "0.5.0"
 _asset_engine: Any | None = None
+_runtime_services: Any | None = None
 
 
 def send(payload: dict[str, Any]) -> None:
@@ -177,27 +179,87 @@ def get_capabilities() -> dict[str, object]:
         available_backends.append("webui")
     if value.get("diffusers_ready") is True:
         available_backends.append("diffusers")
+    if value.get("comfyui_ready") is True:
+        available_backends.append("comfyui")
     return {**value, "available_backends": available_backends}
 
 
-def get_asset_engine() -> Any:
-    global _asset_engine
-    if _asset_engine is None:
-        from local_gpu_imagegen.engine import AssetRunEngine
-        from local_gpu_imagegen.postprocess import RealEsrganAdapter
-        from local_gpu_imagegen.profile_registry import ProfileRegistry
-        from local_gpu_imagegen.run_store import RunStore
-
-        registry = ProfileRegistry(ROOT / "profiles")
-        store = RunStore(Path(os.environ.get("LOCAL_GPU_IMAGEGEN_OUTPUT_DIR", ROOT / "outputs")))
-        _asset_engine = AssetRunEngine(
-            registry,
-            store,
-            lambda args: run_script("generate_image.py", args),
-            get_capabilities,
-            RealEsrganAdapter.from_environment(),
+def _diffusers_runner(request: dict[str, object]) -> dict[str, object]:
+    model = request.get("model")
+    if not isinstance(model, dict):
+        raise AssetEngineError("invalid_backend_request", "Diffusers model identity is missing.", "validation")
+    args = [
+        "--prompt", str(request["positive_prompt"]),
+        "--negative-prompt", str(request["negative_prompt"]),
+        "--backend", "diffusers",
+        "--mode", str(request["mode"]),
+        "--model", str(model["backend_model_id"]),
+        "--width", str(request["width"]),
+        "--height", str(request["height"]),
+        "--steps", str(request["steps"]),
+        "--guidance-scale", str(request["guidance_scale"]),
+        "--seed", str(request["seed"]),
+        "--output-dir", str(Path(str(request["output_path"])).parent),
+        "--filename", Path(str(request["output_path"])).name,
+    ]
+    for field, flag in (
+        ("source_path", "--input-image"),
+        ("mask_path", "--mask-image"),
+        ("strength", "--strength"),
+    ):
+        if request.get(field) is not None:
+            args.extend((flag, str(request[field])))
+    code, stdout, stderr = run_script("generate_image.py", args)
+    if code != 0:
+        raise AssetEngineError(
+            "backend_command_failed",
+            "Diffusers compatibility backend failed.",
+            "backend",
+            {"exit_code": code, "stderr": stderr},
         )
-    return _asset_engine
+    try:
+        value = json.loads(stdout)
+    except json.JSONDecodeError as error:
+        raise AssetEngineError(
+            "invalid_backend_result",
+            "Diffusers compatibility backend returned invalid JSON.",
+            "artifact",
+        ) from error
+    if not isinstance(value, dict):
+        raise AssetEngineError("invalid_backend_result", "Diffusers result must be an object.", "artifact")
+    return {
+        **value,
+        "backend": "diffusers",
+        "model": model["backend_model_id"],
+        "endpoint_identity": model["endpoint_identity"],
+        "model_identity_token": model["identity_token"],
+        "identity_strength": model["identity_strength"],
+        "workflow_template_id": None,
+        "workflow_template_version": None,
+        "prompt_compiler_id": request["prompt_compiler_id"],
+        "prompt_compiler_version": request["prompt_compiler_version"],
+    }
+
+
+def get_runtime_services() -> Any:
+    global _asset_engine, _runtime_services
+    if _runtime_services is None:
+        from local_gpu_imagegen.services import build_services
+        from local_gpu_imagegen.trust_registry import default_state_dir
+
+        _runtime_services = build_services(
+            ROOT,
+            Path(os.environ.get("LOCAL_GPU_IMAGEGEN_OUTPUT_DIR", ROOT / "outputs")),
+            default_state_dir(),
+            get_capabilities,
+            _diffusers_runner,
+        )
+        _asset_engine = _runtime_services.engine
+    return _runtime_services
+
+
+def get_asset_engine() -> Any:
+    return get_runtime_services().engine
 
 
 def _object_schema(
@@ -345,9 +407,87 @@ def tool_schema() -> list[dict[str, Any]]:
     }
     tools.extend([
         {
+            "name": "local_gpu_discover_models",
+            "description": "Plan or execute bounded local model discovery without loading model weights.",
+            "inputSchema": _object_schema({
+                "phase": {"type": "string", "enum": ["plan", "execute"]},
+                "mode": {"type": "string", "enum": ["api_only", "selected_folders", "common_locations", "full_drive"]},
+                "stage": {"type": "string", "enum": ["index", "fingerprint"]},
+                "backends": {"type": "array", "items": {"type": "string", "enum": ["webui", "comfyui"]}},
+                "roots": {"type": "array", "items": {"type": "string"}},
+                "explicit_includes": {"type": "array", "items": {"type": "string"}},
+                "plan_id": {"type": "string", "minLength": 1},
+                "confirmation": {"type": "string", "minLength": 1},
+                "network_confirmation": {"type": "string", "minLength": 1},
+                "selected_candidates": {"type": "array", "items": {"type": "string"}},
+            }, ["phase"]),
+            "outputSchema": _output_schema({
+                "plan_id": {"type": "string"},
+                "scope_hash": {"type": "string"},
+                "expires_at": {"type": "number"},
+                "confirmation": {"type": "string"},
+                "network_confirmation": {"type": "string"},
+                "incomplete": {"type": "boolean"},
+                "candidates": json_array,
+                "trusted": {"type": "boolean"},
+            }, []),
+        },
+        {
+            "name": "local_gpu_set_model_trust",
+            "description": "Approve or revoke one exact current local model identity after explicit confirmation.",
+            "inputSchema": _object_schema({
+                "action": {"type": "string", "enum": ["approve_private", "approve_public_candidate", "revoke"]},
+                "identity_token": {"type": "string", "minLength": 1},
+                "confirmation": {"type": "string", "minLength": 1},
+                "capabilities": json_object,
+                "public_metadata": _object_schema({
+                    "source": {"type": "string", "minLength": 1},
+                    "license_id": {"type": "string", "minLength": 1},
+                    "license_url": {"type": "string", "minLength": 1},
+                    "output_redistribution_status": {"type": "string", "minLength": 1},
+                }, ["source", "license_id", "license_url", "output_redistribution_status"]),
+                "workflow_path": {"type": "string", "minLength": 1},
+                "workflow_binding": json_object,
+                "preference": {"type": "integer", "minimum": -100, "maximum": 100},
+            }, ["action", "identity_token", "confirmation"]),
+            "outputSchema": _output_schema({
+                "catalog_id": {"type": "string"},
+                "identity_token": {"type": "string"},
+                "identity_strength": {"type": "string"},
+                "scope": {"type": "string"},
+                "revoked": {"type": "boolean"},
+                "registered_workflow": json_object,
+            }, ["identity_token"]),
+        },
+        {
+            "name": "local_gpu_recommend_models",
+            "description": "Recommend one exact confirmed-capability route and at most two alternatives.",
+            "inputSchema": _object_schema({
+                "authorization_scope": {"type": "string", "enum": ["private", "public_evidence"]},
+                "operation": {"type": "string", "enum": ["txt2img", "img2img", "inpaint"]},
+                "profile": {"type": "string", "enum": _registered_profile_ids()},
+                "style": {"type": ["string", "null"], "enum": [None, *_registered_style_ids()]},
+                "width": {"type": "integer", "minimum": 256, "maximum": 1536},
+                "height": {"type": "integer", "minimum": 256, "maximum": 1536},
+                "affinity_tags": {"type": "array", "items": {"type": "string"}},
+                "required_vram_gb": {"type": ["number", "null"]},
+                "preferred_model_id": {"type": ["string", "null"]},
+            }, [
+                "authorization_scope", "operation", "profile", "style", "width", "height",
+                "affinity_tags", "required_vram_gb", "preferred_model_id",
+            ]),
+            "outputSchema": _output_schema({
+                "requirements": json_object,
+                "routes": json_array,
+                "reason": {"type": ["string", "null"]},
+            }, ["requirements", "routes", "reason"]),
+        },
+        {
             "name": "local_gpu_list_profiles",
             "description": "List registered visual-asset profiles and current local backend capabilities.",
-            "inputSchema": _object_schema({}, []),
+            "inputSchema": _object_schema({
+                "authorization_scope": {"type": "string", "enum": ["private", "public_evidence"]},
+            }, []),
             "outputSchema": _output_schema({
                 "profiles": json_object,
                 "styles": json_object,
@@ -364,12 +504,14 @@ def tool_schema() -> list[dict[str, Any]]:
                 "style": {"type": ["string", "null"], "enum": [None, *_registered_style_ids()]},
                 "constraints": json_object,
                 "model_choice": {"type": "string", "minLength": 1},
-                "backend": {"type": "string", "enum": ["auto", "webui", "diffusers"]},
+                "backend": {"type": "string", "enum": ["webui", "diffusers", "comfyui"]},
+                "authorization_scope": {"type": "string", "enum": ["private", "public_evidence"]},
+                "route_token": {"type": "string", "minLength": 1},
                 "max_rounds": {"type": "integer", "minimum": 1, "maximum": 3},
                 "upscale_policy": {"type": "string", "enum": ["auto", "off"]},
             }, [
-                "intent", "profile", "style", "constraints", "model_choice", "backend", "max_rounds",
-                "upscale_policy",
+                "intent", "profile", "style", "constraints", "model_choice", "backend",
+                "authorization_scope", "route_token", "max_rounds", "upscale_policy",
             ]),
             "outputSchema": _output_schema({
                 "run_id": {"type": "string"},
@@ -519,6 +661,7 @@ def _registered_profile_ids() -> list[str]:
 
 def _registered_style_ids() -> list[str]:
     return sorted(path.stem for path in (ROOT / "profiles" / "styles").glob("*.json"))
+
 
 
 def _approved_model_ids() -> list[str]:
@@ -696,14 +839,47 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
         if nested_error is not None:
             return nested_error
 
-    if tool["name"] == "local_gpu_start_run":
-        approved_model_ids = _approved_model_ids()
-        if arguments.get("model_choice") not in approved_model_ids:
+    if tool["name"] == "local_gpu_discover_models":
+        phase = arguments.get("phase")
+        if phase == "plan":
+            forbidden = sorted(set(arguments) & {"plan_id", "confirmation", "network_confirmation"})
+            if forbidden:
+                return tool_error(
+                    "invalid_discovery_phase",
+                    "validation",
+                    "Discovery planning cannot include execution confirmation fields.",
+                    {"fields": forbidden},
+                )
+        elif phase == "execute" and not {"plan_id", "confirmation"} <= set(arguments):
             return tool_error(
-                "invalid_argument_value",
+                "missing_argument",
                 "validation",
-                "model_choice must name a registered, enabled model with an approved license.",
-                {"field": "model_choice", "allowed": approved_model_ids},
+                "Discovery execution requires plan_id and confirmation.",
+                {"fields": ["plan_id", "confirmation"]},
+            )
+
+    if tool["name"] == "local_gpu_set_model_trust":
+        action = arguments.get("action")
+        if action in {"approve_private", "approve_public_candidate"} and "capabilities" not in arguments:
+            return tool_error(
+                "missing_argument",
+                "validation",
+                "Model approval requires declared capabilities.",
+                {"field": "capabilities"},
+            )
+        if action == "approve_public_candidate" and "public_metadata" not in arguments:
+            return tool_error(
+                "missing_argument",
+                "validation",
+                "Public candidate approval requires public_metadata.",
+                {"field": "public_metadata"},
+            )
+        if ("workflow_path" in arguments) != ("workflow_binding" in arguments):
+            return tool_error(
+                "invalid_workflow_binding",
+                "validation",
+                "workflow_path and workflow_binding must be provided together.",
+                {"fields": ["workflow_path", "workflow_binding"]},
             )
 
     if tool["name"] == "local_gpu_branch_run":
@@ -821,6 +997,131 @@ def _asset_error(error: AssetEngineError) -> dict[str, Any]:
     return result
 
 
+def _discovery_call(services: Any, arguments: dict[str, Any]) -> dict[str, object]:
+    if arguments["phase"] == "plan":
+        request = {
+            field: arguments[field]
+            for field in (
+                "mode", "stage", "backends", "roots", "explicit_includes", "selected_candidates"
+            )
+            if field in arguments
+        }
+        return services.discovery.plan(request)
+    return services.discovery.execute(
+        arguments["plan_id"],
+        arguments["confirmation"],
+        network_confirmation=arguments.get("network_confirmation"),
+    )
+
+
+def _inventory_identity(services: Any, token: str) -> dict[str, object]:
+    matches = []
+    for record in services.discovery.inventory():
+        if isinstance(record, dict) and identity_token(record) == token:
+            matches.append(record)
+    if len(matches) != 1:
+        raise AssetEngineError(
+            "model_identity_not_current",
+            "Trust changes require one exact identity from the current inventory.",
+            "validation",
+        )
+    return matches[0]
+
+
+def _registered_workflow_binding(
+    services: Any,
+    record: dict[str, object],
+    path: str,
+    binding: dict[str, object],
+) -> tuple[dict[str, object], dict[str, object]]:
+    inventory = services.discovery.inventory()
+    comfy_records = [
+        item for item in inventory
+        if isinstance(item, dict) and item.get("backend") == "comfyui"
+    ]
+    available_models = sorted({
+        str(item["backend_model_id"])
+        for item in comfy_records
+        if isinstance(item.get("backend_model_id"), str)
+    })
+    registered = services.workflows.register_import(Path(path), binding, available_models)
+    graph = registered.get("graph")
+    loader_names = [
+        node.get("inputs", {}).get("ckpt_name")
+        for node in graph.values()
+        if isinstance(node, dict) and node.get("class_type") == "CheckpointLoaderSimple"
+    ] if isinstance(graph, dict) else []
+    matches = [
+        item for item in comfy_records
+        if item.get("backend_model_id") in loader_names
+    ]
+    if record.get("backend") == "comfyui":
+        matches = [item for item in matches if identity_token(item) == identity_token(record)]
+    if len(matches) != 1:
+        raise AssetEngineError(
+            "workflow_model_binding_ambiguous",
+            "Imported workflow must bind one exact current ComfyUI model identity.",
+            "validation",
+        )
+    selected = matches[0]
+    trust_binding = {
+        "backend": "comfyui",
+        "endpoint_identity": selected["endpoint_identity"],
+        "backend_model_id": selected["backend_model_id"],
+        "template_id": registered["template_id"],
+        "template_version": registered["template_version"],
+    }
+    public_registration = {
+        "template_id": registered["template_id"],
+        "template_version": registered["template_version"],
+        "workflow_sha256": registered["workflow_sha256"],
+    }
+    return trust_binding, public_registration
+
+
+def _trust_call(services: Any, arguments: dict[str, Any]) -> dict[str, object]:
+    token = arguments["identity_token"]
+    if arguments["action"] == "revoke":
+        catalog_id = "local:" + token.removeprefix("model:")[:24]
+        return services.trust.revoke(catalog_id, token, arguments["confirmation"])
+
+    record = _inventory_identity(services, token)
+    workflow_binding = None
+    registered_workflow = None
+    if "workflow_path" in arguments:
+        workflow_binding, registered_workflow = _registered_workflow_binding(
+            services,
+            record,
+            arguments["workflow_path"],
+            arguments["workflow_binding"],
+        )
+    preference = arguments.get("preference", 0)
+    if arguments["action"] == "approve_private":
+        approved = services.trust.approve_private(
+            record,
+            arguments["confirmation"],
+            capabilities=arguments["capabilities"],
+            workflow_binding=workflow_binding,
+            preference=preference,
+        )
+    else:
+        approved = services.trust.approve_public_candidate(
+            record,
+            arguments["confirmation"],
+            metadata=arguments["public_metadata"],
+            capabilities=arguments["capabilities"],
+            workflow_binding=workflow_binding,
+            preference=preference,
+        )
+    result = {
+        field: approved[field]
+        for field in ("catalog_id", "identity_token", "identity_strength", "scope")
+    }
+    if registered_workflow is not None:
+        result["registered_workflow"] = registered_workflow
+    return result
+
+
 def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name")
     tool = next((candidate for candidate in tool_schema() if candidate["name"] == name), None)
@@ -893,9 +1194,20 @@ def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
         return script_json_result("generate_image.py", code, stdout, stderr)
 
     try:
+        if name in {
+            "local_gpu_discover_models",
+            "local_gpu_set_model_trust",
+            "local_gpu_recommend_models",
+        }:
+            services = get_runtime_services()
+            if name == "local_gpu_discover_models":
+                return tool_success(_successful_engine_data(_discovery_call(services, arguments)))
+            if name == "local_gpu_set_model_trust":
+                return tool_success(_successful_engine_data(_trust_call(services, arguments)))
+            return tool_success(_successful_engine_data(services.router.recommend(arguments)))
         engine = get_asset_engine()
         if name == "local_gpu_list_profiles":
-            data = _successful_engine_data(engine.list_profiles())
+            data = _successful_engine_data(engine.list_profiles(arguments.get("authorization_scope", "private")))
             return tool_success(data)
         if name == "local_gpu_start_run":
             data = _successful_engine_data(engine.start_run(arguments))

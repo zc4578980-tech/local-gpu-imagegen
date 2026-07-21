@@ -14,6 +14,29 @@ MODEL_ID = "approved-local-model"
 TIMESTAMP = "2026-07-21T12:00:00Z"
 
 
+def public_route() -> dict[str, object]:
+    return {
+        "authorization_scope": "public_evidence",
+        "backend": "webui",
+        "model_id": MODEL_ID,
+        "sha256": MODEL_SHA256,
+        "identity_strength": "cryptographic",
+        "workflow_template_id": None,
+        "workflow_template_version": None,
+        "prompt_compiler_id": "sd15-tags-v1",
+        "prompt_compiler_version": 1,
+    }
+
+
+def locked_route() -> dict[str, object]:
+    return {
+        **public_route(),
+        "endpoint_identity": "endpoint:private",
+        "identity_token": "model:private",
+        "route_token": "route:private",
+    }
+
+
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -144,6 +167,7 @@ def build_run_source(root: Path, brief: dict[str, object], *, revision: bool = F
             "model_choice": MODEL_ID,
             "backend": "webui",
             "max_rounds": 2,
+            "route": locked_route(),
         },
         "attempts": [{"status": "completed", "started_at": TIMESTAMP, "round_number": 1}],
         "rounds": [{
@@ -225,6 +249,7 @@ def _write_package(package: Path, brief: dict[str, object], *, revision: bool, e
             "model_choice": MODEL_ID,
             "backend": "webui",
             "max_rounds": 2,
+            "route": public_route(),
         },
         "rounds": [{
             "round_number": 1,
@@ -307,6 +332,7 @@ def _write_package(package: Path, brief: dict[str, object], *, revision: bool, e
         "style": brief["style"],
         "backend": metadata["backend"],
         "model": metadata["model"],
+        "route": public_route(),
         "environment": metadata["environment"],
         "started_at": TIMESTAMP,
         "completed_at": TIMESTAMP,

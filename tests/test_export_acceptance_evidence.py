@@ -93,6 +93,56 @@ class ExportAcceptanceEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(EvidenceExportError, "mock_evidence_forbidden"):
             self.export()
 
+    def test_private_or_backend_binding_route_cannot_enter_public_evidence(self) -> None:
+        routes = (
+            {**_public_route(), "authorization_scope": "private"},
+            {**_public_route(), "identity_strength": "backend_binding", "sha256": None},
+        )
+        for index, route in enumerate(routes):
+            manifest = read_json(self.run_dir / "manifest.json")
+            manifest["request"]["route"] = route
+            write_json(self.run_dir / "manifest.json", manifest)
+            with self.subTest(route=route), self.assertRaisesRegex(
+                EvidenceExportError,
+                "public_model_evidence_forbidden",
+            ):
+                export_run(
+                    self.run_dir,
+                    self.evidence_root / "runs" / f"{self.brief['id']}-{index}",
+                    FIXTURE_PATH,
+                    self.metadata_path,
+                    self.run_id,
+                    None,
+                )
+
+    def test_export_redacts_private_route_and_backend_binding_values(self) -> None:
+        manifest = read_json(self.run_dir / "manifest.json")
+        manifest["request"]["route"] = _public_route()
+        manifest["request"]["model_record"] = {
+            "id": "approved-local-model",
+            "backend_model_id": "private-checkpoint-name.safetensors",
+            "endpoint_identity": "endpoint:private",
+            "local_path": r"D:\private\model.safetensors",
+        }
+        manifest["rounds"][0]["backend_result"].update({
+            "endpoint_identity": "endpoint:private",
+            "webui_url": "http://192.168.1.20:7860",
+            "model": "private-checkpoint-name.safetensors",
+        })
+        write_json(self.run_dir / "manifest.json", manifest)
+
+        self.export()
+
+        exported = read_json(self.destination / "manifest.json")
+        serialized = json.dumps(exported, sort_keys=True)
+        self.assertNotIn("endpoint_identity", serialized)
+        self.assertNotIn("backend_model_id", serialized)
+        self.assertNotIn("private-checkpoint-name", serialized)
+        self.assertNotIn("192.168.1.20", serialized)
+        evidence = read_json(self.destination / "evidence.json")
+        self.assertEqual(evidence["route"]["model_id"], "approved-local-model")
+        self.assertEqual(evidence["route"]["sha256"], "a" * 64)
+
     def test_requires_exact_run_id_confirmation(self) -> None:
         with self.assertRaisesRegex(EvidenceExportError, "real_run_confirmation_mismatch"):
             export_run(
@@ -158,6 +208,22 @@ def _path_values(value: object, key: str | None = None) -> list[str]:
     elif isinstance(value, str) and key in {"path", "mask_path", "overlay_path"}:
         found.append(value)
     return found
+
+
+def _public_route() -> dict[str, object]:
+    return {
+        "authorization_scope": "public_evidence",
+        "model_id": "approved-local-model",
+        "backend": "webui",
+        "endpoint_identity": "endpoint:private",
+        "identity_token": "model:private",
+        "identity_strength": "cryptographic",
+        "sha256": "a" * 64,
+        "workflow_template_id": None,
+        "workflow_template_version": None,
+        "prompt_compiler_id": "sd15-tags-v1",
+        "prompt_compiler_version": 1,
+    }
 
 
 if __name__ == "__main__":

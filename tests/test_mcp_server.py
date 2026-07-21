@@ -23,6 +23,9 @@ EXPECTED_TOOLS = {
     "local_gpu_imagegen_check",
     "local_gpu_generate_image",
     "local_gpu_list_profiles",
+    "local_gpu_discover_models",
+    "local_gpu_set_model_trust",
+    "local_gpu_recommend_models",
     "local_gpu_start_run",
     "local_gpu_get_run",
     "local_gpu_branch_run",
@@ -79,10 +82,22 @@ class McpServerUnitTests(unittest.TestCase):
     def test_high_level_input_contracts_are_exact(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
         expected = {
-            "local_gpu_list_profiles": set(),
+            "local_gpu_list_profiles": {"authorization_scope"},
+            "local_gpu_discover_models": {
+                "phase", "mode", "stage", "backends", "roots", "explicit_includes", "plan_id",
+                "confirmation", "network_confirmation", "selected_candidates",
+            },
+            "local_gpu_set_model_trust": {
+                "action", "identity_token", "confirmation", "capabilities", "public_metadata",
+                "workflow_path", "workflow_binding", "preference",
+            },
+            "local_gpu_recommend_models": {
+                "authorization_scope", "operation", "profile", "style", "width", "height",
+                "affinity_tags", "required_vram_gb", "preferred_model_id",
+            },
             "local_gpu_start_run": {
-                "intent", "profile", "style", "constraints", "model_choice", "backend", "max_rounds",
-                "upscale_policy",
+                "intent", "profile", "style", "constraints", "model_choice", "backend",
+                "authorization_scope", "route_token", "max_rounds", "upscale_policy",
             },
             "local_gpu_get_run": {"run_id"},
             "local_gpu_branch_run": {
@@ -110,6 +125,14 @@ class McpServerUnitTests(unittest.TestCase):
                 schema = tools[name]["inputSchema"]
                 self.assertEqual(set(schema["properties"]), fields)
                 optional = {
+                    "local_gpu_list_profiles": {"authorization_scope"},
+                    "local_gpu_discover_models": {
+                        "mode", "stage", "backends", "roots", "explicit_includes", "plan_id",
+                        "confirmation", "network_confirmation", "selected_candidates",
+                    },
+                    "local_gpu_set_model_trust": {
+                        "capabilities", "public_metadata", "workflow_path", "workflow_binding", "preference",
+                    },
                     "local_gpu_branch_run": {"denoising_strength"},
                     "local_gpu_prepare_mask": {"user_mask_path", "geometry", "feather_pixels"},
                     "local_gpu_generate_round": {"mask_id"},
@@ -167,8 +190,8 @@ class McpServerUnitTests(unittest.TestCase):
             ("local_gpu_start_run", {}),
             ("local_gpu_start_run", {
                 "intent": "valid", "profile": "missing-profile", "style": None, "constraints": {},
-                "model_choice": "stabilityai/sd-turbo", "backend": "auto", "max_rounds": 3,
-                "upscale_policy": "auto",
+                "model_choice": "stabilityai/sd-turbo", "backend": "webui", "max_rounds": 3,
+                "upscale_policy": "auto", "authorization_scope": "private", "route_token": "route:test",
             }),
             ("local_gpu_get_run", {"run_id": 1}),
             ("local_gpu_branch_run", {
@@ -206,10 +229,66 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(capabilities))
 
     def test_capabilities_derive_internal_available_backends(self) -> None:
-        report = {"ready": True, "webui_ready": True, "diffusers_ready": False}
+        report = {"ready": True, "webui_ready": True, "diffusers_ready": False, "comfyui_ready": True}
         with patch.object(mcp_server, "run_script", return_value=(0, json.dumps(report), "")):
             capabilities = mcp_server.get_capabilities()
-        self.assertEqual(capabilities["available_backends"], ["webui"])
+        self.assertEqual(capabilities["available_backends"], ["webui", "comfyui"])
+
+    def test_byom_tools_dispatch_through_composed_services(self) -> None:
+        services = Mock()
+        services.discovery.plan.return_value = {"plan_id": "plan-1", "confirmation": "scan:plan-1", "warnings": []}
+        services.router.recommend.return_value = {
+            "requirements": {}, "routes": [], "reason": "no_eligible_model", "warnings": [],
+        }
+        discover = {"phase": "plan", "mode": "api_only", "stage": "index", "backends": ["webui"]}
+        recommend = {
+            "authorization_scope": "private", "operation": "txt2img",
+            "profile": "standalone-illustration", "style": None, "width": 512, "height": 512,
+            "affinity_tags": [], "required_vram_gb": None, "preferred_model_id": None,
+        }
+
+        with patch.object(mcp_server, "get_runtime_services", return_value=services):
+            discover_result = mcp_server.handle_tool_call({"name": "local_gpu_discover_models", "arguments": discover})
+            recommend_result = mcp_server.handle_tool_call({"name": "local_gpu_recommend_models", "arguments": recommend})
+
+        self.assertFalse(discover_result["isError"])
+        self.assertFalse(recommend_result["isError"])
+        services.discovery.plan.assert_called_once_with({
+            "mode": "api_only", "stage": "index", "backends": ["webui"],
+        })
+        services.router.recommend.assert_called_once_with(recommend)
+
+    def test_trust_tool_resolves_exact_current_inventory_identity(self) -> None:
+        record = {
+            "backend": "webui", "endpoint_identity": "endpoint:test",
+            "backend_model_id": "anything-v5.safetensors", "format": ".safetensors",
+            "byte_size": 1, "modified_ns": 1, "sha256": None,
+            "identity_strength": "backend_binding", "metadata": {},
+        }
+        token = mcp_server.identity_token(record)
+        services = Mock()
+        services.discovery.inventory.return_value = [record]
+        services.trust.approve_private.return_value = {
+            "catalog_id": "local:test", "identity_token": token,
+            "identity_strength": "backend_binding", "scope": "private",
+        }
+        arguments = {
+            "action": "approve_private", "identity_token": token,
+            "confirmation": f"approve_private:{token}",
+            "capabilities": {"operations": ["txt2img"]},
+        }
+
+        with patch.object(mcp_server, "get_runtime_services", return_value=services):
+            result = mcp_server.handle_tool_call({"name": "local_gpu_set_model_trust", "arguments": arguments})
+
+        self.assertFalse(result["isError"])
+        services.trust.approve_private.assert_called_once_with(
+            record,
+            arguments["confirmation"],
+            capabilities=arguments["capabilities"],
+            workflow_binding=None,
+            preference=0,
+        )
 
     def test_start_run_rejects_empty_intent_before_engine_work(self) -> None:
         arguments = {
@@ -218,30 +297,32 @@ class McpServerUnitTests(unittest.TestCase):
             "style": None,
             "constraints": {},
             "model_choice": "stabilityai/sd-turbo",
-            "backend": "auto",
+            "backend": "webui",
             "max_rounds": 3,
             "upscale_policy": "auto",
+            "authorization_scope": "private",
+            "route_token": "route:test",
         }
         with patch.object(mcp_server, "get_asset_engine", create=True) as get_engine:
             result = mcp_server.handle_tool_call({"name": "local_gpu_start_run", "arguments": arguments})
         self.assertEqual(result["structuredContent"]["error"]["code"], "invalid_argument_value")
         get_engine.assert_not_called()
 
-    def test_start_run_rejects_missing_or_unapproved_model_before_engine_work(self) -> None:
+    def test_start_run_rejects_missing_or_empty_model_before_engine_work(self) -> None:
         base = {
             "intent": "A calm coast at dawn.",
             "profile": "standalone-illustration",
             "style": None,
             "constraints": {},
-            "backend": "auto",
+            "backend": "webui",
             "max_rounds": 3,
             "upscale_policy": "auto",
+            "authorization_scope": "private",
+            "route_token": "route:test",
         }
         cases = (
             (None, "missing_argument"),
             (" ", "invalid_argument_value"),
-            ("missing/model", "invalid_argument_value"),
-            ("stabilityai/sd-turbo", "invalid_argument_value"),
         )
         for model_choice, expected_code in cases:
             arguments = dict(base)
@@ -264,6 +345,8 @@ class McpServerUnitTests(unittest.TestCase):
             "constraints": {},
             "model_choice": "test/approved-anime",
             "backend": "webui",
+            "authorization_scope": "private",
+            "route_token": "route:test",
             "max_rounds": 3,
             "upscale_policy": "off",
         }
@@ -276,9 +359,7 @@ class McpServerUnitTests(unittest.TestCase):
             "merged_rubric": {},
             "warnings": [],
         }
-        with patch.object(mcp_server, "_approved_model_ids", return_value=["test/approved-anime"]), patch.object(
-            mcp_server, "get_asset_engine", return_value=engine
-        ):
+        with patch.object(mcp_server, "get_asset_engine", return_value=engine):
             result = mcp_server.handle_tool_call({"name": "local_gpu_start_run", "arguments": arguments})
 
         self.assertFalse(result["isError"])

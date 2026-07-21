@@ -6,12 +6,16 @@ import json
 from .errors import ValidationError
 
 
+CONFIRMED_ROUTE_FIELDS = frozenset({
+    "authorization_scope", "route_token", "model_choice", "backend", "endpoint_identity",
+    "model_identity_token", "identity_strength", "workflow_template_id",
+    "workflow_template_version", "prompt_compiler_id", "prompt_compiler_version",
+})
 PLAN_REQUIRED = {
     "profile", "style", "intent", "positive_prompt", "negative_prompt",
-    "constraints", "model_choice", "backend", "parameters", "max_rounds",
-    "upscale_policy",
-}
-_BACKENDS = {"auto", "webui", "diffusers"}
+    "constraints", "parameters", "max_rounds", "upscale_policy",
+} | set(CONFIRMED_ROUTE_FIELDS)
+_BACKENDS = {"webui", "diffusers", "comfyui"}
 _UPSCALE_POLICIES = {"auto", "off"}
 
 
@@ -46,11 +50,9 @@ def validate_generation_plan(
             {"edit_mode": edit_mode, "plan_mode": nested_mode},
         )
     if not isinstance(plan["backend"], str) or plan["backend"] not in _BACKENDS:
-        raise ValidationError("invalid_backend", "backend must be auto, webui, or diffusers.")
-    if plan["model_choice"] is not None and (
-        not isinstance(plan["model_choice"], str) or not plan["model_choice"].strip()
-    ):
-        raise ValidationError("invalid_model_choice", "model_choice must be a non-empty string or null.")
+        raise ValidationError("invalid_backend", "backend must be webui, diffusers, or comfyui.")
+    if not isinstance(plan["model_choice"], str) or not plan["model_choice"].strip():
+        raise ValidationError("invalid_model_choice", "model_choice must be a non-empty string.")
     if not isinstance(plan["upscale_policy"], str) or plan["upscale_policy"] not in _UPSCALE_POLICIES:
         raise ValidationError("invalid_upscale_policy", "upscale_policy must be auto or off.")
     if type(plan["max_rounds"]) is not int or not 1 <= plan["max_rounds"] <= 3:
@@ -77,7 +79,10 @@ def validate_generation_plan(
 
 def _validate_confirmed_boundary(plan: dict[str, object], run_request: dict[str, object]) -> None:
     validate_confirmed_run_request(run_request)
-    for field in ("profile", "style", "intent", "model_choice", "max_rounds", "upscale_policy"):
+    for field in (
+        "profile", "style", "intent", "model_choice", "max_rounds", "upscale_policy",
+        *CONFIRMED_ROUTE_FIELDS,
+    ):
         if field in run_request and plan[field] != run_request[field]:
             raise ValidationError("generation_plan_mismatch", f"Generation plan {field} differs from confirmed run.", {"field": field})
     explicit_constraints = run_request.get("constraints", {})
@@ -93,7 +98,8 @@ def validate_confirmed_run_request(run_request: object) -> dict[str, object]:
         raise ValidationError("invalid_run_request", "Confirmed run request must be an object.")
     required = {
         "profile", "style", "intent", "constraints", "model_choice", "max_rounds",
-        "upscale_policy", "backend", "available_backends",
+        "upscale_policy", "backend", "available_backends", "authorization_scope",
+        "route_token", "route",
     }
     missing = sorted(required - set(run_request))
     if missing:
@@ -112,45 +118,62 @@ def validate_confirmed_run_request(run_request: object) -> dict[str, object]:
         json.dumps(run_request["constraints"], allow_nan=False)
     except (TypeError, ValueError, RecursionError) as error:
         raise ValidationError("invalid_run_request", "Confirmed constraints must be JSON serializable.") from error
-    if run_request["model_choice"] is not None and (
-        not isinstance(run_request["model_choice"], str) or not run_request["model_choice"].strip()
-    ):
-        raise ValidationError("invalid_run_request", "Confirmed model_choice must be a non-empty string or null.")
+    if not isinstance(run_request["model_choice"], str) or not run_request["model_choice"].strip():
+        raise ValidationError("invalid_run_request", "Confirmed model_choice must be a non-empty string.")
     if type(run_request["max_rounds"]) is not int or not 1 <= run_request["max_rounds"] <= 3:
         raise ValidationError("invalid_run_request", "Confirmed max_rounds must be an integer from 1 to 3.")
     if not isinstance(run_request["upscale_policy"], str) or run_request["upscale_policy"] not in _UPSCALE_POLICIES:
         raise ValidationError("invalid_run_request", "Confirmed upscale_policy is invalid.")
     if not isinstance(run_request["backend"], str) or run_request["backend"] not in _BACKENDS:
-        raise ValidationError("invalid_backend", "Confirmed backend must be auto, webui, or diffusers.")
+        raise ValidationError("invalid_backend", "Confirmed backend must be webui, diffusers, or comfyui.")
+    if run_request["authorization_scope"] not in {"private", "public_evidence"}:
+        raise ValidationError("invalid_authorization_scope", "Confirmed authorization scope is invalid.")
+    if not isinstance(run_request["route_token"], str) or not run_request["route_token"].startswith("route:"):
+        raise ValidationError("invalid_run_request", "Confirmed route token is invalid.")
+    route = run_request["route"]
+    if not isinstance(route, dict):
+        raise ValidationError("invalid_run_request", "Confirmed route must be an object.")
+    route_pairs = {
+        "authorization_scope": "authorization_scope",
+        "route_token": "route_token",
+        "model_id": "model_choice",
+        "backend": "backend",
+        "endpoint_identity": "endpoint_identity",
+        "identity_token": "model_identity_token",
+        "identity_strength": "identity_strength",
+        "workflow_template_id": "workflow_template_id",
+        "workflow_template_version": "workflow_template_version",
+        "prompt_compiler_id": "prompt_compiler_id",
+        "prompt_compiler_version": "prompt_compiler_version",
+    }
+    missing_route = sorted(set(route_pairs) - set(route))
+    if missing_route:
+        raise ValidationError("invalid_run_request", "Confirmed route is incomplete.", {"fields": missing_route})
+    for route_field, request_field in route_pairs.items():
+        if route[route_field] != run_request.get(request_field):
+            raise ValidationError(
+                "invalid_run_request",
+                "Confirmed route differs from the persisted run boundary.",
+                {"field": route_field},
+            )
     available = run_request["available_backends"]
     if not isinstance(available, (list, tuple, set)) or not all(isinstance(candidate, str) for candidate in available):
         raise ValidationError("invalid_run_request", "available_backends must be a collection of backend names.")
     available_values = list(available)
     if len(set(available_values)) != len(available_values) or any(
-        candidate not in {"webui", "diffusers"} for candidate in available_values
+        candidate not in _BACKENDS for candidate in available_values
     ):
         raise ValidationError("invalid_backend", "available_backends contains an unsupported or duplicate backend.")
     backend = run_request["backend"]
-    if backend == "auto" and not available_values:
-        raise ValidationError("invalid_backend", "Auto backend requires at least one advertised supported backend.")
-    if backend in {"webui", "diffusers"} and backend not in available_values:
+    if backend not in available_values:
         raise ValidationError("invalid_backend", "Confirmed backend must be advertised as available.")
     return copy.deepcopy(run_request)
 
 
 def _validate_backend(backend: object, run_request: dict[str, object]) -> None:
     confirmed_backend = run_request["backend"]
-    if confirmed_backend != "auto":
-        if backend != confirmed_backend:
-            raise ValidationError("generation_plan_mismatch", "Generation plan backend differs from confirmed run.", {"field": "backend"})
-        return
-    available = run_request["available_backends"]
-    advertised = {
-        candidate for candidate in available
-        if isinstance(candidate, str) and candidate in {"webui", "diffusers"}
-    }
-    if backend not in advertised:
-        raise ValidationError("invalid_backend", "Auto backend must resolve to an advertised WebUI or Diffusers backend.")
+    if backend != confirmed_backend:
+        raise ValidationError("generation_plan_mismatch", "Generation plan backend differs from confirmed run.", {"field": "backend"})
 
 
 def _merged_profile(run_request: dict[str, object]) -> dict[str, object]:
