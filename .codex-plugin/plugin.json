@@ -1,6 +1,6 @@
 {
   "name": "local-gpu-imagegen",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Orchestrate catalog-gated, reviewable local visual asset runs.",
   "author": {
     "name": "Capricorn"
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Local GPU Visual Asset Engine",
     "shortDescription": "Brief and review catalog-gated local visual asset runs.",
-    "longDescription": "A local Agent visual asset engine with adaptive briefing, confirmed 1-to-3-round workflows, catalog-gated model resolution, bounded previews, durable recovery, and no hidden downloads. No production model is bundled or currently approved. Model-free tests cover the MCP contract and orchestration policy; real host/GPU output acceptance remains unverified.",
+    "longDescription": "A local Agent visual asset engine with adaptive briefing, confirmed 1-to-3-round workflows, catalog-gated model resolution, anime style selection, evidence review, durable recovery, and explicit environment-configured anime postprocessing. No production model is bundled or currently approved. Mocked/model-free tests cover orchestration. Real host/GPU output acceptance remains unverified; no retained real vision, model, or Real-ESRGAN evidence exists.",
     "developerName": "Capricorn",
     "category": "Creative",
     "capabilities": [

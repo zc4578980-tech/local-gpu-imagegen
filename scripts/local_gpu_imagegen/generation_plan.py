@@ -37,7 +37,7 @@ def validate_generation_plan(
     if not isinstance(plan["constraints"], dict) or not isinstance(plan["parameters"], dict):
         raise ValidationError("invalid_generation_plan", "constraints and parameters must be objects.")
     if edit_mode != "txt2img":
-        raise ValidationError("invalid_edit_mode", "edit_mode must be txt2img in v0.3.")
+        raise ValidationError("invalid_edit_mode", "edit_mode must be txt2img in v0.4.0.")
     nested_mode = plan["parameters"].get("mode")
     if nested_mode is not None and nested_mode != edit_mode:
         raise ValidationError(

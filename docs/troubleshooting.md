@@ -18,6 +18,8 @@ The second command exits with code 1 when neither backend is ready, but its JSON
 
 `local_gpu_list_profiles` also returns backend capabilities beside the registered profiles. A run with `backend: auto` still needs at least one advertised backend resolution; capability reporting does not install packages, select a model, or download one.
 
+The production model catalog currently contains only disabled `stabilityai/sd-turbo`; no production model is bundled or approved. A high-level Agent run must stop at the unavailable-model boundary until a separate local source and license review enables an approved record. Do not bypass this with the low-level compatibility tool, an arbitrary model name, or an implicit download.
+
 On Windows PowerShell 5.1, manual native-process pipelines may prefix stdin with a UTF-8 byte-order mark. The server tolerates that mark, but `scripts/verify_mcp.py` remains the preferred transport check because it controls encoding and validates all required responses.
 
 To test a specific environment without activating it:
@@ -79,6 +81,18 @@ When a caller nominates an ineligible reviewed round, final metadata uses `quali
 ## A Preview Is Missing
 
 The JPEG preview is optional and bounded for MCP transport. The full-resolution local PNG is authoritative. Check the tool's `full_image_path`, manifest round image metadata, and warnings such as `preview_unavailable:pillow_missing`. Installing or repairing Pillow should happen only in the project environment; a preview failure does not justify regenerating a valid retained PNG.
+
+New previews are named `round-NN-preview.jpg`. A stored legacy manifest may still reference `round-NN.preview.jpg`; that path remains supported and is not a reason to rename or regenerate the retained round.
+
+## Anime Postprocessing Is Unavailable Or Failed
+
+Real-ESRGAN is never invoked automatically. It is anime-only and must be requested explicitly during finalization after `LOCAL_GPU_IMAGEGEN_REALESRGAN_DIR` points to an already reviewed local installation containing `realesrgan-ncnn-vulkan.exe` and one supported model pair: `realesrgan-x4plus-anime` or `realesr-animevideov3-x4`. The plugin does not accept an arbitrary binary/model path and does not download either dependency.
+
+`postprocess_unavailable` means the exact configured executable/model files were not available. `postprocess_failed` means invocation or output validation failed. In both cases, the reviewed original `final.png` is the fallback; do not treat `final-upscaled.png` as successful unless the returned final metadata identifies it and includes its hashes and dimensions.
+
+Start inspection with `local_gpu_get_run`. Check the persisted state, warnings, original-final metadata, and the exact `final-upscaled.png` / `final-upscaled.pending.png` entries. Correct the environment, supported model selection, or local permissions outside the plugin, then retry only when `recoverable_next_actions` and the current state permit it. If the run is already finalized, keep the original final or begin a new confirmed run rather than repeating finalization.
+
+`postprocess_cleanup_failed` is an additional warning: the original-final fallback may still be usable, but exact-name pending, rollback, directory, link, or junction residue may remain for diagnosis. Do not recursively delete the run directory, follow a link target, remove an unfamiliar target, or trigger a hidden download. Preserve the manifest and original, inspect the exact entry type and permissions, and use an administrator-approved local cleanup procedure before any safe retry.
 
 ## Cleanup Confirmation Is Rejected
 

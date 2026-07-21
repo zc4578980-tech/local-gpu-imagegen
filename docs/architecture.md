@@ -12,7 +12,8 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 | `mcp_server.py` | Protocol lifecycle, schemas, validation, dispatch, timeout, structured results | Diffusion pipeline logic |
 | `AssetRunEngine` | Confirmed run orchestration, generation plans, previews, review, and final publication | Filesystem locking details |
 | `RunStore` | Atomic manifest updates, attempt ownership, idempotency, recovery, and cleanup | Backend execution |
-| `ProfileRegistry` | Validated use-case profile loading and constraint merging | Model discovery |
+| `ProfileRegistry` | Validated Profile/style/model catalog loading, constraint merging, and model approval checks | Local model installation or license selection |
+| `RealEsrganAdapter` | Optional explicit anime-only 4x postprocessing from one configured tool root | Downloads, arbitrary commands, or automatic invocation |
 | Subprocess boundary | Isolates backend execution and provides exit code/stdout/stderr | MCP semantics |
 | `generate_image.py` | WebUI/Diffusers selection, model loading, image generation, PNG output | JSON-RPC transport |
 | `check_gpu.py` | Machine-readable readiness report | Installation or environment mutation |
@@ -29,11 +30,15 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 8. Structured data is returned as MCP `structuredContent` plus text content; a generation round may also include a bounded JPEG preview.
 9. Tool failures use `isError: true`; protocol failures use JSON-RPC error envelopes.
 
+Before step 6, the Agent Skill lists the catalog, asks only for missing high-impact boundaries, displays the exact resolved model and run summary, and requires post-display confirmation. On a vision-capable host it can inspect preview evidence and record review/refine/explore/finalize decisions within the confirmed one-to-three-successful-round budget. A text-only host stops after one retained round without inventing review evidence or finalizing it.
+
 ## Durable Run State
 
 Each high-level run lives under `outputs/runs/<run_id>/` by default. `manifest.json` is the durable source of truth for the confirmed request, attempt history, retained rounds, reviews, warnings, final selection, and monotonically increasing revision. The output root can be replaced with `LOCAL_GPU_IMAGEGEN_OUTPUT_DIR`.
 
 Full generated artifacts are validated full-resolution local PNG files such as `round-01.png`. The optional `round-01-preview.jpg` is a bounded JPEG preview for MCP content; it is not the authoritative image. Finalization validates the caller-nominated reviewed round and current state under the run lock, copies that exact round through `final.pending.png`, and atomically publishes `final.png` before committing final manifest metadata.
+
+New previews use `round-NN-preview.jpg`. Stored manifests using the legacy `round-NN.preview.jpg` name remain readable; loading or retrying them does not rewrite their retained path.
 
 Generation attempts carry an idempotency key plus a hash of their confirmed request. The same key and request can return a retained completed round without rerunning the backend. A conflicting request is rejected. Run locks include process identity so stale ownership can be reclaimed without taking a live attempt. If interruption occurs after the PNG is retained, the next matching call can resume preview creation rather than regenerate the image.
 
@@ -55,6 +60,14 @@ Run responses expose `recoverable_next_actions`, derived from persisted state. A
 
 Readiness is deliberately separated from execution failure. A healthy diagnostic tool must be able to report that a backend is unavailable without presenting itself as broken.
 
+## Model And Postprocess Boundaries
+
+High-level runs require a registered, enabled, license-approved `model_choice`. The production registry ships only the disabled, unapproved `stabilityai/sd-turbo` candidate, so no real high-level generation is currently eligible. Test fixtures may overlay an approved model only inside isolated temporary registries.
+
+`RealEsrganAdapter` is a separate optional finalization boundary. Its tool root comes only from `LOCAL_GPU_IMAGEGEN_REALESRGAN_DIR`, and its supported model names are exactly `realesrgan-x4plus-anime` and `realesr-animevideov3-x4`. It invokes no arbitrary executable/model path and does not download a binary or model. No postprocess request means no adapter call, including when the stored policy is `auto`; an explicit request also requires the confirmed `anime` style.
+
+Success preserves the original `final.png`, atomically publishes `final-upscaled.png`, and records the model, 4x scale, relative source/output paths, SHA-256 values, dimensions, and MIME types under final postprocess metadata. Failure returns the original final with `postprocess_unavailable` or `postprocess_failed`; a cleanup problem adds `postprocess_cleanup_failed` and may leave exact-name diagnostic residue. Real binary/GPU execution, output quality, performance, and VRAM remain unverified.
+
 ## Network Boundary
 
 - Stdio transport is local process I/O.
@@ -65,3 +78,5 @@ Readiness is deliberately separated from execution failure. A healthy diagnostic
 ## Compatibility Strategy
 
 The server implements the narrow protocol surface it uses: initialize, ping, tools/list, and tools/call over newline-delimited stdio JSON-RPC. The public verification script launches this exact path without relying on an AI client, output directory, model, or GPU import. Named client compatibility and real GPU generation remain integration-test responsibilities and should be documented only after retained evidence exists.
+
+Public v0.4.0 evidence is mocked/model-free. The deterministic anime two-round vertical slice uses real registry/engine/store logic but fake backend and postprocessor boundaries; it is not retained real Codex, vision, model, GPU, or Real-ESRGAN acceptance evidence.
