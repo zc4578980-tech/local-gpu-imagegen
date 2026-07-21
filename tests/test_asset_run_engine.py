@@ -11,6 +11,7 @@ import tempfile
 import threading
 import unittest
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -84,6 +85,7 @@ class FakePostprocessor:
         self.failure: AssetEngineError | None = None
         self.leave_pending_on_failure = False
         self.mutate_source_on_failure = False
+        self.failure_artifact_writer: Callable[[Path, Path], None] | None = None
 
     def available_models(self) -> list[str]:
         self.available_calls += 1
@@ -96,6 +98,8 @@ class FakePostprocessor:
         destination = Path(destination).resolve()
         self.upscale_calls.append((source, destination, model))
         if self.failure is not None:
+            if self.failure_artifact_writer is not None:
+                self.failure_artifact_writer(source, destination)
             if self.mutate_source_on_failure:
                 write_test_png(source, 256, 256, b"\x80\x40\x20")
             if self.leave_pending_on_failure:
@@ -117,6 +121,15 @@ class FakePostprocessor:
 
 class SimulatedCrash(BaseException):
     pass
+
+
+def create_directory_alias(alias: Path, target: Path) -> None:
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(alias))
+    else:
+        alias.symlink_to(target, target_is_directory=True)
 
 
 class AssetRunEngineTests(unittest.TestCase):
@@ -255,6 +268,16 @@ class AssetRunEngineTests(unittest.TestCase):
             **self.capabilities,
             "postprocessors": {"anime_upscale": {"available": False, "models": []}},
         })
+        self.assertEqual(self.engine.registry.list_catalog(), catalog_before)
+        self.capabilities["cuda"] = False
+        self.capabilities["available_backends"].append("mutated")
+        self.assertTrue(listed["capabilities"]["cuda"])
+        self.assertEqual(listed["capabilities"]["available_backends"], ["webui", "diffusers"])
+        listed["profiles"]["standalone-illustration"]["defaults"]["aspect_ratio"] = "mutated"
+        self.assertNotEqual(
+            self.engine.registry.list_catalog()["profiles"]["standalone-illustration"]["defaults"]["aspect_ratio"],
+            "mutated",
+        )
 
     def prepare_anime_run(self, *, upscale_policy: str = "auto") -> str:
         started = self.start(style="anime", upscale_policy=upscale_policy)
@@ -266,9 +289,6 @@ class AssetRunEngineTests(unittest.TestCase):
         ))
         self.review(run_id, 1)
         return run_id
-        self.assertEqual(self.engine.registry.list_catalog(), catalog_before)
-        self.capabilities["cuda"] = False
-        self.assertTrue(listed["capabilities"]["cuda"])
 
     def test_list_profiles_reports_sorted_postprocessor_capability_without_upscaling(self) -> None:
         self.postprocessor.models = ["realesrgan-x4plus-anime", "realesr-animevideov3-x4"]
@@ -977,6 +997,123 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(finalized["full_image_path"], str((run_root / "final.png").resolve()))
         self.assertFalse((run_root / "final-upscaled.pending.png").exists())
         self.assertFalse((run_root / "final-upscaled.png").exists())
+
+    def test_empty_directory_postprocess_residue_keeps_finalized_original(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        self.postprocessor.failure = AssetEngineError(
+            "postprocess_failed",
+            "Synthetic directory residue.",
+            "postprocess",
+        )
+
+        def leave_directories(source: Path, destination: Path) -> None:
+            destination.mkdir()
+            (destination.parent / "final-upscaled.pending.png").mkdir()
+
+        self.postprocessor.failure_artifact_writer = leave_directories
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+        original_hash = hashlib.sha256((run_root / "round-01.png").read_bytes()).hexdigest()
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Fall back from directory residue.",
+            "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+        })
+
+        self.assertEqual(finalized["state"], "finalized")
+        self.assertIn("postprocess_failed", finalized["warnings"])
+        self.assertNotIn("PermissionError", json.dumps(finalized))
+        self.assertEqual(finalized["final"]["path"], "final.png")
+        self.assertEqual(hashlib.sha256((run_root / "final.png").read_bytes()).hexdigest(), original_hash)
+        self.assertFalse((run_root / "final-upscaled.png").exists())
+        self.assertFalse((run_root / "final-upscaled.pending.png").exists())
+
+    def test_junction_postprocess_residue_removes_links_without_touching_targets(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        self.postprocessor.failure = AssetEngineError(
+            "postprocess_failed",
+            "Synthetic junction residue.",
+            "postprocess",
+        )
+        target_root = Path(self.temporary_directory.name) / "junction-targets"
+        output_target = target_root / "output"
+        pending_target = target_root / "pending"
+        output_target.mkdir(parents=True)
+        pending_target.mkdir()
+        (output_target / "keep.txt").write_text("output target", encoding="utf-8")
+        (pending_target / "keep.txt").write_text("pending target", encoding="utf-8")
+
+        def leave_junctions(source: Path, destination: Path) -> None:
+            create_directory_alias(destination, output_target)
+            create_directory_alias(destination.parent / "final-upscaled.pending.png", pending_target)
+
+        self.postprocessor.failure_artifact_writer = leave_junctions
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+        original_hash = hashlib.sha256((run_root / "round-01.png").read_bytes()).hexdigest()
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Fall back without traversing junctions.",
+            "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+        })
+
+        self.assertEqual(finalized["state"], "finalized")
+        self.assertIn("postprocess_failed", finalized["warnings"])
+        self.assertNotIn("PermissionError", json.dumps(finalized))
+        self.assertEqual(finalized["final"]["path"], "final.png")
+        self.assertEqual(hashlib.sha256((run_root / "final.png").read_bytes()).hexdigest(), original_hash)
+        self.assertFalse(os.path.lexists(run_root / "final-upscaled.png"))
+        self.assertFalse(os.path.lexists(run_root / "final-upscaled.pending.png"))
+        self.assertEqual((output_target / "keep.txt").read_text(encoding="utf-8"), "output target")
+        self.assertEqual((pending_target / "keep.txt").read_text(encoding="utf-8"), "pending target")
+
+    def test_nonremovable_postprocess_residue_persists_sanitized_cleanup_warning(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        self.postprocessor.failure = AssetEngineError(
+            "postprocess_failed",
+            "Synthetic nonremovable residue.",
+            "postprocess",
+        )
+
+        def leave_directories(source: Path, destination: Path) -> None:
+            destination.mkdir()
+            (destination.parent / "final-upscaled.pending.png").mkdir()
+
+        self.postprocessor.failure_artifact_writer = leave_directories
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+        original_hash = hashlib.sha256((run_root / "round-01.png").read_bytes()).hexdigest()
+        original_rmdir = os.rmdir
+
+        def deny_postprocess_cleanup(path: object, *args: object, **kwargs: object) -> None:
+            if Path(path).name in {"final-upscaled.png", "final-upscaled.pending.png"}:
+                raise PermissionError("private cleanup location")
+            original_rmdir(path, *args, **kwargs)
+
+        with patch("local_gpu_imagegen.postprocess.os.rmdir", side_effect=deny_postprocess_cleanup):
+            finalized = self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "Persist a sanitized cleanup warning.",
+                "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+            })
+
+        serialized = json.dumps(finalized)
+        self.assertEqual(finalized["state"], "finalized")
+        self.assertIn("postprocess_failed", finalized["warnings"])
+        self.assertIn("postprocess_cleanup_failed", finalized["warnings"])
+        self.assertEqual(finalized["final"]["path"], "final.png")
+        self.assertEqual(hashlib.sha256((run_root / "final.png").read_bytes()).hexdigest(), original_hash)
+        self.assertNotIn("PermissionError", serialized)
+        self.assertNotIn("private cleanup location", serialized)
+        self.assertTrue((run_root / "final-upscaled.png").is_dir())
+        self.assertTrue((run_root / "final-upscaled.pending.png").is_dir())
+        persisted = self.engine.get_run({"run_id": run_id})
+        self.assertIn("postprocess_cleanup_failed", persisted["warnings"])
 
     def test_postprocess_capability_failure_warns_and_keeps_original_final(self) -> None:
         self.postprocessor.available_failure = OSError("capability probe failed")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import stat
 import struct
 import subprocess
@@ -17,6 +18,7 @@ OUTPUT_NAME = "final-upscaled.png"
 PENDING_OUTPUT_NAME = "final-upscaled.pending.png"
 UPSCALE_SCALE = 4
 COMMAND_TIMEOUT_SECONDS = 900
+POSTPROCESS_CLEANUP_WARNING = "postprocess_cleanup_failed"
 
 ProcessRunner = Callable[..., object]
 
@@ -54,9 +56,11 @@ class RealEsrganAdapter:
             )
         tool_root, executable = self._required_tool(model)
         source_path, destination_path, pending_path = self._artifact_paths(source, destination)
+        destination_existed = _lexical_entry_exists(destination_path)
+        backup_path = destination_path.with_name(f".final-upscaled.rollback.{secrets.token_hex(8)}.png")
+        backup_created = False
         source_width, source_height = _validated_png_dimensions(source_path)
         source_metadata = validate_png(source_path, source_width, source_height)
-        pending_path.unlink(missing_ok=True)
         command = [
             str(executable),
             "-i",
@@ -70,7 +74,15 @@ class RealEsrganAdapter:
             "-f",
             "png",
         ]
+        failure: Exception | None = None
         try:
+            if not remove_postprocess_artifact(pending_path):
+                raise AssetEngineError(
+                    "postprocess_failed",
+                    "Anime postprocessor could not clean its pending artifact.",
+                    "postprocess",
+                    {"reason": "cleanup_failed", "cleanup_warning": POSTPROCESS_CLEANUP_WARNING},
+                )
             try:
                 completed = self.runner(
                     command,
@@ -109,14 +121,39 @@ class RealEsrganAdapter:
                 source_width * UPSCALE_SCALE,
                 source_height * UPSCALE_SCALE,
             )
+            if destination_existed:
+                os.replace(destination_path, backup_path)
+                backup_created = True
             os.replace(pending_path, destination_path)
             output_metadata = validate_png(
                 destination_path,
                 source_width * UPSCALE_SCALE,
                 source_height * UPSCALE_SCALE,
             )
-        finally:
-            pending_path.unlink(missing_ok=True)
+        except Exception as error:
+            failure = error
+
+        cleanup_failed = not remove_postprocess_artifact(pending_path)
+        if failure is None and backup_created:
+            if remove_postprocess_artifact(backup_path):
+                backup_created = False
+            else:
+                cleanup_failed = True
+        if failure is not None or cleanup_failed:
+            if backup_created:
+                if not remove_postprocess_artifact(destination_path):
+                    cleanup_failed = True
+                try:
+                    os.replace(backup_path, destination_path)
+                    backup_created = False
+                except OSError:
+                    cleanup_failed = True
+            elif not destination_existed and not remove_postprocess_artifact(destination_path):
+                cleanup_failed = True
+        if failure is not None:
+            raise _sanitized_postprocess_failure(failure, cleanup_failed=cleanup_failed)
+        if cleanup_failed:
+            raise _sanitized_postprocess_failure(None, cleanup_failed=True)
 
         source_metadata["path"] = str(source_path)
         output_metadata["path"] = str(destination_path)
@@ -173,14 +210,6 @@ class RealEsrganAdapter:
                 {"path": str(destination_path)},
             )
         pending_path = run_root / PENDING_OUTPUT_NAME
-        if _path_is_link_like(pending_path):
-            _remove_link_like_path(pending_path)
-            raise ArtifactError(
-                "invalid_postprocess_path",
-                "Postprocess pending path must not be a link or filesystem alias.",
-                {"path": str(pending_path)},
-            )
-        ensure_within(run_root, pending_path)
         return source_path, destination_path, pending_path
 
 
@@ -192,29 +221,63 @@ def _controlled_file(root: Path, candidate: Path) -> Path | None:
     return resolved if candidate.is_file() and resolved.is_file() else None
 
 
-def _path_is_link_like(path: Path) -> bool:
-    if path.is_symlink():
-        return True
-    is_junction = getattr(path, "is_junction", None)
-    if callable(is_junction) and is_junction():
-        return True
+def remove_postprocess_artifact(path: Path) -> bool:
+    """Remove one exact postprocess artifact entry without following it."""
     try:
         path_stat = os.lstat(path)
+    except FileNotFoundError:
+        return True
     except OSError:
         return False
     attributes = getattr(path_stat, "st_file_attributes", 0)
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return bool(reparse_flag and attributes & reparse_flag)
-
-
-def _remove_link_like_path(path: Path) -> None:
+    is_reparse = bool(reparse_flag and attributes & reparse_flag)
     try:
-        if path.is_dir() and not path.is_symlink():
-            path.rmdir()
+        if stat.S_ISLNK(path_stat.st_mode):
+            os.unlink(path)
+        elif is_reparse and stat.S_ISDIR(path_stat.st_mode):
+            os.rmdir(path)
+        elif stat.S_ISREG(path_stat.st_mode) or is_reparse:
+            os.unlink(path)
+        elif stat.S_ISDIR(path_stat.st_mode):
+            os.rmdir(path)
         else:
-            path.unlink()
+            return False
+    except FileNotFoundError:
+        return True
     except OSError:
-        pass
+        return False
+    return True
+
+
+def _lexical_entry_exists(path: Path) -> bool:
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _sanitized_postprocess_failure(
+    error: Exception | None,
+    *,
+    cleanup_failed: bool,
+) -> AssetEngineError:
+    if isinstance(error, AssetEngineError):
+        if cleanup_failed:
+            error.details = {**error.details, "cleanup_warning": POSTPROCESS_CLEANUP_WARNING}
+        return error
+    details: dict[str, object] = {"reason": "artifact_operation_failed"}
+    if cleanup_failed:
+        details["cleanup_warning"] = POSTPROCESS_CLEANUP_WARNING
+    return AssetEngineError(
+        "postprocess_failed",
+        "Anime postprocessor artifact handling failed.",
+        "postprocess",
+        details,
+    )
 
 
 def _validated_png_dimensions(path: Path) -> tuple[int, int]:

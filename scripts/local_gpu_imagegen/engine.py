@@ -16,7 +16,12 @@ from .backend_contract import validate_backend_result
 from .errors import ArtifactError, AssetEngineError, ConflictError, StateError, ValidationError
 from .generation_plan import validate_confirmed_run_request, validate_generation_plan
 from .preview import MAX_PREVIEW_BYTES, PreviewResult, create_preview
-from .postprocess import RealEsrganAdapter, SUPPORTED_MODELS
+from .postprocess import (
+    POSTPROCESS_CLEANUP_WARNING,
+    RealEsrganAdapter,
+    SUPPORTED_MODELS,
+    remove_postprocess_artifact,
+)
 from .profile_registry import ProfileRegistry
 from .run_store import AttemptHandle, RunStore
 
@@ -256,16 +261,34 @@ class AssetRunEngine:
             final_image["path"] = final_path.name
             if postprocess is not None:
                 model = str(postprocess["model"])
-                upscaled_pending_path.unlink(missing_ok=True)
-                upscaled_path.unlink(missing_ok=True)
+                cleanup_warnings: list[str] = []
+
+                def clean_postprocess_artifact(path: Path) -> bool:
+                    removed = remove_postprocess_artifact(path)
+                    if not removed and POSTPROCESS_CLEANUP_WARNING not in cleanup_warnings:
+                        cleanup_warnings.append(POSTPROCESS_CLEANUP_WARNING)
+                    return removed
+
                 try:
+                    cleanup_results = [
+                        clean_postprocess_artifact(path)
+                        for path in (upscaled_pending_path, upscaled_path)
+                    ]
+                    cleanup_ready = all(cleanup_results)
+                    if not cleanup_ready:
+                        raise AssetEngineError(
+                            "postprocess_failed",
+                            "Anime postprocessor artifacts could not be prepared.",
+                            "postprocess",
+                            {"reason": "cleanup_failed"},
+                        )
                     available_models = sorted(self.postprocessor.available_models())
                     if model not in available_models:
                         postprocess_outcome = {
                             "type": "anime_upscale",
                             "status": "unavailable",
                             "model": model,
-                            "warning": "postprocess_unavailable",
+                            "warnings": ["postprocess_unavailable"],
                         }
                     else:
                         result = self.postprocessor.upscale(final_path, upscaled_path, model)
@@ -277,28 +300,41 @@ class AssetRunEngine:
                             upscaled_path,
                             model,
                         )
+                        if not clean_postprocess_artifact(upscaled_pending_path):
+                            raise AssetEngineError(
+                                "postprocess_failed",
+                                "Anime postprocessor pending artifact could not be cleaned.",
+                                "postprocess",
+                                {"reason": "cleanup_failed"},
+                            )
                 except Exception as error:
-                    upscaled_path.unlink(missing_ok=True)
+                    clean_postprocess_artifact(upscaled_path)
+                    clean_postprocess_artifact(upscaled_pending_path)
+                    if (
+                        isinstance(error, AssetEngineError)
+                        and error.details.get("cleanup_warning") == POSTPROCESS_CLEANUP_WARNING
+                        and POSTPROCESS_CLEANUP_WARNING not in cleanup_warnings
+                    ):
+                        cleanup_warnings.append(POSTPROCESS_CLEANUP_WARNING)
                     pending_path.unlink(missing_ok=True)
                     shutil.copyfile(source_path, pending_path)
                     validate_png(pending_path, width, height)
                     os.replace(pending_path, final_path)
                     code = error.code if isinstance(error, AssetEngineError) else "postprocess_failed"
                     unavailable = code == "postprocess_unavailable"
+                    primary_warning = "postprocess_unavailable" if unavailable else "postprocess_failed"
                     postprocess_outcome = {
                         "type": "anime_upscale",
                         "status": "unavailable" if unavailable else "failed",
                         "model": model,
-                        "warning": "postprocess_unavailable" if unavailable else "postprocess_failed",
+                        "warnings": [primary_warning, *cleanup_warnings],
                     }
-                finally:
-                    upscaled_pending_path.unlink(missing_ok=True)
             return final_image
 
         def rollback() -> None:
-            upscaled_pending_path.unlink(missing_ok=True)
+            remove_postprocess_artifact(upscaled_pending_path)
             if postprocess is not None:
-                upscaled_path.unlink(missing_ok=True)
+                remove_postprocess_artifact(upscaled_path)
             if final_published:
                 final_path.unlink(missing_ok=True)
             pending_path.unlink(missing_ok=True)
@@ -315,12 +351,12 @@ class AssetRunEngine:
             if not isinstance(final, dict):
                 raise ArtifactError("corrupt_manifest", "Final selection metadata is missing.")
             outcome = copy.deepcopy(postprocess_outcome)
-            warning = outcome.pop("warning", None)
+            warnings = outcome.pop("warnings", [])
             final["postprocess"] = outcome
             if outcome.get("status") == "completed":
                 final["path"] = "final-upscaled.png"
-            if isinstance(warning, str):
-                _extend_manifest_warnings(value, [warning])
+            if isinstance(warnings, list) and all(isinstance(warning, str) for warning in warnings):
+                _extend_manifest_warnings(value, warnings)
 
         finalized = self.store.finalize_round_published(
             run_id,

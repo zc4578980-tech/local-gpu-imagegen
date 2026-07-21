@@ -16,7 +16,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from local_gpu_imagegen.errors import AssetEngineError, ValidationError  # noqa: E402
+from local_gpu_imagegen.artifacts import validate_png as real_validate_png  # noqa: E402
+from local_gpu_imagegen.errors import ArtifactError, AssetEngineError, ValidationError  # noqa: E402
 from local_gpu_imagegen.postprocess import RealEsrganAdapter  # noqa: E402
 
 
@@ -46,14 +47,22 @@ class FakeRunner:
         self.output_height = 12
         self.write_output = True
         self.raise_timeout = False
+        self.output_kind = "png"
+        self.create_destination_directory = False
 
     def __call__(self, args: list[str], **kwargs: object) -> SimpleNamespace:
         self.calls.append((list(args), dict(kwargs)))
         if self.raise_timeout:
             raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
-        if self.returncode == 0 and self.write_output:
+        if self.returncode == 0:
             output = Path(args[args.index("-o") + 1])
-            write_test_png(output, self.output_width, self.output_height)
+            if self.create_destination_directory:
+                output.with_name("final-upscaled.png").mkdir()
+            if self.write_output:
+                if self.output_kind == "empty_directory":
+                    output.mkdir()
+                else:
+                    write_test_png(output, self.output_width, self.output_height)
         return SimpleNamespace(returncode=self.returncode, stdout="", stderr=self.stderr)
 
 
@@ -223,6 +232,31 @@ class RealEsrganAdapterTests(unittest.TestCase):
         self.assertEqual(self.destination.read_bytes(), existing)
         self.assertFalse(self.pending.exists())
 
+    def test_final_validation_failure_restores_existing_destination(self) -> None:
+        self.configure_model()
+        existing = b"existing destination"
+        self.destination.write_bytes(existing)
+        adapter = RealEsrganAdapter(self.tool_root, runner=self.runner)
+        validation_count = 0
+
+        def fail_final_validation(path: Path, width: int, height: int) -> dict[str, object]:
+            nonlocal validation_count
+            validation_count += 1
+            if validation_count == 4:
+                raise ArtifactError(
+                    "invalid_generated_image",
+                    "Generated image failed validation after publication.",
+                )
+            return real_validate_png(path, width, height)
+
+        with patch("local_gpu_imagegen.postprocess.validate_png", side_effect=fail_final_validation):
+            with self.assertRaises(AssetEngineError) as raised:
+                adapter.upscale(self.source, self.destination, "realesrgan-x4plus-anime")
+
+        self.assertEqual(raised.exception.code, "invalid_generated_image")
+        self.assertEqual(self.destination.read_bytes(), existing)
+        self.assertFalse(self.pending.exists())
+
     def test_timeout_is_sanitized_and_removes_pending_residue(self) -> None:
         self.configure_model()
         self.runner.raise_timeout = True
@@ -237,7 +271,7 @@ class RealEsrganAdapterTests(unittest.TestCase):
         self.assertFalse(self.pending.exists())
         self.assertFalse(self.destination.exists())
 
-    def test_pending_symlink_alias_is_rejected_without_deleting_source(self) -> None:
+    def test_pending_symlink_alias_is_removed_without_deleting_source(self) -> None:
         self.configure_model()
         source_hash = hashlib.sha256(self.source.read_bytes()).hexdigest()
         try:
@@ -246,13 +280,37 @@ class RealEsrganAdapterTests(unittest.TestCase):
             self.skipTest(f"Symlink creation is unavailable: {error}")
         adapter = RealEsrganAdapter(self.tool_root, runner=self.runner)
 
+        result = adapter.upscale(self.source, self.destination, "realesrgan-x4plus-anime")
+
+        self.assertEqual(result["output"]["path"], str(self.destination.resolve()))
+        self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), source_hash)
+        self.assertFalse(self.pending.exists())
+        self.assertEqual(len(self.runner.calls), 1)
+
+    def test_directory_shaped_pending_does_not_mask_validation_failure(self) -> None:
+        self.configure_model()
+        self.runner.output_kind = "empty_directory"
+        adapter = RealEsrganAdapter(self.tool_root, runner=self.runner)
+
         with self.assertRaises(AssetEngineError) as raised:
             adapter.upscale(self.source, self.destination, "realesrgan-x4plus-anime")
 
-        self.assertEqual(raised.exception.code, "invalid_postprocess_path")
-        self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), source_hash)
+        self.assertEqual(raised.exception.code, "invalid_generated_image")
         self.assertFalse(self.pending.exists())
-        self.assertEqual(self.runner.calls, [])
+        self.assertFalse(self.destination.exists())
+
+    def test_faulty_runner_destination_directory_is_removed_on_failure(self) -> None:
+        self.configure_model()
+        self.runner.write_output = False
+        self.runner.create_destination_directory = True
+        adapter = RealEsrganAdapter(self.tool_root, runner=self.runner)
+
+        with self.assertRaises(AssetEngineError) as raised:
+            adapter.upscale(self.source, self.destination, "realesrgan-x4plus-anime")
+
+        self.assertEqual(raised.exception.code, "invalid_generated_image")
+        self.assertFalse(self.pending.exists())
+        self.assertFalse(self.destination.exists())
 
 
 if __name__ == "__main__":
