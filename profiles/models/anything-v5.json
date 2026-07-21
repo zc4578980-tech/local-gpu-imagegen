@@ -32,5 +32,25 @@
     "scheduler": null
   },
   "known_local": true,
-  "enabled": true
+  "enabled": true,
+  "model_family": "sd15",
+  "prompt_dialect": "sd15-tags-v1",
+  "capabilities": {
+    "operations": ["txt2img", "img2img", "inpaint"],
+    "minimum_dimension": 256,
+    "maximum_dimension": 1536,
+    "minimum_vram_gb": 6,
+    "negative_prompt": "supported"
+  },
+  "affinity": [
+    "anime",
+    "illustration",
+    "character",
+    "presentation-safe-area",
+    "ui-visual-assets"
+  ],
+  "evidence": {
+    "level": "declared",
+    "operations": ["txt2img", "img2img", "inpaint"]
+  }
 }

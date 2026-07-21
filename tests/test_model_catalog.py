@@ -1,0 +1,400 @@
+from __future__ import annotations
+
+import copy
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from local_gpu_imagegen.errors import ConflictError, ValidationError  # noqa: E402
+from local_gpu_imagegen.model_catalog import ModelCatalog, REPOSITORY_REQUIRED  # noqa: E402
+from local_gpu_imagegen.model_identity import identity_token, validate_discovery_record  # noqa: E402
+
+
+def discovery_record(
+    name: str,
+    *,
+    digest: str | None,
+    modified_ns: int | None = None,
+) -> dict[str, object]:
+    record = validate_discovery_record({
+        "backend": "webui",
+        "endpoint_identity": "endpoint:webui",
+        "backend_model_id": name,
+        "format": ".safetensors",
+        "byte_size": 1024 if modified_ns is not None else None,
+        "modified_ns": modified_ns,
+        "sha256": digest,
+        "identity_strength": "cryptographic" if digest else "backend_binding",
+        "metadata": {},
+    })
+    record["identity_token"] = identity_token(record)
+    return record
+
+
+def trust_record(
+    record: dict[str, object],
+    *,
+    catalog_id: str,
+    scope: str,
+    evidence: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "catalog_id": catalog_id,
+        "identity_token": identity_token(record),
+        "identity_strength": record["identity_strength"],
+        "scope": scope,
+        "identity_record": copy.deepcopy(record),
+        "capabilities": {
+            "model_family": "unknown",
+            "prompt_dialect": "natural-v1",
+            "operations": ["txt2img", "inpaint"],
+            "minimum_dimension": 256,
+            "maximum_dimension": 1536,
+            "minimum_vram_gb": 6,
+            "negative_prompt": "supported",
+            "affinity": ["illustration"],
+            "recommended": {
+                "resolution": {"width": 768, "height": 512},
+                "steps": 20,
+                "guidance": 7.0,
+                "sampler": "euler",
+                "scheduler": "normal",
+            },
+        },
+        "workflow_binding": None,
+        "preference": 0,
+        "public_metadata": {
+            "source": "https://example.invalid/model",
+            "license_id": "test-license",
+            "license_url": "https://example.invalid/license",
+            "output_redistribution_status": "approved",
+        } if scope == "public_candidate" else None,
+        "limitations": [],
+        "evidence": evidence or [{"level": "declared"}],
+        "approved_at": "2026-07-21T00:00:00Z",
+    }
+
+
+def repository_model() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "id": "repo/anime",
+        "kind": "model",
+        "source": "local-webui",
+        "sha256": "a" * 64,
+        "license_id": "approved-test",
+        "license_url": "https://example.invalid/license",
+        "license_status": "approved",
+        "output_redistribution_status": "approved",
+        "backends": ["webui"],
+        "local_discovery_names": ["repo-anime.safetensors"],
+        "strengths": ["test"],
+        "limitations": [],
+        "use_cases": ["standalone-illustration"],
+        "styles": ["anime"],
+        "recommended": {
+            "resolution": {"width": 768, "height": 512},
+            "steps": 24,
+            "guidance": 5.5,
+            "sampler": "euler",
+            "scheduler": "normal",
+        },
+        "known_local": True,
+        "enabled": True,
+        "model_family": "sd15",
+        "prompt_dialect": "sd15-tags-v1",
+        "capabilities": {
+            "operations": ["txt2img", "img2img", "inpaint"],
+            "minimum_dimension": 256,
+            "maximum_dimension": 1536,
+            "minimum_vram_gb": 6,
+            "negative_prompt": "supported",
+        },
+        "affinity": ["anime", "illustration"],
+        "evidence": {
+            "level": "declared",
+            "operations": ["txt2img", "img2img", "inpaint"],
+        },
+    }
+
+
+class FakeTrustRegistry:
+    def __init__(self, records: list[dict[str, object]]) -> None:
+        self.records = records
+        self.observations: list[tuple[str, str, str, str]] = []
+
+    def list_records(self) -> list[dict[str, object]]:
+        return copy.deepcopy(self.records)
+
+    def record_observation(
+        self,
+        model_id: str,
+        token: str,
+        operation: str,
+        run_id: str,
+    ) -> None:
+        self.observations.append((model_id, token, operation, run_id))
+
+
+class FakeWorkflows:
+    def resolve(
+        self,
+        template_id: str,
+        _model_id: str,
+        operation: str,
+        _parameters: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "template_id": template_id,
+            "template_version": 1,
+            "operation": operation,
+        }
+
+
+class ModelCatalogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.models_root = Path(self.temporary_directory.name) / "models"
+        self.models_root.mkdir()
+        (self.models_root / "repo.json").write_text(
+            json.dumps(repository_model()),
+            encoding="utf-8",
+        )
+        self.repo_model = discovery_record("repo-anime.safetensors", digest="a" * 64)
+        self.backend_bound = discovery_record("private-bound.safetensors", digest=None)
+        self.crypto_model = discovery_record(
+            "private-crypto.safetensors",
+            digest="b" * 64,
+            modified_ns=100,
+        )
+        self.inventory = [self.repo_model, self.backend_bound, self.crypto_model]
+        self.trust = FakeTrustRegistry([
+            trust_record(
+                self.backend_bound,
+                catalog_id="local:backend-bound",
+                scope="private",
+            ),
+            trust_record(
+                self.crypto_model,
+                catalog_id="local:crypto",
+                scope="public_candidate",
+                evidence=[
+                    {"level": "declared"},
+                    {"level": "observed", "operation": "txt2img", "run_id": "run-1"},
+                ],
+            ),
+        ])
+        self.readiness = {"available_backends": ["webui"]}
+        self.catalog = ModelCatalog(
+            self.models_root,
+            lambda: self.inventory,
+            self.trust,
+            lambda: self.readiness,
+            FakeWorkflows(),
+        )
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def test_catalog_merges_repository_identity_without_promoting_evidence(self) -> None:
+        model = self.catalog.resolve("repo/anime", "public_evidence")
+
+        self.assertEqual(model["identity_token"], identity_token(self.repo_model))
+        self.assertEqual(model["identity_strength"], "cryptographic")
+        self.assertEqual(model["backend"], "webui")
+        self.assertEqual(model["evidence_level"], "declared")
+        self.assertEqual(model["prompt_compiler_id"], "sd15-tags-v1")
+        self.assertIsNone(model["workflow_template_id"])
+        self.assertEqual(
+            identity_token(validate_discovery_record(model)),
+            model["identity_token"],
+        )
+
+    def test_catalog_separates_private_and_public_candidate_scope(self) -> None:
+        private = {item["id"] for item in self.catalog.list_models("private")}
+        public = {item["id"] for item in self.catalog.list_models("public_evidence")}
+
+        self.assertIn("local:backend-bound", private)
+        self.assertNotIn("local:backend-bound", public)
+        self.assertIn("local:crypto", private)
+        self.assertIn("local:crypto", public)
+        crypto = self.catalog.resolve("local:crypto", "private")
+        self.assertEqual(crypto["evidence_level"], "observed")
+        self.assertNotEqual(crypto["evidence_level"], "benchmarked")
+
+    def test_unready_or_untrusted_inventory_is_not_eligible(self) -> None:
+        self.readiness["available_backends"] = []
+        self.assertEqual(self.catalog.list_models("private"), [])
+        self.readiness["available_backends"] = ["webui"]
+        self.trust.records.clear()
+
+        self.assertEqual(
+            [item["id"] for item in self.catalog.list_models("private")],
+            ["repo/anime"],
+        )
+
+    def test_unfingerprinted_stage_one_candidates_do_not_break_catalog(self) -> None:
+        self.inventory.append({
+            "candidate_id": "candidate:index-only",
+            "source_type": "filesystem",
+            "resolved_root": "D:/models",
+            "local_path": "D:/models/index-only.safetensors",
+            "relative_path": "index-only.safetensors",
+            "filename": "index-only.safetensors",
+            "format": ".safetensors",
+            "byte_size": 1024,
+            "modified_ns": 123,
+            "metadata": {},
+            "sha256": None,
+            "identity_strength": None,
+            "trusted": False,
+        })
+
+        ids = [item["id"] for item in self.catalog.list_models("private")]
+
+        self.assertIn("repo/anime", ids)
+        self.assertNotIn("candidate:index-only", ids)
+
+    def test_catalog_detects_drift_before_route_use(self) -> None:
+        model = self.catalog.resolve("local:crypto", "private")
+        route = {
+            "model_id": model["id"],
+            "authorization_scope": "private",
+            "identity_token": model["identity_token"],
+            "identity_strength": model["identity_strength"],
+            "backend": model["backend"],
+            "endpoint_identity": model["endpoint_identity"],
+            "workflow_template_id": model["workflow_template_id"],
+            "workflow_template_version": model["workflow_template_version"],
+        }
+        self.crypto_model["modified_ns"] = 101
+
+        with self.assertRaisesRegex(ConflictError, "model_identity_drifted"):
+            self.catalog.verify_locked_route(route)
+
+    def test_resolve_rejects_invalid_scope_or_ineligible_id(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "invalid_authorization_scope"):
+            self.catalog.list_models("release")
+        with self.assertRaisesRegex(ValidationError, "model_not_eligible"):
+            self.catalog.resolve("missing", "private")
+
+    def test_local_observation_delegates_without_promoting_repository_claims(self) -> None:
+        model = self.catalog.resolve("local:crypto", "private")
+
+        self.catalog.record_observation(
+            model["id"],
+            model["identity_token"],
+            "txt2img",
+            "run-2",
+        )
+        self.catalog.record_observation(
+            "repo/anime",
+            identity_token(self.repo_model),
+            "txt2img",
+            "run-3",
+        )
+
+        self.assertEqual(
+            self.trust.observations,
+            [("local:crypto", model["identity_token"], "txt2img", "run-2")],
+        )
+
+    def test_filesystem_fingerprint_binds_to_exact_comfyui_endpoint_and_model(self) -> None:
+        filesystem = validate_discovery_record({
+            "backend": "filesystem",
+            "endpoint_identity": "filesystem:root",
+            "backend_model_id": "anything-v5.safetensors",
+            "format": ".safetensors",
+            "byte_size": 2048,
+            "modified_ns": 123,
+            "sha256": "c" * 64,
+            "identity_strength": "cryptographic",
+            "metadata": {},
+        })
+        filesystem["identity_token"] = identity_token(filesystem)
+        comfy = validate_discovery_record({
+            "backend": "comfyui",
+            "endpoint_identity": "endpoint:comfyui",
+            "backend_model_id": "anything-v5.safetensors",
+            "format": ".safetensors",
+            "byte_size": None,
+            "modified_ns": None,
+            "sha256": None,
+            "identity_strength": "backend_binding",
+            "metadata": {},
+        })
+        comfy["identity_token"] = identity_token(comfy)
+        trusted = trust_record(
+            filesystem,
+            catalog_id="local:filesystem-comfy",
+            scope="public_candidate",
+        )
+        trusted["workflow_binding"] = {
+            "backend": "comfyui",
+            "backend_model_id": "anything-v5.safetensors",
+            "endpoint_identity": "endpoint:comfyui",
+            "template_id": "sd15-txt2img",
+            "template_version": 1,
+        }
+        trusted["capabilities"]["operations"] = ["txt2img"]
+        self.inventory.extend((filesystem, comfy))
+        self.trust.records.append(trusted)
+        self.readiness["available_backends"].append("comfyui")
+
+        model = self.catalog.resolve("local:filesystem-comfy", "public_evidence")
+
+        self.assertEqual(model["backend"], "comfyui")
+        self.assertEqual(model["endpoint_identity"], "endpoint:comfyui")
+        self.assertEqual(model["backend_model_id"], "anything-v5.safetensors")
+        self.assertEqual(model["identity_strength"], "cryptographic")
+        self.assertEqual(model["sha256"], "c" * 64)
+        self.assertEqual(model["workflow_template_id"], "sd15-txt2img")
+        self.assertEqual(
+            identity_token(validate_discovery_record(model)),
+            model["identity_token"],
+        )
+
+        self.catalog.record_observation(
+            model["id"],
+            model["identity_token"],
+            "txt2img",
+            "run-comfy",
+        )
+        self.assertEqual(
+            self.trust.observations[-1][1],
+            filesystem["identity_token"],
+        )
+
+    def test_shipped_schema_and_records_expose_exact_routing_metadata(self) -> None:
+        schema = json.loads(
+            (ROOT / "profiles" / "schemas" / "model.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        routing_fields = {
+            "model_family",
+            "prompt_dialect",
+            "capabilities",
+            "affinity",
+            "evidence",
+        }
+
+        self.assertEqual(set(schema["required"]), set(REPOSITORY_REQUIRED))
+        self.assertTrue(routing_fields <= set(schema["required"]))
+        for field in ("capabilities", "evidence"):
+            self.assertFalse(schema["properties"][field]["additionalProperties"])
+        for path in sorted((ROOT / "profiles" / "models").glob("*.json")):
+            with self.subTest(path=path.name):
+                document = json.loads(path.read_text(encoding="utf-8"))
+                self.assertTrue(routing_fields <= set(document))
+                self.assertEqual(document["evidence"]["level"], "declared")
+
+
+if __name__ == "__main__":
+    unittest.main()

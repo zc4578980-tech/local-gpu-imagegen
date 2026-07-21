@@ -20,5 +20,19 @@
     "scheduler": "default"
   },
   "known_local": false,
-  "enabled": false
+  "enabled": false,
+  "model_family": "sd-turbo",
+  "prompt_dialect": "natural-v1",
+  "capabilities": {
+    "operations": ["txt2img", "img2img", "inpaint"],
+    "minimum_dimension": 256,
+    "maximum_dimension": 1536,
+    "minimum_vram_gb": 4,
+    "negative_prompt": "supported"
+  },
+  "affinity": ["illustration", "fast-draft"],
+  "evidence": {
+    "level": "declared",
+    "operations": ["txt2img", "img2img", "inpaint"]
+  }
 }

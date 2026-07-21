@@ -13,7 +13,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.errors import ValidationError  # noqa: E402
 from local_gpu_imagegen.profile_registry import (  # noqa: E402
-    MODEL_REQUIRED,
     PROFILE_REQUIRED,
     STYLE_REQUIRED,
     ProfileRegistry,
@@ -24,55 +23,12 @@ class ProfileRegistryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.registry = ProfileRegistry(ROOT / "profiles")
 
-    def test_lists_anime_style_and_disabled_candidate_model(self) -> None:
+    def test_catalog_contains_only_profiles_and_styles(self) -> None:
         catalog = self.registry.list_catalog()
 
         self.assertIn("anime", catalog["styles"])
-        model = catalog["models"]["stabilityai/sd-turbo"]
-        self.assertFalse(model["enabled"])
-        self.assertFalse(model["known_local"])
-        self.assertEqual(model["license_status"], "requires_user_review")
-        self.assertIsNone(model["license_id"])
-        self.assertIsNone(model["license_url"])
-
-    def test_disabled_model_cannot_be_selected(self) -> None:
-        with self.assertRaisesRegex(ValidationError, "model_not_enabled"):
-            self.registry.validate_model_choice("stabilityai/sd-turbo")
-
-    def test_approved_anything_v5_model_matches_observed_authority(self) -> None:
-        catalog = self.registry.list_catalog()
-
-        self.assertIn("civitai/anything-v5@30163", catalog["models"])
-        model = catalog["models"]["civitai/anything-v5@30163"]
-        self.assertEqual(model["source"], "local-webui")
-        self.assertEqual(
-            model["upstream_source"],
-            "https://civitai.com/models/9409?modelVersionId=30163",
-        )
-        self.assertEqual(
-            model["sha256"],
-            "7f96a1a9ca9b3a3242a9ae95d19284f0d2da8d5282b42d2d974398bf7663a252",
-        )
-        self.assertEqual(model["license_id"], "Civitai model permissions for model 9409")
-        self.assertEqual(model["license_status"], "approved")
-        self.assertEqual(model["output_redistribution_status"], "approved")
-        self.assertEqual(model["backends"], ["webui"])
-        self.assertEqual(
-            model["local_discovery_names"],
-            [r"sd1.5\anything-v5.safetensors [7f96a1a9ca]"],
-        )
-        self.assertTrue(model["known_local"])
-        self.assertTrue(model["enabled"])
-
-    def test_model_runtime_fields_match_published_schema(self) -> None:
-        schema = json.loads((ROOT / "profiles" / "schemas" / "model.schema.json").read_text(encoding="utf-8"))
-
-        self.assertEqual(MODEL_REQUIRED, {
-            "schema_version", "id", "kind", "source", "license_id", "license_url",
-            "license_status", "backends", "local_discovery_names", "strengths", "limitations",
-            "use_cases", "styles", "recommended", "known_local", "enabled",
-        })
-        self.assertEqual(set(schema["required"]), MODEL_REQUIRED)
+        self.assertEqual(set(catalog), {"profiles", "styles"})
+        self.assertFalse(hasattr(self.registry, "validate_model_choice"))
 
     def test_style_runtime_fields_match_published_schema(self) -> None:
         schema = json.loads((ROOT / "profiles" / "schemas" / "style.schema.json").read_text(encoding="utf-8"))
@@ -146,11 +102,10 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertIn("subject_completeness", merged["rubric"])
         self.assertEqual(merged["rubric"]["hand_quality"], merged["profile"]["rubric"]["hand_quality"])
 
-    def test_catalog_exposes_copied_profile_style_and_model_metadata(self) -> None:
+    def test_catalog_exposes_copied_profile_and_style_metadata(self) -> None:
         catalog = self.registry.list_catalog()
         profile = catalog["profiles"]["standalone-illustration"]
         style = catalog["styles"]["anime"]
-        model = catalog["models"]["stabilityai/sd-turbo"]
 
         self.assertEqual(profile["schema_version"], 1)
         self.assertIn("character", profile["examples"])
@@ -160,76 +115,12 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertEqual(style["schema_version"], 1)
         self.assertIn("line_coherence", style["rubric"])
         self.assertIn("severe_face_error", style["hard_failures"])
-        self.assertEqual(model["source"], "https://huggingface.co/stabilityai/sd-turbo")
-        self.assertEqual(
-            set(model["recommended"]),
-            {"resolution", "steps", "guidance", "sampler", "scheduler"},
-        )
 
         profile["examples"]["character"].append("mutated")
         style["rubric"]["line_coherence"]["weight"] = 99
-        model["recommended"]["steps"] = 99
         fresh = self.registry.list_catalog()
         self.assertNotIn("mutated", fresh["profiles"]["standalone-illustration"]["examples"]["character"])
         self.assertEqual(fresh["styles"]["anime"]["rubric"]["line_coherence"]["weight"], 1)
-        self.assertEqual(fresh["models"]["stabilityai/sd-turbo"]["recommended"]["steps"], 4)
-
-    def test_approved_model_is_returned_as_a_deep_copy(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            profiles = Path(directory) / "profiles"
-            shutil.copytree(ROOT / "profiles", profiles)
-            path = profiles / "models" / "sd-turbo.json"
-            document = json.loads(path.read_text(encoding="utf-8"))
-            document.update({
-                "id": "test/approved-anime",
-                "source": "test-fixture",
-                "license_id": "test-only",
-                "license_status": "approved",
-                "backends": ["webui"],
-                "known_local": True,
-                "enabled": True,
-            })
-            path.write_text(json.dumps(document), encoding="utf-8")
-            registry = ProfileRegistry(profiles)
-
-            selected = registry.validate_model_choice("test/approved-anime")
-            selected["recommended"]["steps"] = 99
-
-            fresh = registry.validate_model_choice("test/approved-anime")
-            self.assertEqual(fresh["recommended"]["steps"], 4)
-
-    def test_enabled_model_with_unapproved_license_cannot_be_selected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            profiles = Path(directory) / "profiles"
-            shutil.copytree(ROOT / "profiles", profiles)
-            path = profiles / "models" / "sd-turbo.json"
-            document = json.loads(path.read_text(encoding="utf-8"))
-            document.update({"enabled": True, "known_local": True})
-            path.write_text(json.dumps(document), encoding="utf-8")
-
-            with self.assertRaisesRegex(ValidationError, "model_license_unapproved"):
-                ProfileRegistry(profiles).validate_model_choice("stabilityai/sd-turbo")
-
-    def test_unknown_model_cannot_be_selected(self) -> None:
-        with self.assertRaisesRegex(ValidationError, "unknown_model"):
-            self.registry.validate_model_choice("missing/model")
-
-    def test_runtime_rejects_invalid_model_approval_fields(self) -> None:
-        for field, value in (
-            ("enabled", "yes"),
-            ("known_local", 1),
-            ("license_status", "trusted"),
-        ):
-            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
-                profiles = Path(directory) / "profiles"
-                shutil.copytree(ROOT / "profiles", profiles)
-                path = profiles / "models" / "sd-turbo.json"
-                document = json.loads(path.read_text(encoding="utf-8"))
-                document[field] = value
-                path.write_text(json.dumps(document), encoding="utf-8")
-
-                with self.assertRaisesRegex(ValidationError, "invalid_profile_document"):
-                    ProfileRegistry(profiles)
 
     def test_user_constraints_override_profile_defaults(self) -> None:
         merged = self.registry.merge(

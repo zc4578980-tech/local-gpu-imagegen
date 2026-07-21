@@ -5,7 +5,8 @@
   "required": [
     "schema_version", "id", "kind", "source", "license_id", "license_url",
     "license_status", "backends", "local_discovery_names", "strengths", "limitations",
-    "use_cases", "styles", "recommended", "known_local", "enabled"
+    "use_cases", "styles", "recommended", "known_local", "enabled",
+    "model_family", "prompt_dialect", "capabilities", "affinity", "evidence"
   ],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
@@ -42,7 +43,57 @@
       "additionalProperties": false
     },
     "known_local": {"type": "boolean"},
-    "enabled": {"type": "boolean"}
+    "enabled": {"type": "boolean"},
+    "model_family": {"type": "string", "minLength": 1},
+    "prompt_dialect": {
+      "type": "string",
+      "enum": ["natural-v1", "sd15-tags-v1"]
+    },
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "operations", "minimum_dimension", "maximum_dimension",
+        "minimum_vram_gb", "negative_prompt"
+      ],
+      "properties": {
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "enum": ["txt2img", "img2img", "inpaint"]}
+        },
+        "minimum_dimension": {"type": "integer", "minimum": 256, "maximum": 1536},
+        "maximum_dimension": {"type": "integer", "minimum": 256, "maximum": 1536},
+        "minimum_vram_gb": {"type": "number", "minimum": 0},
+        "negative_prompt": {
+          "type": "string",
+          "enum": ["supported", "ignored", "unsupported"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "affinity": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["level", "operations"],
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["declared", "observed", "benchmarked"]
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "enum": ["txt2img", "img2img", "inpaint"]}
+        }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": true
 }
