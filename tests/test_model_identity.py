@@ -65,6 +65,17 @@ class ModelIdentityTests(unittest.TestCase):
 
         self.assertTrue(validated["public_evidence_eligible"])
 
+    def test_filesystem_is_a_discovery_source_not_a_generation_backend(self) -> None:
+        record = discovery_record(
+            identity_strength="cryptographic",
+            sha256="a" * 64,
+        )
+        record["backend"] = "filesystem"
+
+        validated = validate_discovery_record(record)
+
+        self.assertEqual(validated["backend"], "filesystem")
+
     def test_rejects_incomplete_or_inconsistent_identity_records(self) -> None:
         incomplete = discovery_record()
         del incomplete["backend_model_id"]

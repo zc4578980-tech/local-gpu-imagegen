@@ -13,7 +13,7 @@ from .errors import ConflictError, ValidationError
 
 
 IDENTITY_STRENGTHS = frozenset({"cryptographic", "backend_binding"})
-SUPPORTED_BACKENDS = frozenset({"webui", "comfyui", "diffusers"})
+SUPPORTED_BACKENDS = frozenset({"webui", "comfyui", "diffusers", "filesystem"})
 DISCOVERY_REQUIRED = frozenset({
     "backend",
     "endpoint_identity",

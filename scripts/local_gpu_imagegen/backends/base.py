@@ -303,6 +303,9 @@ class BackendRegistry:
                 {"backend": backend_id},
             ) from error
 
+    def adapter_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._adapters))
+
     def probe_all(self) -> dict[str, dict[str, object]]:
         reports: dict[str, dict[str, object]] = {}
         for backend_id, adapter in sorted(self._adapters.items()):
