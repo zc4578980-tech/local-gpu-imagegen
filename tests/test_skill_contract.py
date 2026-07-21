@@ -6,6 +6,19 @@ import re
 import unittest
 from pathlib import Path
 
+if __package__:
+    from .public_contract_helpers import (
+        active_version_findings,
+        plugin_discovery_findings,
+        user_facing_strings,
+    )
+else:
+    from public_contract_helpers import (
+        active_version_findings,
+        plugin_discovery_findings,
+        user_facing_strings,
+    )
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md"
@@ -73,54 +86,26 @@ def _assert_text_only_contract(text: str) -> None:
         raise AssertionError("Text-only branch permits a review/finalize call")
 
 
-def _user_facing_strings(value: object, path: str = "$") -> list[tuple[str, str]]:
-    if isinstance(value, str):
-        return [(path, value)]
-    if isinstance(value, list):
-        result: list[tuple[str, str]] = []
-        for index, item in enumerate(value):
-            result.extend(_user_facing_strings(item, f"{path}[{index}]"))
-        return result
-    if isinstance(value, dict):
-        result = []
-        for key, item in value.items():
-            result.extend(_user_facing_strings(item, f"{path}.{key}"))
-        return result
-    return []
-
-
-FORBIDDEN_DISCOVERY_CLAIMS = (
-    re.compile(r"\bapproved\s+(?:catalog\s+)?model\s+(?:selection|available|included|bundled|ready)\b", re.IGNORECASE),
-    re.compile(r"\bbundled\s+(?:approved\s+)?production\s+model\b", re.IGNORECASE),
-    re.compile(r"\bapproved\s+production\s+model\b", re.IGNORECASE),
-    re.compile(r"\b(?:bundles?|includes?|ships with|comes with)\b.{0,30}\b(?:approved|production|ready|enabled)\s+model\b", re.IGNORECASE),
-    re.compile(r"\bproduction\s+model\b.{0,20}\b(?:approved|available|included|bundled|ready)\b", re.IGNORECASE),
-    re.compile(r"\b(?:codex|host)\b.{0,30}\bverified\b", re.IGNORECASE),
-    re.compile(r"\bverified\b.{0,30}\b(?:codex|host)\b", re.IGNORECASE),
-    re.compile(r"\breal\s+(?:image|output)\b.{0,30}\b(?:acceptance|accepted)\b.{0,15}\bverified\b", re.IGNORECASE),
-)
-
-
 def _assert_plugin_discovery_contract(plugin: dict[str, object]) -> None:
-    strings = _user_facing_strings(plugin)
-    combined = "\n".join(value for _, value in strings).lower()
-    for required in (
-        "catalog-gated model resolution",
-        "no production model is bundled or currently approved",
-        "real host/gpu output acceptance remains unverified",
-    ):
-        if required not in combined:
-            raise AssertionError(f"Missing discovery boundary: {required}")
-    for path, value in strings:
-        value_without_required_boundary = re.sub(
-            r"\bno production model is bundled or currently approved\b",
-            "",
-            value,
-            flags=re.IGNORECASE,
-        )
-        for pattern in FORBIDDEN_DISCOVERY_CLAIMS:
-            if pattern.search(value_without_required_boundary):
-                raise AssertionError(f"Forbidden discovery claim at {path}: {value}")
+    findings = plugin_discovery_findings(plugin)
+    if findings:
+        raise AssertionError("\n".join(findings))
+
+
+def _replace_user_facing_path(value: object, target: str, replacement: str, path: str = "$") -> object:
+    if isinstance(value, str):
+        return replacement if path == target else value
+    if isinstance(value, list):
+        return [
+            _replace_user_facing_path(item, target, replacement, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _replace_user_facing_path(item, target, replacement, f"{path}.{key}")
+            for key, item in value.items()
+        }
+    return value
 
 
 class SkillContractTests(unittest.TestCase):
@@ -333,6 +318,31 @@ class SkillContractTests(unittest.TestCase):
                 interface[field] = claim
             with self.subTest(field=field), self.assertRaises(AssertionError):
                 _assert_plugin_discovery_contract(plugin)
+
+    def test_plugin_discovery_rejects_low_level_edit_scope_in_any_user_facing_field(self) -> None:
+        claims = (
+            "Agent image-to-image workflow",
+            "Run img2img through the Agent workflow.",
+            "Inpainting",
+            "Create and edit with masks.",
+        )
+        for path, _ in user_facing_strings(self.plugin):
+            for claim in claims:
+                plugin = _replace_user_facing_path(self.plugin, path, claim)
+                assert isinstance(plugin, dict)
+                findings = plugin_discovery_findings(plugin)
+                expected = f"Low-level edit scope in discovery at {path}:"
+                with self.subTest(path=path, claim=claim):
+                    self.assertTrue(
+                        any(finding.startswith(expected) for finding in findings),
+                        findings,
+                    )
+
+    def test_skill_active_release_uses_shared_version_scanner(self) -> None:
+        self.assertEqual(
+            active_version_findings((("skills/local-gpu-imagegen/SKILL.md", self.text),)),
+            [],
+        )
 
 
 if __name__ == "__main__":

@@ -5,6 +5,11 @@ import re
 import unittest
 from pathlib import Path
 
+if __package__:
+    from .public_contract_helpers import active_version_findings, unsupported_release_claims
+else:
+    from public_contract_helpers import active_version_findings, unsupported_release_claims
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_TOOLS = {
@@ -29,43 +34,10 @@ PUBLIC_RELEASE_DOCS = ACTIVE_PUBLIC_DOCS + (
     ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md",
 )
 ACTIVE_VERSION_FILES = ACTIVE_PUBLIC_DOCS + (
+    ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md",
     ROOT / "scripts" / "mcp_server.py",
     ROOT / "scripts" / "local_gpu_imagegen" / "generation_plan.py",
 )
-
-
-def unsupported_release_claims(public_copy: str) -> list[str]:
-    claim_patterns = (
-        r"\bcodex\b[^\n.]{0,80}\b(?:verified|validated|supported)\s+host\b",
-        r"\bverified\s+(?:on|with|by)\s+codex\b",
-        r"\breal\s+(?:codex|vision|gpu|generation|image)[^\n.]{0,80}\b(?:accepted|approved|verified|validated)\b",
-        r"\bretained\s+real\s+(?:codex|vision|model|gpu|image|real-esrgan)[^\n.]{0,80}\bevidence\s+exists\b",
-        r"\bproduction[- ](?:ready|proven|verified)\b",
-        r"\bproduction\s+model[^\n.]{0,80}\b(?:bundled|included|approved|enabled|ready)\b",
-        r"\b(?:sd-turbo|model)[^\n.]{0,40}\blicense\s+(?:is\s+)?approved\b",
-        r"\bapproved\s+license\s+(?:record|status|for)\b",
-        r"\b(?:quality|performance|vram)\s+(?:is|was|are|has been)\s+(?:verified|proven|measured)\b",
-        r"\b(?:production|professional|high)[- ]quality\b",
-        r"\b(?:uses?|requires?|needs?)\s+\d+(?:\.\d+)?\s*(?:gb|gib)\s+(?:of\s+)?vram\b",
-        r"\b\d+(?:\.\d+)?\s*(?:x|%|percent)\s+(?:faster|speedup)\b",
-        r"\b(?:five|[1-5])[- ]star(?:s| rating)?\b",
-        r"\b(?:supports|includes|ships|provides)\b[^\n.]{0,80}\b(?:masks?|child revisions?|ppt|ui|v0\.5)\b",
-    )
-    negations = re.compile(
-        r"\b(?:no|not|never|without|unverified|unvalidated|absent|does not|do not|has not|have not|remains? unverified)\b"
-    )
-    findings = []
-    for line in public_copy.lower().splitlines():
-        for statement in re.split(
-            r"(?<=[.!?;])\s+|,\s*(?=(?:but|yet|however|though)\b)|\s+(?=(?:but|yet|however|though)\b)",
-            line,
-        ):
-            if negations.search(statement):
-                continue
-            if any(re.search(pattern, statement) for pattern in claim_patterns):
-                findings.append(statement.strip())
-    return findings
-
 
 class PublicDocumentationTests(unittest.TestCase):
     def test_readme_documents_v04_agent_workflow_and_release_boundary(self) -> None:
@@ -139,11 +111,14 @@ class PublicDocumentationTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        active_copy = "\n".join(path.read_text(encoding="utf-8") for path in ACTIVE_VERSION_FILES)
+        active_documents = tuple(
+            (str(path.relative_to(ROOT)), path.read_text(encoding="utf-8"))
+            for path in ACTIVE_VERSION_FILES
+        )
 
         self.assertEqual(plugin["version"], "0.4.0")
         self.assertIn('"version": "0.4.0"', readme)
-        self.assertNotRegex(active_copy, r"(?i)\b(?:v|version\s*)?0\.3(?:\.0)?\b")
+        self.assertEqual(active_version_findings(active_documents), [])
         self.assertIn("## [0.4.0] - 2026-07-21", changelog)
         self.assertIn("## [0.3.0] - 2026-07-21", changelog)
 
@@ -182,6 +157,9 @@ class PublicDocumentationTests(unittest.TestCase):
             "The production model is approved.",
             "The sd-turbo license is approved.",
             "No production model is bundled, but Codex is a verified host.",
+            "No production model is bundled, and Codex is a verified host.",
+            "Real GPU generation is not unverified: it is validated.",
+            "The model is not disabled and its license is approved.",
         )
         for false_claim in false_claims:
             with self.subTest(false_claim=false_claim):
@@ -192,7 +170,26 @@ class PublicDocumentationTests(unittest.TestCase):
         for stale_version in ("v0.3", "version 0.3", '"version": "0.3.0"'):
             with self.subTest(stale_version=stale_version):
                 mutated = readme + "\nActive release: " + stale_version
-                self.assertRegex(mutated, r"(?i)\b(?:v|version\s*)?0\.3(?:\.0)?\b")
+                self.assertTrue(active_version_findings((("README.md", mutated),)))
+
+    def test_skill_active_v03_mutation_is_rejected(self) -> None:
+        skill_path = ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md"
+        self.assertIn(skill_path, ACTIVE_VERSION_FILES)
+        mutated = skill_path.read_text(encoding="utf-8") + "\nActive Skill release: v0.3"
+        findings = active_version_findings((("skills/local-gpu-imagegen/SKILL.md", mutated),))
+        self.assertEqual(len(findings), 1)
+        self.assertIn("skills/local-gpu-imagegen/SKILL.md", findings[0])
+
+    def test_claim_scanner_preserves_truthful_negative_boundaries(self) -> None:
+        truthful_boundaries = (
+            "No production model is bundled or approved.",
+            "Codex is not a verified host.",
+            "Real GPU generation remains unverified.",
+            "The model is disabled and its license is not approved.",
+        )
+        for boundary in truthful_boundaries:
+            with self.subTest(boundary=boundary):
+                self.assertEqual(unsupported_release_claims(boundary), [])
 
 
 if __name__ == "__main__":
