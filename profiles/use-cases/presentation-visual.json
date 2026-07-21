@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "presentation-visual",
+  "kind": "use_case",
+  "description": "A visual asset designed to receive presentation text or layout outside the generated image.",
+  "aliases": ["presentation visual", "slide visual", "deck background", "PPT visual"],
+  "examples": {
+    "cover": ["Create a launch-cover visual with quiet space on the right for a title."],
+    "section": ["Create a section-divider visual with a dark left-side text-safe area."],
+    "content-background": ["Create a restrained content background with broad central safe space."]
+  },
+  "subtypes": ["cover", "section", "content-background"],
+  "defaults": {
+    "aspect_ratio": "16:9",
+    "generated_text": false,
+    "text_safe_area": "auto"
+  },
+  "prompt_guidance": [
+    "State the focal subject, intended overlay area, hierarchy, crop tolerance, and presentation theme."
+  ],
+  "prohibited_content": [
+    "Do not bake slide text into the image.",
+    "Do not generate charts as presentation data.",
+    "Do not generate slide-layout chrome or complete slide layouts."
+  ],
+  "rubric": {
+    "aspect_ratio": {"weight": 2, "critical": true, "description": "The asset uses the requested presentation ratio."},
+    "safe_area": {"weight": 2, "critical": true, "description": "The requested title or content safe area remains usable."},
+    "theme_consistency": {"weight": 2, "critical": true, "description": "The visual supports the stated presentation theme."},
+    "visual_hierarchy": {"weight": 2, "critical": true, "description": "The focal hierarchy supports later slide composition."},
+    "overlay_contrast": {"weight": 2, "critical": true, "description": "The safe area can support readable overlaid content."},
+    "crop_safety": {"weight": 2, "critical": true, "description": "Important content tolerates the intended slide crop."}
+  },
+  "hard_failures": [
+    "occupied_safe_area",
+    "incorrect_text",
+    "cropped_primary_subject",
+    "unusable_overlay_contrast",
+    "explicit_constraint_violation"
+  ],
+  "refine_mutable": ["prompt_wording", "negative_prompt", "steps", "guidance_scale", "strength"],
+  "explore_mutable": ["prompt_wording", "negative_prompt", "steps", "guidance_scale", "strength", "seed", "composition", "model_choice"]
+}

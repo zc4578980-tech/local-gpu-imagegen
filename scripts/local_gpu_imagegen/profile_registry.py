@@ -30,6 +30,23 @@ PROFILE_CRITICAL_RUBRIC = {
         "style_consistency",
         "detail_quality",
     }),
+    "presentation-visual": frozenset({
+        "aspect_ratio",
+        "safe_area",
+        "theme_consistency",
+        "visual_hierarchy",
+        "overlay_contrast",
+        "crop_safety",
+    }),
+    "ui-visual-asset": frozenset({
+        "dimensions",
+        "aspect_ratio",
+        "crop_tolerance",
+        "palette_compatibility",
+        "style_system_consistency",
+        "layout_composability",
+        "edge_quality",
+    }),
 }
 
 
@@ -61,6 +78,60 @@ def _validate_model_approval(document: dict[str, object]) -> None:
         "approved", "requires_user_review", "rejected",
     }:
         raise ValidationError("invalid_profile_document", "Model license_status is invalid.")
+
+
+def _validate_profile_shape(document: dict[str, object]) -> None:
+    for field in (
+        "aliases",
+        "subtypes",
+        "prohibited_content",
+        "hard_failures",
+        "refine_mutable",
+        "explore_mutable",
+    ):
+        value = document.get(field)
+        if not isinstance(value, list) or not value or not all(
+            isinstance(item, str) and item.strip() for item in value
+        ):
+            raise ValidationError(
+                "invalid_profile_document",
+                f"{field} must be a non-empty list of non-empty strings.",
+            )
+
+    subtypes = document["subtypes"]
+    examples = document.get("examples")
+    if not isinstance(examples, dict) or set(examples) != set(subtypes):
+        raise ValidationError(
+            "invalid_profile_document",
+            "examples must contain exactly one entry for every subtype.",
+        )
+    for subtype, values in examples.items():
+        if not isinstance(values, list) or not values or not all(
+            isinstance(item, str) and item.strip() for item in values
+        ):
+            raise ValidationError(
+                "invalid_profile_document",
+                f"examples.{subtype} must be a non-empty list of non-empty strings.",
+            )
+
+    rubric = document.get("rubric")
+    if not isinstance(rubric, dict) or not rubric:
+        raise ValidationError("invalid_profile_document", "rubric must be a non-empty object.")
+    for name, specification in rubric.items():
+        if not isinstance(name, str) or not name or not isinstance(specification, dict):
+            raise ValidationError("invalid_profile_document", "rubric entries must be objects.")
+        weight = specification.get("weight")
+        critical = specification.get("critical")
+        if type(weight) is not int or weight < 1:
+            raise ValidationError(
+                "invalid_profile_document",
+                f"rubric.{name}.weight must be an integer of at least 1.",
+            )
+        if type(critical) is not bool:
+            raise ValidationError(
+                "invalid_profile_document",
+                f"rubric.{name}.critical must be a boolean.",
+            )
 
 
 class ProfileRegistry:
@@ -113,11 +184,21 @@ class ProfileRegistry:
             BASE_CRITICAL_RUBRIC | PROFILE_CRITICAL_RUBRIC.get(profile_id, frozenset()),
             profile_id,
         )
+        hard_failures: list[str] = []
+        for document in (style, profile):
+            if document is None:
+                continue
+            for failure in document["hard_failures"]:
+                if failure not in hard_failures:
+                    hard_failures.append(failure)
         return {
             "profile": copy.deepcopy(profile),
             "style": copy.deepcopy(style),
             "constraints": copy.deepcopy(merged_constraints),
             "rubric": copy.deepcopy(rubric),
+            "hard_failures": hard_failures,
+            "refine_mutable": copy.deepcopy(profile["refine_mutable"]),
+            "explore_mutable": copy.deepcopy(profile["explore_mutable"]),
         }
 
     def validate_model_choice(self, model_id: str) -> dict[str, object]:
@@ -184,6 +265,8 @@ class ProfileRegistry:
                     required_critical,
                     identifier,
                 )
+            if kind == "use_case":
+                _validate_profile_shape(document)
             if identifier in documents:
                 raise ValidationError("duplicate_profile_id", f"Duplicate profile id: {identifier}")
             documents[identifier] = document

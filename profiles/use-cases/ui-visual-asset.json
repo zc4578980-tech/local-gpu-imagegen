@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "ui-visual-asset",
+  "kind": "use_case",
+  "description": "A raster visual intended to be composed into a user interface by a frontend agent or designer.",
+  "aliases": ["UI visual", "website visual", "hero image", "interface background"],
+  "examples": {
+    "hero": ["Create a website hero visual with clean copy space on the left."],
+    "section-illustration": ["Create a compact crop-safe illustration for a product section."],
+    "rectangular-background": ["Create a wide background asset for a desktop application header."],
+    "decorative-texture": ["Create a restrained decorative texture without promising seamless tiling."]
+  },
+  "subtypes": ["hero", "section-illustration", "rectangular-background", "decorative-texture"],
+  "defaults": {
+    "generated_text": false,
+    "transparent_background": false
+  },
+  "prompt_guidance": [
+    "State target dimensions, layout-safe regions, crop tolerance, palette, and the surrounding interface context."
+  ],
+  "prohibited_content": [
+    "Do not bake controls or interface labels into the image.",
+    "Do not present generated icons as production-ready assets.",
+    "Do not generate frontend code.",
+    "Do not promise transparent output or seamless tiling."
+  ],
+  "rubric": {
+    "dimensions": {"weight": 2, "critical": true, "description": "The asset matches the requested pixel dimensions."},
+    "aspect_ratio": {"weight": 2, "critical": true, "description": "The asset matches the requested interface ratio."},
+    "crop_tolerance": {"weight": 2, "critical": true, "description": "The composition remains usable under the intended crop."},
+    "palette_compatibility": {"weight": 2, "critical": true, "description": "The palette works with the stated interface colors."},
+    "style_system_consistency": {"weight": 2, "critical": true, "description": "The asset fits the surrounding visual system."},
+    "layout_composability": {"weight": 2, "critical": true, "description": "The asset leaves usable space for interface composition."},
+    "edge_quality": {"weight": 2, "critical": true, "description": "Important subjects and details remain clear at asset edges."}
+  },
+  "hard_failures": [
+    "baked_controls",
+    "incorrect_text",
+    "unsafe_edge_contact",
+    "layout_incompatible",
+    "explicit_constraint_violation"
+  ],
+  "refine_mutable": ["prompt_wording", "negative_prompt", "steps", "guidance_scale", "strength"],
+  "explore_mutable": ["prompt_wording", "negative_prompt", "steps", "guidance_scale", "strength", "seed", "composition", "model_choice"]
+}

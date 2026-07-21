@@ -59,6 +59,61 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertIn("standalone-illustration", catalog["profiles"])
         self.assertIn("anime", catalog["styles"])
 
+    def test_catalog_lists_all_v1_use_case_profiles(self) -> None:
+        catalog = self.registry.list_catalog()
+
+        self.assertEqual(
+            set(catalog["profiles"]),
+            {"standalone-illustration", "presentation-visual", "ui-visual-asset"},
+        )
+
+    def test_presentation_profile_marks_safe_area_as_critical(self) -> None:
+        merged = self.registry.merge(
+            "presentation-visual",
+            "anime",
+            {"text_safe_area": "right"},
+        )
+
+        self.assertTrue(merged["rubric"]["safe_area"]["critical"])
+        self.assertEqual(merged["constraints"]["text_safe_area"], "right")
+
+    def test_ui_profile_prohibits_baked_controls_and_text(self) -> None:
+        merged = self.registry.merge("ui-visual-asset", None, {})
+
+        self.assertIn("baked_controls", merged["hard_failures"])
+        self.assertIn("incorrect_text", merged["hard_failures"])
+
+    def test_each_profile_has_examples_for_every_subtype(self) -> None:
+        for identifier, profile in self.registry.list_catalog()["profiles"].items():
+            with self.subTest(profile=identifier):
+                self.assertTrue(profile["aliases"])
+                self.assertEqual(set(profile["examples"]), set(profile["subtypes"]))
+                self.assertTrue(all(profile["examples"][name] for name in profile["subtypes"]))
+
+    def test_runtime_rejects_invalid_profile_lists_and_rubric_items(self) -> None:
+        cases = (
+            ("subtypes", [], "subtypes"),
+            ("hard_failures", ["missing_subject", 1], "hard_failures"),
+            ("rubric.subject_completeness.weight", 0, "weight"),
+            ("rubric.subject_completeness.critical", "yes", "critical"),
+        )
+        source_path = ROOT / "profiles" / "use-cases" / "standalone-illustration.json"
+        for field, value, message in cases:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                profiles = Path(directory) / "profiles"
+                shutil.copytree(ROOT / "profiles", profiles)
+                path = profiles / "use-cases" / source_path.name
+                document = json.loads(path.read_text(encoding="utf-8"))
+                target = document
+                parts = field.split(".")
+                for part in parts[:-1]:
+                    target = target[part]
+                target[parts[-1]] = value
+                path.write_text(json.dumps(document), encoding="utf-8")
+
+                with self.assertRaisesRegex(ValidationError, message):
+                    ProfileRegistry(profiles).list_catalog()
+
     def test_anime_rubric_merges_before_use_case_rubric(self) -> None:
         merged = self.registry.merge("standalone-illustration", "anime", {})
 
