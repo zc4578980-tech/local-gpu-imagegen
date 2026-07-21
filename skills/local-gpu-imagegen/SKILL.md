@@ -1,122 +1,77 @@
 ---
 name: local-gpu-imagegen
-description: Generate images from text prompts on the user's local CUDA GPU. Use when the user asks to create, draw, render, make, or generate an image locally, on this machine, or with the local GPU.
+description: Use when a user asks to create, generate, draw, render, transform, restyle, or revise a visual asset on the local GPU.
 ---
 
-# Local GPU Imagegen
+# Local GPU Visual Asset Workflow
 
-Use this skill when the user asks to generate or transform an image using the local machine's GPU.
+## Core Rule
 
-## What This Plugin Provides
+Brief first, confirm once, then run a bounded generate-review loop. Never substitute guesses for missing high-impact intent or visual evidence.
 
-- An MCP tool named `local_gpu_generate_image`.
-- A readiness tool named `local_gpu_imagegen_check`.
-- A standalone Stable Diffusion script at `scripts/generate_image.py`.
-- An installer helper at `scripts/install.ps1`.
-- Automatic WebUI API support for an existing AUTOMATIC1111-compatible server.
-- Text-to-image, image-to-image, and inpainting modes.
-- Diffusers scheduler, LoRA, and memory optimization options.
+The plugin exposes exactly nine MCP tools: `local_gpu_imagegen_check`, `local_gpu_generate_image`, `local_gpu_list_profiles`, `local_gpu_start_run`, `local_gpu_get_run`, `local_gpu_generate_round`, `local_gpu_record_review`, `local_gpu_finalize_run`, and `local_gpu_cleanup_run`. Use the seven high-level profile/run tools for adaptive runs. The check and direct-generation tools are compatibility tools, not shortcuts around briefing and confirmation.
 
-Generated files default to:
+## Adaptive Brief
+
+1. Call `local_gpu_list_profiles` before proposing a run. Select a Profile, optional style, compatible backend, and an approved non-empty `model_choice` from its returned catalog. The model must be registered, enabled, and license-approved. If none exists, state a clear unavailable-model boundary and stop. Do not invent a model ID, enable a candidate, download a model, or call `local_gpu_start_run`.
+2. Extract known values first. Ask only for missing high-impact boundaries:
+   - intended use/subtype;
+   - subject/outcome;
+   - style/composition;
+   - dimensions/aspect ratio/safe area;
+   - required/prohibited content;
+   - round budget of 1 to 3 successful rounds;
+   - permission for seed/model switching and compatible upscaling.
+3. Do not ask the user to repeat or reconfirm known values. A stated cap selects that maximum as `max_rounds`. Do not start after one conversational turn when any high-impact boundary remains missing.
+4. Present a concise summary covering Profile/style/model choice, dimensions/safe area, preserve/prohibit constraints, the selected 1 to 3 successful rounds, and backend/download/upscale policy:
 
 ```text
-<plugin-root>\outputs
+Profile/style/model choice: ...
+Intent and composition: ...
+Dimensions/safe area: ...
+Preserve/prohibit constraints: ...
+Budget: 1 to 3 successful rounds (selected: ...)
+Backend/download/upscale policy: ...
+Seed/model switching: ...
 ```
 
-## Operating Rules
+5. Confirmation must cover the resolved complete summary, including the exact `model_choice`. Generic wording such as "the approved local model and start" does not pre-authorize any concrete model ID: show the resolved ID and ask for confirmation without repeating known creative requirements. An explicit `use defaults and start` is immediate-default confirmation only when the catalog has exactly one compatible approved model and every other missing field has a safe displayed default. A safe default must be advertised by the selected catalog Profile or model and must not conflict with user constraints. Present that resolved summary, then start without re-asking. Do not call `local_gpu_start_run` before confirmation of the complete summary.
 
-1. Prefer the MCP tool `local_gpu_generate_image` when it is available.
-2. If MCP is not available, run `python scripts/generate_image.py` from the plugin root.
-3. Before the first generation, use `local_gpu_imagegen_check` or `python scripts/check_gpu.py`.
-4. When diagnosing MCP registration, run `python scripts/verify_mcp.py`; it requires no GPU or model.
-5. If WebUI is running at `http://127.0.0.1:7860`, the plugin can generate through that API even when the current Python lacks diffusers dependencies.
-6. If Python dependencies are missing and WebUI is not available, tell the user to run:
+## Run Sequence
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+Follow this order exactly:
+
+```text
+`local_gpu_list_profiles` -> brief -> confirm -> `local_gpu_start_run`
+-> `local_gpu_generate_round(action=initial)` -> inspect preview
+-> `local_gpu_record_review` -> `local_gpu_generate_round(action=refine|explore)`
+-> inspect preview -> `local_gpu_record_review` -> `local_gpu_finalize_run`
 ```
 
-7. Do not download missing Diffusers models or LoRAs unless the user explicitly approves it. Downloads are disabled by default.
-8. Do not silently fall back to CPU unless the user explicitly allows CPU generation. This plugin exists to use the local GPU.
-9. Save generated images in the output folder and show the absolute path to the user.
-10. Use `txt2img` for fresh images, `img2img` when the user provides a source image to restyle or vary, and `inpaint` when the user provides both source and mask images.
+The second generation/review pair is conditional: repeat it only while the confirmed budget remains and improvement is worthwhile. `local_gpu_get_run` is for recovery or state checks. Use `local_gpu_cleanup_run` only for the scope the user authorized; deleting a whole run requires the tool's exact confirmation. Do not bypass the adaptive run with `local_gpu_generate_image`.
 
-## Common Script Usage
+For each generation, use a unique idempotency key and a plan bound to the confirmed summary. The first action is `initial`. After each review:
 
-```powershell
-python .\scripts\generate_image.py `
-  --prompt "a quiet futuristic train station at sunrise, painterly concept art" `
-  --width 1024 `
-  --height 1024
-```
+- **Refine: preserve the seed.** Keep the accepted structure and make targeted parameter/prompt improvements.
+- **Explore: change the seed.** Search a materially different composition or interpretation within the confirmed constraints.
+- Put concise intent in `change_summary`: `Preserve: <what stays>. Change: <what changes>.`
+- Never exceed the confirmed successful-round budget. Failed attempts do not consume a successful round, but time pressure, sunk cost, an offline user, or a likely improvement never authorizes another successful round.
+- A retained image consumes one successful round regardless of visual quality. Do not relabel it as a failed attempt to evade the budget.
+- Eligible means no hard failures and every critical rubric score is at least 3. Stop early when an eligible reviewed result exists and further GPU use is unlikely to help.
 
-Image-to-image:
+## Review Evidence
 
-```powershell
-python .\scripts\generate_image.py `
-  --mode img2img `
-  --input-image C:\path\to\source.png `
-  --prompt "same composition, watercolor anime background" `
-  --strength 0.55
-```
+On a vision-capable host, inspect the actual returned preview or accessible full image. Record the complete returned rubric with evidence-based 1-to-5 scores, hard failures, explicit-constraint results, a concise critique, and the next action. Do not store chain-of-thought; store only conclusions, observed evidence, and the concise preserve/change intent.
 
-Inpainting:
+On a text-only host, generate exactly one successful round per confirmed run. Mark `review unavailable`, stop after the first retained round, and report its path as unreviewed; any remaining round budget stays unused until a human or vision-capable host can review. Do not fabricate scores, constraint results, defects, or visual critique. Because `local_gpu_record_review` requires visual scores, do not call it or `local_gpu_finalize_run` without that evidence. Do not claim the result is accepted, polished, or visually verified.
 
-```powershell
-python .\scripts\generate_image.py `
-  --mode inpaint `
-  --input-image C:\path\to\source.png `
-  --mask-image C:\path\to\mask.png `
-  --prompt "replace the masked object with a glowing lantern"
-```
+For a vision-reviewed eligible result, finalize the nominated reviewed round and report the final absolute path and actual quality status. An ineligible budget-exhausted result may be finalized only with its `needs_user_review` limitation stated; never relabel it accepted.
 
-Useful options:
+## Hard Boundaries
 
-- `--backend`: `auto`, `webui`, or `diffusers`. Default is `auto`.
-- `--mode`: `txt2img`, `img2img`, or `inpaint`.
-- `--webui-url`: WebUI API URL. Default is `http://127.0.0.1:7860`.
-- `--model`: WebUI checkpoint title or Hugging Face/local diffusers model path.
-- `--negative-prompt`: Things to avoid.
-- `--sampler-name`: WebUI sampler name.
-- `--scheduler`: Diffusers scheduler: `default`, `dpmpp`, `euler`, `euler-a`, `ddim`, `unipc`, or `lcm`.
-- `--input-image`: Source image for img2img/inpaint.
-- `--mask-image`: Mask image for inpaint.
-- `--strength`: Denoising strength for img2img/inpaint.
-- `--lora`: Diffusers LoRA path/model id. Can be repeated.
-- `--cpu-offload`: Reduce VRAM usage on CUDA.
-- `--vae-tiling`: Use tiled VAE for large images.
-- `--seed`: Fixed seed for reproducibility.
-- `--output-dir`: Destination folder.
-- `--allow-cpu`: Permit CPU fallback only when the user explicitly asks.
-- `--allow-download`: Permit missing Diffusers model/LoRA downloads only after explicit user approval.
-
-## Defaults
-
-- Backend: `auto`, preferring a running local WebUI API.
-- Diffusers model: `stabilityai/sd-turbo`
-- Device: `cuda`, unless CPU is explicitly allowed.
-- Model/LoRA network access: disabled unless `--allow-download` is set.
-- Output directory: `<plugin-root>\outputs`, unless `LOCAL_GPU_IMAGEGEN_OUTPUT_DIR` is set.
-- Width/height: `1024x1024`
-- Steps: `20` for WebUI, `4` for diffusers SD Turbo, otherwise configurable.
-
-## Stable Diffusion Reference Layer
-
-This plugin incorporates the practical surface area commonly covered by Stable Diffusion skills:
-
-- txt2img for direct prompt generation.
-- img2img for source-image variation and style transfer.
-- inpainting for masked edits.
-- scheduler selection for Diffusers.
-- LoRA loading for Diffusers workflows.
-- attention slicing, VAE slicing/tiling, and CPU offload for lower VRAM use.
-
-For WebUI, model, sampler, LoRA syntax, and extensions are delegated to the running AUTOMATIC1111-compatible server. For Diffusers, pass local paths or Hugging Face model ids directly.
-
-## Installer Notes
-
-`install.ps1` avoids Python 3.14/3.15 because PyTorch CUDA wheels are not reliably available there. It prefers Python 3.12 or 3.11, and can be overridden with:
-
-```powershell
-$env:LOCAL_GPU_IMAGEGEN_PYTHON = "C:\Path\To\python.exe"
-```
+- No hidden downloads. Do not enable downloads or suggest that a remote-looking model ID is locally available. Report unavailable dependencies/models and stop.
+- Do not silently fall back to CPU or switch the confirmed model/backend policy.
+- `upscale_policy: auto` records permission only; it does not prove a compatible upscaler is installed or that upscaling occurred.
+- Do not promise masks, child revisions, or hot revision tools. Record only current-run refine/explore intent; those revision features are outside this workflow.
+- A preview path is not visual evidence. One-turn urgency is not confirmation. A nearly-good last round is not authority to exceed the budget.
+- Do not describe Codex or any other host as verified, and do not claim real image acceptance without retained acceptance evidence.
