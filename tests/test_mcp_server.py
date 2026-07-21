@@ -48,7 +48,22 @@ class McpServerUnitTests(unittest.TestCase):
         for name in HIGH_LEVEL_TOOLS:
             with self.subTest(name=name):
                 self.assertFalse(tools[name]["inputSchema"]["additionalProperties"])
-                self.assertFalse(tools[name]["outputSchema"]["additionalProperties"])
+                output_schema = tools[name]["outputSchema"]
+                self.assertIn("oneOf", output_schema)
+                if "oneOf" not in output_schema:
+                    continue
+                self.assertEqual(len(output_schema["oneOf"]), 2)
+                success, error = output_schema["oneOf"]
+                self.assertFalse(success["additionalProperties"])
+                self.assertIn("ok", success["required"])
+                self.assertIn("warnings", success["required"])
+                self.assertEqual(error["required"], ["error"])
+                self.assertFalse(error["additionalProperties"])
+                self.assertEqual(set(error["properties"]), {"error"})
+                error_value = error["properties"]["error"]
+                self.assertEqual(set(error_value["properties"]), {"code", "category", "message", "details"})
+                self.assertEqual(set(error_value["required"]), {"code", "category", "message"})
+                self.assertFalse(error_value["additionalProperties"])
 
     def test_high_level_input_contracts_are_exact(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
@@ -204,6 +219,28 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertEqual(result["content"][1]["mimeType"], "image/jpeg")
         self.assertEqual(result["content"][1]["data"], "amFzZw==")
         self.assertNotIn("data", result["structuredContent"])
+
+    def test_generate_round_rejects_nested_non_txt2img_mode_before_engine_work(self) -> None:
+        for nested_mode in ("img2img", "inpaint"):
+            arguments = {
+                "run_id": "run-1",
+                "idempotency_key": f"initial-{nested_mode}",
+                "action": "initial",
+                "edit_mode": "txt2img",
+                "plan": {"parameters": {"mode": nested_mode}},
+                "seed": 42,
+                "change_summary": "Initial candidate.",
+            }
+            engine = Mock()
+            engine.generate_round.return_value = ({"ok": True, "warnings": []}, None)
+            with self.subTest(nested_mode=nested_mode), patch.object(
+                mcp_server, "get_asset_engine", return_value=engine
+            ) as get_engine:
+                result = mcp_server.handle_tool_call({"name": "local_gpu_generate_round", "arguments": arguments})
+
+                self.assertTrue(result["isError"])
+                self.assertEqual(result["structuredContent"]["error"]["code"], "edit_mode_mismatch")
+                get_engine.assert_not_called()
 
     def test_oversized_preview_is_not_added_to_mcp_content(self) -> None:
         encoded_limit = 4 * ((1024 * 1024 + 2) // 3)

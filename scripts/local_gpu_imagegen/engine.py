@@ -88,6 +88,7 @@ class AssetRunEngine:
         run_id = _required(arguments, "run_id", str)
         idempotency_key = _required(arguments, "idempotency_key", str)
         action = _required(arguments, "action", str)
+        edit_mode = _required(arguments, "edit_mode", str)
         seed = _required(arguments, "seed", int, reject_bool=True)
         plan_value = _required(arguments, "plan", dict)
 
@@ -96,9 +97,9 @@ class AssetRunEngine:
         request = manifest.get("request")
         if not isinstance(request, dict):
             raise ArtifactError("corrupt_manifest", "Manifest request must be an object.")
-        plan = validate_generation_plan(plan_value, request, action)
+        plan = validate_generation_plan(plan_value, request, action, edit_mode)
         width, height = _dimensions(plan)
-        mode = _mode(plan)
+        mode = edit_mode
         run_root = self._run_root(run_id)
         round_number = _next_round_number(manifest)
         final_path = ensure_within(run_root, run_root / f"round-{round_number:02d}.png")
@@ -447,15 +448,6 @@ def _dimensions(plan: dict[str, object]) -> tuple[int, int]:
     if width % 8 != 0 or height % 8 != 0:
         raise ValidationError("invalid_dimensions", "Width and height must be divisible by 8.")
     return width, height
-
-
-def _mode(plan: dict[str, object]) -> str:
-    parameters = plan["parameters"]
-    assert isinstance(parameters, dict)
-    mode = parameters.get("mode", "txt2img")
-    if not isinstance(mode, str) or mode not in {"txt2img", "img2img", "inpaint"}:
-        raise ValidationError("invalid_mode", "Generation mode must be txt2img, img2img, or inpaint.")
-    return mode
 
 
 def _backend_arguments(

@@ -125,6 +125,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "idempotency_key": key,
             "action": action,
+            "edit_mode": "txt2img",
             "seed": seed,
             "plan": self.plan(
                 max_rounds=max_rounds,
@@ -254,6 +255,29 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(data["full_image_path"], str((run_root / "round-01.png").resolve()))
         self.assertIsNotNone(preview)
         self.assertIsNotNone(preview.data_base64)
+
+    def test_nested_mode_mismatch_is_rejected_before_attempt_or_backend(self) -> None:
+        for nested_mode in ("img2img", "inpaint"):
+            with self.subTest(nested_mode=nested_mode), tempfile.TemporaryDirectory() as directory:
+                runner = FakeBackendRunner()
+                engine = AssetRunEngine(
+                    ProfileRegistry(ROOT / "profiles"),
+                    RunStore(Path(directory) / "output"),
+                    runner,
+                    lambda: self.capabilities,
+                )
+                started = engine.start_run(self.start_arguments())
+                arguments = self.generate_arguments(started["run_id"])
+                arguments["plan"]["parameters"]["mode"] = nested_mode
+
+                with self.assertRaises(ValidationError) as raised:
+                    engine.generate_round(arguments)
+
+                self.assertEqual(raised.exception.code, "edit_mode_mismatch")
+                manifest = engine.get_run({"run_id": started["run_id"]})
+                self.assertEqual(manifest["state"], "created")
+                self.assertEqual(manifest["attempts"], [])
+                self.assertEqual(runner.calls, [])
 
     def test_backend_result_must_match_requested_backend_seed_and_integer_dimensions(self) -> None:
         mismatches = {

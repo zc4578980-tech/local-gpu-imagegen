@@ -213,7 +213,18 @@ def _output_schema(properties: dict[str, Any], required: list[str]) -> dict[str,
         "ok": {"type": "boolean"},
         "warnings": {"type": "array", "items": {"type": "string"}},
     }
-    return _object_schema({**common, **properties}, ["ok", *required, "warnings"])
+    success = _object_schema({**common, **properties}, ["ok", *required, "warnings"])
+    error_value = _object_schema(
+        {
+            "code": {"type": "string"},
+            "category": {"type": "string"},
+            "message": {"type": "string"},
+            "details": {"type": "object", "additionalProperties": True},
+        },
+        ["code", "category", "message"],
+    )
+    error = _object_schema({"error": error_value}, ["error"])
+    return {"oneOf": [success, error]}
 
 
 def tool_schema() -> list[dict[str, Any]]:
@@ -569,6 +580,17 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
             "confirmation must exactly equal run_id when scope is all.",
             {"field": "confirmation"},
         )
+    if tool["name"] == "local_gpu_generate_round":
+        plan = arguments.get("plan")
+        parameters = plan.get("parameters") if isinstance(plan, dict) else None
+        nested_mode = parameters.get("mode") if isinstance(parameters, dict) else None
+        if nested_mode is not None and nested_mode != arguments.get("edit_mode"):
+            return tool_error(
+                "edit_mode_mismatch",
+                "validation",
+                "Generation plan parameters.mode must match the authoritative edit_mode.",
+                {"edit_mode": arguments.get("edit_mode"), "plan_mode": nested_mode},
+            )
     return None
 
 

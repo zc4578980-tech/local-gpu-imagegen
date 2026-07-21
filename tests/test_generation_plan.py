@@ -49,6 +49,13 @@ class GenerationPlanTests(unittest.TestCase):
         self.assertIsNone(validated["model_choice"])
         self.assertEqual(validated["upscale_policy"], "off")
 
+    def test_rejects_nested_mode_that_disagrees_with_authoritative_txt2img(self) -> None:
+        for nested_mode in ("img2img", "inpaint"):
+            with self.subTest(nested_mode=nested_mode):
+                changed = {**self.plan, "parameters": {"mode": nested_mode}}
+                with self.assertRaisesRegex(ValidationError, "edit_mode_mismatch"):
+                    validate_generation_plan(changed, self.run_request, "initial")
+
     def test_rejects_profile_or_budget_drift(self) -> None:
         with self.assertRaisesRegex(ValidationError, "generation_plan_mismatch"):
             validate_generation_plan({**self.plan, "max_rounds": 3}, self.run_request, "refine")

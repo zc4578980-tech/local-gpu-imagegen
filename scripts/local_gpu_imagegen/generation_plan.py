@@ -15,7 +15,12 @@ _BACKENDS = {"auto", "webui", "diffusers"}
 _UPSCALE_POLICIES = {"auto", "off"}
 
 
-def validate_generation_plan(plan: dict[str, object], run_request: dict[str, object], action: str) -> dict[str, object]:
+def validate_generation_plan(
+    plan: dict[str, object],
+    run_request: dict[str, object],
+    action: str,
+    edit_mode: str = "txt2img",
+) -> dict[str, object]:
     if not isinstance(plan, dict):
         raise ValidationError("invalid_generation_plan", "Generation plan must be an object.")
     fields = set(plan)
@@ -31,6 +36,15 @@ def validate_generation_plan(plan: dict[str, object], run_request: dict[str, obj
         raise ValidationError("invalid_negative_prompt", "negative_prompt must be a string.")
     if not isinstance(plan["constraints"], dict) or not isinstance(plan["parameters"], dict):
         raise ValidationError("invalid_generation_plan", "constraints and parameters must be objects.")
+    if edit_mode != "txt2img":
+        raise ValidationError("invalid_edit_mode", "edit_mode must be txt2img in v0.3.")
+    nested_mode = plan["parameters"].get("mode")
+    if nested_mode is not None and nested_mode != edit_mode:
+        raise ValidationError(
+            "edit_mode_mismatch",
+            "Generation plan parameters.mode must match the authoritative edit_mode.",
+            {"edit_mode": edit_mode, "plan_mode": nested_mode},
+        )
     if not isinstance(plan["backend"], str) or plan["backend"] not in _BACKENDS:
         raise ValidationError("invalid_backend", "backend must be auto, webui, or diffusers.")
     if plan["model_choice"] is not None and (
