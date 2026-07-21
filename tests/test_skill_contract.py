@@ -50,8 +50,10 @@ def _assert_confirmation_contract(text: str) -> None:
         raise AssertionError("Missing fenced confirmation state machine")
     expected_flow = (
         "early `use defaults and start` -> intent only",
+        "-> `local_gpu_discover_models`",
         "-> `local_gpu_list_profiles`",
-        "-> display resolved complete summary with exact `model_choice`",
+        "-> `local_gpu_recommend_models`",
+        "-> display the exact route and resolved complete summary with exact `model_choice`",
         "-> receive post-display confirmation",
         "-> `local_gpu_start_run`",
     )
@@ -143,6 +145,27 @@ class SkillContractTests(unittest.TestCase):
         ):
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, self.text)
+
+    def test_requires_route_resolution_before_post_display_confirmation(self) -> None:
+        ordered = (
+            "`local_gpu_discover_models`",
+            "`local_gpu_list_profiles`",
+            "`local_gpu_recommend_models`",
+            "display the exact route",
+            "receive post-display confirmation",
+            "`local_gpu_start_run`",
+        )
+        _assert_ordered(self.text, ordered)
+        for boundary in (
+            "no silent model switch",
+            "private",
+            "public_evidence",
+            "backend_binding",
+            "cryptographic",
+            "at most two alternatives",
+        ):
+            with self.subTest(boundary=boundary):
+                self.assertIn(boundary, self.text)
 
     def test_confirmation_resolves_the_exact_model_and_round_cap(self) -> None:
         for required_text in (
@@ -350,7 +373,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("visual asset", discovery)
         self.assertIn("adaptive briefing", discovery)
         self.assertIn("model-free", discovery)
-        self.assertIn("real host/gpu output acceptance remains unverified", discovery)
+        self.assertIn("complete real 9+3 host/vision acceptance matrix", discovery)
+        self.assertIn("real comfyui generation evidence are not retained", discovery)
         self.assertNotIn("codex is verified", discovery)
         self.assertNotIn("real image acceptance is verified", discovery)
         self.assertNotIn("v0.5", discovery)

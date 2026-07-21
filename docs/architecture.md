@@ -10,14 +10,20 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 |---|---|---|
 | MCP client | Sends JSON-RPC requests and consumes tool results | GPU/model execution |
 | `mcp_server.py` | Protocol lifecycle, schemas, validation, dispatch, timeout, structured results | Diffusion pipeline logic |
+| `RuntimeServices` | Composes one discovery, trust, catalog, router, workflow, backend, and engine graph | User conversation policy |
+| `DiscoveryService` | Plans bounded inventory, indexes metadata, fingerprints selected files, and reports cancellation | Model loading, trust, or generation |
+| `TrustRegistry` | Stores exact private/public-candidate approvals and observations in user-local atomic state | Acceptance authority or repository metadata |
+| `ModelCatalog` / `CapabilityRouter` | Merge current inventory/trust/readiness and issue one deterministic frozen route plus at most two alternatives | Silent fallback or weakened hard requirements |
+| `WorkflowTemplateRegistry` | Validates, copies, hashes, and resolves reviewed ComfyUI graphs | Arbitrary custom-node execution |
+| `BackendRegistry` | Dispatches exact WebUI/ComfyUI adapters and the Diffusers compatibility runner | Route selection |
 | `AssetRunEngine` | Confirmed root/child orchestration, edit-mode mapping, previews, review, and final publication | Filesystem locking details |
 | `RunStore` | Atomic manifest updates, attempt ownership, idempotency, recovery, and cleanup | Backend execution |
 | `ProfileRegistry` | Validated Profile/style/model catalog loading, constraint merging, and model approval checks | Local model installation or license selection |
 | `RevisionService` | Preserve/change validation, reviewed-parent lineage, and immutable child creation | Prompt policy or visual judgment |
 | `MaskService` | Deterministic user/geometry masks, JPEG overlays, hashes, and explicit confirmation | Automatic segmentation or user approval |
 | `RealEsrganAdapter` | Optional explicit anime-only 4x postprocessing from one configured tool root | Downloads, arbitrary commands, or automatic invocation |
-| Subprocess boundary | Isolates backend execution and provides exit code/stdout/stderr | MCP semantics |
-| `generate_image.py` | WebUI/Diffusers selection, model loading, image generation, PNG output | JSON-RPC transport |
+| Diffusers subprocess boundary | Isolates compatibility execution and provides normalized JSON | MCP semantics or WebUI/ComfyUI routing |
+| `generate_image.py` | Diffusers compatibility model loading, image generation, PNG output | JSON-RPC transport |
 | `check_gpu.py` | Machine-readable readiness report | Installation or environment mutation |
 
 ## Request Flow
@@ -26,14 +32,24 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 2. `process_line` parses the request and preserves a parsed request ID across internal errors.
 3. `handle_request` handles initialization, ping, tool listing, or tool calls.
 4. Tool arguments are checked against the published input schema before a subprocess starts.
-5. Compatibility tools run the readiness or generation script with a bounded timeout.
-6. High-level tools delegate to `AssetRunEngine`, which validates confirmed plans and immutable child contracts before changing run state.
-7. Revision services copy the reviewed parent source or validate a confirmed mask before any backend invocation.
-8. The run engine maps the fixed child mode to txt2img, img2img, or inpaint arguments, validates the returned PNG, and persists the transition through `RunStore`.
-9. Structured data is returned as MCP `structuredContent` plus text content; generation and mask preparation may also include a bounded JPEG preview.
-10. Tool failures use `isError: true`; protocol failures use JSON-RPC error envelopes.
+5. `local_gpu_discover_models` freezes an `api_only`, `selected_folders`, `common_locations`, or `full_drive` plan. Broader scopes execute only after exact confirmation.
+6. Discovery `index` reads bounded metadata without loading weights; `fingerprint` hashes only selected indexed candidates. Trust changes require a separate exact confirmation and write only user-local state.
+7. `local_gpu_list_profiles` merges repository templates, current inventory, trust, workflow availability, and readiness for `private` or `public_evidence` scope.
+8. `local_gpu_recommend_models` applies hard capability filters and returns one route plus at most two alternatives. The Agent displays the exact route and obtains a new post-display confirmation.
+9. `AssetRunEngine` consumes the single-use `route_token`, persists endpoint/model/workflow/compiler identity, and rechecks it before backend work.
+10. Revision services copy the reviewed parent source or validate a confirmed mask; a child inherits the parent route and cannot override it.
+11. The exact WebUI, ComfyUI, or Diffusers compatibility adapter returns one normalized result. Only a validated PNG and matching identity consume a successful round.
+12. Structured data is returned as MCP `structuredContent` plus text content; tool failures use `isError: true`, while protocol failures use JSON-RPC error envelopes.
 
-Before step 6, the Agent Skill lists the catalog, asks only for missing high-impact boundaries, displays the exact resolved model and run summary, and requires post-display confirmation. On a vision-capable host it can inspect preview evidence and record review/refine/explore/finalize decisions within the confirmed one-to-three-successful-round budget. A text-only host stops after one retained round without inventing review evidence or finalizing it.
+Before step 9, the Agent Skill asks only for missing high-impact boundaries, displays the exact route and run summary, and requires post-display confirmation. On a vision-capable host it can inspect preview evidence and record review/refine/explore/finalize decisions within the confirmed one-to-three-successful-round budget. A text-only host stops after one retained round without inventing review evidence or finalizing it.
+
+## Discovery, Trust, And Frozen Routes
+
+`api_only` contacts only explicitly configured WebUI/ComfyUI adapters. `selected_folders`, `common_locations`, and `full_drive` plans show roots, exclusions, endpoint transmission, expiration, and a scope hash before scanning. Filesystem traversal never follows symlinks, junctions, or reparse points; `.ckpt` files are opaque and never passed to pickle, Torch, model tooling, or adjacent code.
+
+`TrustRegistry` defaults to the OS user-state directory and can be moved with `LOCAL_GPU_IMAGEGEN_STATE_DIR`. `backend_binding` identifies only the model currently reported by one endpoint and remains `private`. `cryptographic` identity adds an exact SHA-256; `public_evidence` candidacy also needs source/license/redistribution metadata and still cannot bypass acceptance authority.
+
+A route freezes authorization scope, backend, endpoint identity, model ID and identity token, workflow/template version, prompt compiler/version, operation, dimensions, and normalized requirements. The route is part of run idempotency. Identity drift, compiler drift, or a backend result that reports another route fails before a successful round is retained. Root and child runs enforce no silent model switch.
 
 ## Durable Run State
 
@@ -63,6 +79,11 @@ Run responses expose `recoverable_next_actions`, derived from persisted state. A
 | Timeout | generation exceeds command timeout | tool error code `command_timeout`, category `timeout` |
 | Backend process | generator exits non-zero | tool error code `backend_command_failed`, exit code retained |
 | Backend response | successful process prints invalid JSON | tool error code `invalid_backend_response` |
+| Discovery plan | plan expired or scope changed | `discovery_plan_expired` or `discovery_plan_changed`; no scan starts |
+| Endpoint policy | public endpoint or unconfirmed LAN transmission | `public_endpoint_rejected` or `network_scan_confirmation_required` |
+| Capability route | no hard-match model or stale route | `no_eligible_model`, `route_confirmation_expired`, or `model_identity_drifted` |
+| ComfyUI workflow | unknown/unsafe node, binding, or changed registered copy | `invalid_workflow_template` or `workflow_registration_drifted` |
+| ComfyUI job | submission, timeout, disappearance, rejection, or cancel | distinct `comfyui_*` result/error states; no fabricated success |
 | Readiness state | CUDA/WebUI not ready | successful tool result with `ready: false` |
 | Run transition | generation before review or premature finalization | structured state/conflict tool error |
 | Revision lineage | missing/changed parent source or wrong fixed edit mode | structured validation/conflict error; parent remains unchanged |
@@ -73,7 +94,9 @@ Readiness is deliberately separated from execution failure. A healthy diagnostic
 
 ## Model And Postprocess Boundaries
 
-High-level runs require a registered, enabled, license-approved `model_choice`. The production registry ships only the disabled, unapproved `stabilityai/sd-turbo` candidate, so no real high-level generation is currently eligible. Test fixtures may overlay an approved model only inside isolated temporary registries.
+High-level runs require an exact current discovery identity, the requested trust/authority scope, and a confirmed route. No model weights are bundled. The repository template `civitai/anything-v5@30163` describes one reviewed existing local WebUI checkpoint; other models require explicit user-local trust and do not become public-evidence authority merely because a backend reports them. Model quality still comes from the user's model.
+
+The ComfyUI adapter executes only the shipped `sd15-txt2img-v1` template or a normalized local copy that passes the same allowlist. The built-in classes are limited to checkpoint/text/latent/sampler/VAE/image/output nodes. Shell, Python, script/process, command execution, HTTP/download/fetch/webhook behavior, unknown custom nodes, unbound fields, traversal paths, and resource overruns are rejected before submission. ComfyUI adapter: contract-tested; real ComfyUI integration evidence: not retained.
 
 `RealEsrganAdapter` is a separate optional finalization boundary. Its tool root comes only from `LOCAL_GPU_IMAGEGEN_REALESRGAN_DIR`, and its supported model names are exactly `realesrgan-x4plus-anime` and `realesr-animevideov3-x4`. It invokes no arbitrary executable/model path and does not download a binary or model. No postprocess request means no adapter call, including when the stored policy is `auto`; an explicit request also requires the confirmed `anime` style.
 
@@ -82,12 +105,13 @@ Success preserves the original `final.png`, atomically publishes `final-upscaled
 ## Network Boundary
 
 - Stdio transport is local process I/O.
-- WebUI generation contacts only the configured `webui_url`; loopback is the safe local default.
+- Loopback WebUI/ComfyUI endpoints are local. Each LAN endpoint requires exact transmission confirmation; public internet endpoints are rejected.
 - Diffusers uses `local_files_only=True` unless the caller explicitly permits downloads.
+- Discovery, trust, and generation never accept or persist credentials; private model paths and endpoint identities are removed from public evidence.
 - The installer downloads packages only when directly invoked by the user.
 
 ## Compatibility Strategy
 
 The server implements the narrow protocol surface it uses: initialize, ping, tools/list, and tools/call over newline-delimited stdio JSON-RPC. The public verification script launches this exact path without relying on an AI client, output directory, model, or GPU import. Named client compatibility and real GPU generation remain integration-test responsibilities and should be documented only after retained evidence exists.
 
-Public v0.5.0 evidence is Mocked/model-free. The deterministic matrix uses real registry/engine/store/revision/mask logic for nine fixed briefs and three child revisions, but fake backend and postprocessor boundaries; it is not retained real Codex, vision, model, GPU, or Real-ESRGAN acceptance evidence and does not prove visual quality.
+Public v0.5.0 evidence is Mocked/model-free. The deterministic matrix uses real registry/engine/store/revision/mask logic for nine fixed briefs and three child revisions, but fake backend and postprocessor boundaries; it is not retained real Codex, vision, model, GPU, or Real-ESRGAN acceptance evidence and does not prove visual quality. WebUI and ComfyUI adapters are contract-tested, but no complete real 9+3 acceptance matrix or real ComfyUI integration evidence is retained.

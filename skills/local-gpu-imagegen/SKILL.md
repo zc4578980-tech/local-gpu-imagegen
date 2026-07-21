@@ -7,15 +7,17 @@ description: Use when a user asks to create, generate, draw, render, transform, 
 
 ## Core Rule
 
-Brief first, confirm once, then run a bounded generate-review loop. Never substitute guesses for missing high-impact intent or visual evidence.
+Brief first, resolve one exact local route, confirm after displaying it, then run a bounded generate-review loop. Never substitute guesses for missing high-impact intent, model identity, or visual evidence.
 
-The plugin exposes exactly twelve MCP tools: `local_gpu_imagegen_check`, `local_gpu_generate_image`, `local_gpu_list_profiles`, `local_gpu_start_run`, `local_gpu_get_run`, `local_gpu_branch_run`, `local_gpu_prepare_mask`, `local_gpu_confirm_mask`, `local_gpu_generate_round`, `local_gpu_record_review`, `local_gpu_finalize_run`, and `local_gpu_cleanup_run`. Use the ten high-level profile/run/revision tools for adaptive runs. The check and direct-generation tools are compatibility tools, not shortcuts around briefing and confirmation.
+The plugin exposes exactly fifteen MCP tools: `local_gpu_imagegen_check`, `local_gpu_generate_image`, `local_gpu_discover_models`, `local_gpu_list_profiles`, `local_gpu_set_model_trust`, `local_gpu_recommend_models`, `local_gpu_start_run`, `local_gpu_get_run`, `local_gpu_branch_run`, `local_gpu_prepare_mask`, `local_gpu_confirm_mask`, `local_gpu_generate_round`, `local_gpu_record_review`, `local_gpu_finalize_run`, and `local_gpu_cleanup_run`. Use the thirteen high-level discovery/profile/run/revision tools for adaptive runs. The check and direct-generation tools are compatibility tools, not shortcuts around briefing, route resolution, and confirmation.
 
 ## Adaptive Brief
 
 1. Extract known values first.
-2. Call `local_gpu_list_profiles` before proposing a run. Select a Profile, optional style, compatible backend, and an approved non-empty `model_choice` from its returned catalog. The model must be registered, enabled, and license-approved. If none exists, state a clear unavailable-model boundary and stop. Do not invent a model ID, enable a candidate, download a model, or call `local_gpu_start_run`.
-3. Ask only for missing high-impact boundaries:
+2. Call `local_gpu_discover_models` with `api_only` when current backend inventory is unknown. A broader `selected_folders`, `common_locations`, or `full_drive` scan must first return and display an unchanged plan, then receive its exact scan confirmation. Discovery indexes metadata without loading weights; run `fingerprint` only for explicitly selected candidates. Never infer trust from discovery.
+3. If a discovered identity needs trust, display its exact backend, endpoint class, backend-visible model name, identity strength, capabilities, scope, and workflow binding before calling `local_gpu_set_model_trust`. A `backend_binding` identity is `private` only. `public_evidence` requires a `cryptographic` SHA-256 plus source, license, and redistribution metadata; this candidate status still does not replace acceptance authority. Receive a new exact trust confirmation after displaying those facts.
+4. Call `local_gpu_list_profiles` with the intended `private` or `public_evidence` scope before proposing a run. Select a Profile, optional style, compatible backend, and an approved non-empty `model_choice` from its merged catalog. The model must be registered, enabled, and license-approved. If none exists, state a clear unavailable-model boundary and stop. Do not invent a model ID, enable a candidate, download a model, or call `local_gpu_start_run`.
+5. Ask only for missing high-impact boundaries:
    - intended use/subtype;
    - subject/outcome;
    - style/composition;
@@ -23,16 +25,18 @@ The plugin exposes exactly twelve MCP tools: `local_gpu_imagegen_check`, `local_
    - required/prohibited content;
    - round budget of 1 to 3 successful rounds;
    - permission for seed/model switching and compatible upscaling.
-4. Do not ask the user to repeat or reconfirm known values. A stated cap selects that maximum as `max_rounds`. Do not start after one conversational turn when any high-impact boundary remains missing. A safe default must be advertised by the selected catalog Profile or model and must not conflict with user constraints.
-5. Present a concise resolved summary covering Profile/style/model choice, dimensions/safe area, preserve/prohibit constraints, the selected 1 to 3 successful rounds, and backend/download/upscale policy:
+6. Do not ask the user to repeat or reconfirm known values. A stated cap selects that maximum as `max_rounds`. Do not start after one conversational turn when any high-impact boundary remains missing. A safe default must be advertised by the selected catalog Profile or model and must not conflict with user constraints.
+7. Call `local_gpu_recommend_models` with the resolved operation, Profile, style, dimensions, affinity, VRAM boundary, and optional preferred model. Accept one exact route and at most two alternatives. Never weaken a hard requirement to obtain a result.
+8. Present a concise resolved summary and display the exact route: Profile/style/model ID, backend, identity strength, SHA-256 prefix or `backend_binding` warning, workflow/template version, prompt compiler/version, dimensions/safe area, preserve/prohibit constraints, selected 1 to 3 successful rounds, and download/upscale policy:
 
 ```text
 Profile/style/model choice: ...
+Route: backend / identity / hash-or-binding / workflow / compiler
 Intent and composition: ...
 Dimensions/safe area: ...
 Preserve/prohibit constraints: ...
 Budget: 1 to 3 successful rounds (selected: ...)
-Backend/download/upscale policy: ...
+backend/download/upscale policy: ...
 Seed/model switching: ...
 ```
 
@@ -40,14 +44,16 @@ Seed/model switching: ...
 
 An early `use defaults and start` received before catalog resolution records intent only; it never authorizes an unseen model. Generic wording such as "the approved local model and start" does not pre-authorize any concrete model ID. Confirmation must cover the resolved complete summary, including the exact `model_choice`.
 
-After `local_gpu_list_profiles` resolves an approved model and the complete summary is ready, display it. Always require a new explicit confirmation after displaying that summary, even when the user supplied start/default intent earlier. Only a user message received after the display and clearly accepting the shown summary is confirmation; that later message may itself say `use defaults and start`.
+After `local_gpu_recommend_models` resolves one exact route and the complete summary is ready, display it. Always require a new explicit confirmation after displaying that summary, even when the user supplied start/default intent earlier. Only a user message received after the display and clearly accepting the shown route and summary is confirmation; that later message may itself say `use defaults and start`.
 
 Required temporal order:
 
 ```text
 early `use defaults and start` -> intent only
+-> `local_gpu_discover_models`
 -> `local_gpu_list_profiles`
--> display resolved complete summary with exact `model_choice`
+-> `local_gpu_recommend_models`
+-> display the exact route and resolved complete summary with exact `model_choice`
 -> receive post-display confirmation
 -> `local_gpu_start_run`
 ```
@@ -59,7 +65,7 @@ Do not call `local_gpu_start_run` before that post-display confirmation.
 Follow this order exactly:
 
 ```text
-`local_gpu_list_profiles` -> brief -> confirm -> `local_gpu_start_run`
+`local_gpu_list_profiles` -> brief -> `local_gpu_recommend_models` -> confirm -> `local_gpu_start_run`
 -> `local_gpu_generate_round(action=initial)` -> inspect preview
 -> `local_gpu_record_review` -> `local_gpu_generate_round(action=refine|explore)`
 -> inspect preview -> `local_gpu_record_review` -> `local_gpu_finalize_run`
@@ -108,7 +114,7 @@ For a vision-reviewed eligible result, finalize the nominated reviewed round and
 ## Hard Boundaries
 
 - No hidden downloads. Do not enable downloads or suggest that a remote-looking model ID is locally available. Report unavailable dependencies/models and stop.
-- Do not silently fall back to CPU or switch the confirmed model/backend policy.
+- Enforce no silent model switch. Do not silently fall back to CPU or switch the confirmed model, backend, endpoint, workflow, compiler, or authorization scope in a root run or child revision.
 - `upscale_policy: auto` records permission only; it does not prove a compatible upscaler is installed or that upscaling occurred.
 - Do not promise pixel-perfect no-mask preservation or describe best-effort semantic preservation as guaranteed.
 - Do not perform automatic segmentation or imply that a geometry mask was approved before the returned overlay received explicit user approval.

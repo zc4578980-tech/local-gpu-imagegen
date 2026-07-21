@@ -4,6 +4,29 @@ All notable changes will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Bounded `api_only`, `selected_folders`, `common_locations`, and `full_drive` discovery with displayed plans, two-stage `index` / selected `fingerprint`, cancellation, and safe link/reparse exclusions.
+- User-local atomic model trust, private versus `public_evidence` scope, deterministic capability routing, frozen route tokens, prompt compilers, and identity-drift rejection.
+- A reviewed ComfyUI `sd15-txt2img-v1` template, imported-workflow allowlist validation, bounded job polling/output retrieval, and normalized adapter parity with WebUI.
+- Three MCP tools: `local_gpu_discover_models`, `local_gpu_set_model_trust`, and `local_gpu_recommend_models`; the current source surface now contains exactly fifteen tools.
+
+### Changed
+
+- Durable runs now retain and recheck backend, endpoint, model identity, workflow, and compiler fields. Child revisions inherit the parent route and cannot override it.
+- The Agent Skill now resolves one route, displays it, obtains a new post-display confirmation, and starts without a silent model/backend/workflow switch.
+- Public evidence validates the full private route against acceptance authority, then exports a minimal cryptographic route without local endpoint, checkpoint, or path values.
+
+### Security
+
+- Public internet endpoints are rejected, LAN prompt/image transmission requires exact confirmation, `.ckpt` remains opaque during discovery, and credentials are rejected from trust state.
+- ComfyUI shell/script/process/network/download/custom-node graphs, unbound parameters, traversal, and resource overruns fail before submission.
+
+### Evidence Boundary
+
+- Discovery, trust, routing, WebUI, and ComfyUI adapters are model-free contract-tested. Real ComfyUI integration evidence is not retained, and no complete real 9+3 visual-acceptance matrix, quality, performance, or VRAM claim is made.
+- No package/model/workflow/custom-node download, shared Python mutation, remote creation, push, tag, release, or publication occurred.
+
 ## [0.5.0] - 2026-07-21
 
 ### Added
@@ -16,7 +39,7 @@ All notable changes will be documented in this file.
 
 ### Changed
 
-- MCP initialize and the Codex plugin manifest now report version `0.5.0`; the public surface contains exactly twelve tools while the low-level compatibility tools remain unchanged.
+- At the historical `0.5.0` boundary, MCP initialize and the Codex plugin manifest reported twelve tools while the low-level compatibility tools remained unchanged.
 - The Agent Skill can gather and confirm preserve/change intent, choose the least destructive supported revision mode, show geometry-mask overlays, and require explicit approval before confirmation.
 - Child mask IDs participate in idempotency hashes and retained round evidence, preventing a different confirmed mask from reusing an earlier completed request.
 

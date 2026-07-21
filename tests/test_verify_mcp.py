@@ -14,6 +14,9 @@ EXPECTED_TOOLS = {
     "local_gpu_imagegen_check",
     "local_gpu_generate_image",
     "local_gpu_list_profiles",
+    "local_gpu_discover_models",
+    "local_gpu_set_model_trust",
+    "local_gpu_recommend_models",
     "local_gpu_start_run",
     "local_gpu_get_run",
     "local_gpu_branch_run",
@@ -60,6 +63,13 @@ class VerifyMcpTests(unittest.TestCase):
         except TypeError as exc:
             self.fail(f"verify must accept expected_tools: {exc}")
         self.assertEqual(set(report["tools"]), EXPECTED_TOOLS)
+
+    def test_default_contract_is_exactly_fifteen_tools(self) -> None:
+        sys.path.insert(0, str(SCRIPTS))
+        import verify_mcp
+
+        self.assertEqual(verify_mcp.DEFAULT_EXPECTED_TOOLS, EXPECTED_TOOLS)
+        self.assertEqual(set(verify_mcp.verify()["tools"]), EXPECTED_TOOLS)
 
     def test_missing_python_returns_json_error_without_traceback(self) -> None:
         completed = subprocess.run(

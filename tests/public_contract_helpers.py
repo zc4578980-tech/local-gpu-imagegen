@@ -71,9 +71,10 @@ _PLUGIN_EDIT_SCOPE = tuple(
 )
 
 PLUGIN_REQUIRED_BOUNDARIES = (
-    "catalog-gated model resolution",
-    "no production model is bundled or currently approved",
-    "real host/gpu output acceptance remains unverified",
+    "bounded local model discovery",
+    "no model weights are bundled or downloaded implicitly",
+    "complete real 9+3 host/vision acceptance matrix",
+    "real comfyui generation evidence",
 )
 
 

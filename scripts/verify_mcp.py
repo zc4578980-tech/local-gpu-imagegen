@@ -12,6 +12,23 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "scripts" / "mcp_server.py"
 REQUIRED_COMPATIBILITY_TOOLS = {"local_gpu_imagegen_check", "local_gpu_generate_image"}
+DEFAULT_EXPECTED_TOOLS = {
+    "local_gpu_imagegen_check",
+    "local_gpu_generate_image",
+    "local_gpu_list_profiles",
+    "local_gpu_discover_models",
+    "local_gpu_set_model_trust",
+    "local_gpu_recommend_models",
+    "local_gpu_start_run",
+    "local_gpu_get_run",
+    "local_gpu_branch_run",
+    "local_gpu_prepare_mask",
+    "local_gpu_confirm_mask",
+    "local_gpu_generate_round",
+    "local_gpu_record_review",
+    "local_gpu_finalize_run",
+    "local_gpu_cleanup_run",
+}
 
 
 def build_requests(include_readiness: bool = False) -> str:
@@ -63,7 +80,8 @@ def verify(
     missing_compatibility_tools = REQUIRED_COMPATIBILITY_TOOLS - tools
     if missing_compatibility_tools:
         raise RuntimeError(f"Missing compatibility tools: {sorted(missing_compatibility_tools)}")
-    if expected_tools is not None and tools != expected_tools:
+    required_tools = DEFAULT_EXPECTED_TOOLS if expected_tools is None else expected_tools
+    if tools != required_tools:
         raise RuntimeError(f"Unexpected tools: {sorted(tools)}")
     if by_id[3]["result"] != {}:
         raise RuntimeError("Ping did not return an empty result object.")

@@ -1,16 +1,18 @@
 # Local GPU Imagegen MCP
 
-Give MCP-compatible agents a focused, local-first visual asset workflow for AUTOMATIC1111/Forge WebUI and Hugging Face Diffusers.
+An Agent-native local visual-asset control plane for existing AUTOMATIC1111/Forge, ComfyUI, and Diffusers installations. Describe the outcome in natural language; the Agent resolves one inspectable local model route, confirms it, and keeps generation/review/revision state durable.
 
-> Version 0.5.0 is pre-release and model-free. Mocked/model-free tests cover the MCP contract, three visual Profiles, nine fixed briefs, and three child revisions through a fake-backend contract matrix; that does not prove visual quality and is not retained real Codex, vision, model, GPU, or Real-ESRGAN evidence. Codex and other clients are not verified hosts, and current backend readiness remains unverified.
+> Version 0.5.0 is pre-release. Mocked/model-free tests cover the MCP contract, three visual Profiles, nine fixed briefs, three child revisions, discovery/routing, WebUI, and ComfyUI adapter contracts. That does not prove visual quality and is not retained real Codex, vision, model, GPU, ComfyUI, or Real-ESRGAN generation evidence. Codex and other clients are not verified hosts.
 
 ## Why This Project
 
 - **Local-first by default:** prompts and images stay on the configured machine when the WebUI URL is local.
 - **No hidden model downloads:** Diffusers uses local files only unless `allow_download` is explicitly enabled.
-- **Two practical backends:** reuse an existing AUTOMATIC1111-compatible API or run Diffusers directly.
+- **Three backend paths:** reuse AUTOMATIC1111/Forge or ComfyUI, or keep Diffusers as a compatibility path.
 - **Agent-readable results:** successful calls and failures include structured JSON, not only console text.
 - **Agent-guided workflow:** a bundled Agent Skill turns a natural-language brief into a catalog-gated, confirmed run.
+- **Bring your existing models:** bounded discovery merges WebUI/Forge and ComfyUI inventory with explicit user-local trust; scanning never loads or downloads weights.
+- **Frozen, explainable routing:** one model/backend/workflow/compiler identity is persisted and rechecked, with no silent model switch.
 - **Durable review loop:** a persisted manifest tracks one to three successful generation rounds, evidence-based reviews, final selection, and recovery actions.
 - **Three delivery Profiles:** standalone illustrations, presentation visuals, and UI visual assets share one deterministic run and review contract.
 - **Auditable hot revision:** an immutable child run records a preserve/change contract and uses prompt refinement, img2img, or explicitly confirmed inpainting.
@@ -41,6 +43,7 @@ Expected result:
     "local_gpu_branch_run",
     "local_gpu_cleanup_run",
     "local_gpu_confirm_mask",
+    "local_gpu_discover_models",
     "local_gpu_finalize_run",
     "local_gpu_generate_image",
     "local_gpu_generate_round",
@@ -48,7 +51,9 @@ Expected result:
     "local_gpu_imagegen_check",
     "local_gpu_list_profiles",
     "local_gpu_prepare_mask",
+    "local_gpu_recommend_models",
     "local_gpu_record_review",
+    "local_gpu_set_model_trust",
     "local_gpu_start_run"
   ]
 }
@@ -59,6 +64,7 @@ Expected result:
 | Backend | Best when | Setup | Network behavior |
 |---|---|---|---|
 | WebUI | AUTOMATIC1111 or Forge is already installed | Start it with API access enabled | Prompts/images go to the configured WebUI URL |
+| ComfyUI | You already run ComfyUI and want reviewed graph execution | Set `LOCAL_GPU_IMAGEGEN_COMFYUI_URL`; use a shipped or validated imported workflow | Prompts/images go only to the confirmed endpoint |
 | Diffusers | You want a self-contained Python pipeline | Create the project `.venv` with `scripts/install.ps1` | Model/LoRA downloads are blocked unless explicitly allowed |
 
 Check current readiness:
@@ -100,20 +106,22 @@ The bundled Agent Skill accepts ordinary requests. For example:
 
 > Create a 16:9 standalone anime character illustration with no generated text. Use up to two successful rounds, keep downloads disabled, and ask before changing the seed.
 
-The Skill will not start a real high-level run in the production catalog today because no selectable production model exists. It can still show the resolved boundary instead of guessing, enabling a model, or downloading one.
+The Skill will not guess from a checkpoint filename or silently select a backend. It discovers current local inventory, applies user-local trust, recommends one exact route, and waits for confirmation without downloading a model.
 
 ## Agent Skill Workflow
 
-1. Call `local_gpu_list_profiles` to load Profile, style, model, backend, and optional postprocessor capabilities.
-2. Reuse values already present in the request and ask only for missing high-impact boundaries: intended use, subject, composition, dimensions and safe area, preserve/prohibit constraints, a one-to-three-successful-round cap, and seed/model/upscale permission.
-3. Display the resolved summary, including the exact resolved `model_choice`, and wait for a new explicit confirmation after that display.
-4. Start the run and spend at most the confirmed successful-round budget. A retained image consumes a round; a backend failure does not.
-5. On a vision-capable host, inspect actual image evidence, record the full rubric and constraints, then choose refine, explore, or finalize. A refine preserves the seed; an explore changes the seed. Stop early when an eligible reviewed result needs no useful further work.
-6. On a text-only host, retain exactly one successful round, mark `review unavailable`, report the unreviewed path, and stop. Do not invent scores or call review/finalization tools.
+1. Call `local_gpu_discover_models` in `api_only` mode when inventory is unknown. Broader scans require a displayed plan and exact confirmation before filesystem access.
+2. Use `local_gpu_set_model_trust` only after displaying one exact identity and receiving its exact trust confirmation. Private use and public evidence are separate scopes.
+3. Call `local_gpu_list_profiles` for the intended authorization scope. Reuse known brief values and ask only for missing high-impact boundaries.
+4. Call `local_gpu_recommend_models`. It returns one exact route and at most two alternatives without weakening hard requirements.
+5. Display the exact resolved `model_choice`, backend, identity strength/hash or binding warning, workflow, compiler, dimensions, and budget. Wait for a new explicit confirmation after that display.
+6. Start the frozen route and spend at most the confirmed successful-round budget. A retained image consumes a round; a backend failure does not.
+7. On a vision-capable host, inspect actual image evidence, record the full rubric and constraints, then choose refine, explore, or finalize. A refine preserves the seed; an explore changes the seed.
+8. On a text-only host, retain exactly one successful round, mark `review unavailable`, report the unreviewed path, and stop. Do not invent scores or call review/finalization tools.
 
 After a reviewed or finalized candidate, the user can describe what to keep and what to change. The Skill presents an auditable preserve/change contract, asks for a separate one-to-three-round revision budget, and creates an immutable child run only after confirmation. It chooses the least destructive mode: same-seed prompt refinement, then low-strength img2img, then inpainting with explicit mask-overlay confirmation. No-mask preservation is best-effort.
 
-The adaptive sequence is catalog -> brief -> exact-model confirmation -> start -> generate -> inspect -> review -> refine/explore -> inspect -> review -> finalize. The configured `max_rounds` must be from `1` through `3`, and urgency or sunk cost never extends it.
+The adaptive sequence is discovery -> trust when needed -> scoped catalog -> brief -> exact-route recommendation -> post-display confirmation -> start -> generate -> inspect -> review -> refine/explore -> finalize. The configured `max_rounds` must be from `1` through `3`, and urgency or sunk cost never extends it.
 
 ### Visual Profiles And Scope
 
@@ -125,15 +133,19 @@ The adaptive sequence is catalog -> brief -> exact-model confirmation -> start -
 
 Complete PPT decks are excluded. Frontend code and components are excluded. Production icons, SVG, and transparent PNG are excluded. Automatic segmentation is excluded. Seamless-texture guarantees are excluded. The project produces inspectable raster assets, not slide layouts or interface implementations.
 
-### Anime Style And Model Registry
+### Bring Your Own Model Safely
 
-The catalog includes the `anime` style and one disabled candidate record, `stabilityai/sd-turbo`. Every high-level run requires a non-empty `model_choice` whose record is registered, enabled, and license-approved. The shipped candidate is disabled, is not known local, and has no approved license record.
+Discovery has four levels: `api_only`, `selected_folders`, `common_locations`, and `full_drive`. Filesystem discovery is two-stage: `index` records bounded metadata without opening checkpoint payloads; `fingerprint` computes SHA-256 only for explicitly selected indexed candidates. `.ckpt` remains opaque, and scans do not follow symlinks, junctions, or reparse points.
 
-No production model is bundled or currently approved. Real high-level generation therefore stops at the unavailable-model boundary until a model and its local source/license record are reviewed and approved separately. The plugin does not infer approval from a model name, backend response, or remote-looking identifier.
+Trust is stored outside the repository under the OS user-state directory, overridable with `LOCAL_GPU_IMAGEGEN_STATE_DIR`. A `backend_binding` identity can be trusted only for `private` use. A `cryptographic` identity may become a `public_evidence` candidate only with SHA-256, source, license, and output-redistribution metadata; acceptance authority is still required before export.
+
+No model weights are bundled. The repository catalog includes the auditable ID `civitai/anything-v5@30163` for an already reviewed local WebUI checkpoint, and downloads remain unapproved. Other local models can enter the private catalog only through discovery and explicit trust; model quality still comes from the user's model. This project adds safer routing, durable review, and hot revision rather than claiming a superior prompt translator.
+
+ComfyUI uses the shipped reviewed `sd15-txt2img-v1` template or a locally copied imported workflow that passes the same allowlist. Shell, Python/script/process execution, network/download/webhook/fetch nodes, commands, unknown custom nodes, unbound parameters, and resource overruns are rejected. ComfyUI adapter: contract-tested; real ComfyUI integration evidence: not retained.
 
 ## Tool Reference
 
-The public MCP surface has exactly twelve tools: two compatibility tools and ten high-level run/revision tools.
+The public MCP surface has exactly fifteen tools: two compatibility tools and thirteen high-level discovery/run/revision tools.
 
 ### `local_gpu_imagegen_check`
 
@@ -154,12 +166,15 @@ Supports:
 
 The tool schema validates types, ranges, enums, unknown fields, image-mode requirements, and dimensions before starting the backend process.
 
-These two compatibility tools remain available beside the ten high-level tools. In particular, the low-level `local_gpu_generate_image` compatibility tool is unchanged: its optional model value remains a direct compatibility passthrough and is not the catalog-gated Agent workflow. Its WebUI/Diffusers options and explicit model-download controls are unchanged.
+These two compatibility tools remain available beside the thirteen high-level tools. In particular, the low-level `local_gpu_generate_image` compatibility tool is unchanged: its optional model value remains a direct compatibility passthrough and is not the catalog-gated Agent workflow. Its WebUI/Diffusers options and explicit model-download controls are unchanged.
 
 ### High-Level Run Tools
 
 | Tool | Responsibility |
 |---|---|
+| `local_gpu_discover_models` | Plan or execute bounded API/filesystem inventory without loading model weights. |
+| `local_gpu_set_model_trust` | Approve or revoke one exact current identity in user-local state after confirmation. |
+| `local_gpu_recommend_models` | Return one deterministic route and at most two explained alternatives. |
 | `local_gpu_list_profiles` | List registered use-case profiles and the current backend capabilities. |
 | `local_gpu_start_run` | Persist a confirmed intent, profile, constraints, backend choice, and round budget. |
 | `local_gpu_get_run` | Read the durable manifest and its `recoverable_next_actions`. |
@@ -173,7 +188,7 @@ These two compatibility tools remain available beside the ten high-level tools. 
 
 `max_rounds` must be from `1` through `3`. Only successfully retained PNG rounds consume that budget; a backend failure is recorded as an attempt without consuming a round. `local_gpu_finalize_run` requires a `round_number` from 1 through 3 and a summary. It validates the current run state and review under the run lock, then publishes that nominated reviewed round without substituting a higher-scoring round. An eligible nomination receives quality status `accepted`; an ineligible nomination receives `needs_user_review`, which is a warning to inspect the file rather than an acceptance claim.
 
-`local_gpu_list_profiles` returns the Profile/style/model registry and current capabilities. `local_gpu_start_run` requires the approved exact `model_choice` and freezes the advertised available backends into the confirmed request. Production currently has no eligible model, so this high-level path is intentionally blocked before engine work.
+`local_gpu_list_profiles` returns the scoped merged catalog and current capabilities. `local_gpu_start_run` requires the exact `route_token`, authorization scope, model, backend, dimensions, workflow, and compiler that were displayed. Identity drift fails before backend invocation; root and child runs never switch routes silently.
 
 ### Run Files, Retry, And Recovery
 
@@ -243,11 +258,13 @@ Compatibility-tool files default to `outputs/`. Override this with `LOCAL_GPU_IM
 ```mermaid
 flowchart LR
     A["MCP client"] -->|"stdio JSON-RPC"| B["Thin MCP server"]
-    B --> C["Run engine + durable manifest"]
-    C -->|"validated CLI arguments"| D["Timed Python subprocess"]
-    D --> E["AUTOMATIC1111 / Forge API"]
-    D --> F["Diffusers + CUDA"]
+    B --> H["Discovery + trust + capability router"]
+    H --> C["Frozen route + durable run engine"]
+    C --> E["AUTOMATIC1111 / Forge adapter"]
+    C --> I["Reviewed ComfyUI workflow adapter"]
+    C --> F["Diffusers compatibility runner"]
     E --> G["Full local PNG + bounded preview"]
+    I --> G
     F --> G
     G --> C
     C --> B
@@ -261,7 +278,9 @@ See [Architecture](docs/architecture.md) for the detailed control flow and error
 ## Safety And Privacy
 
 - The MCP process does not use an application-specific cloud image API.
-- A non-loopback `webui_url` sends prompts and source images to that configured server. Use `127.0.0.1` for fully local WebUI operation.
+- A confirmed LAN WebUI/ComfyUI endpoint sends prompts and source images to that server. Loopback is local; each LAN endpoint requires exact transmission confirmation, and public internet endpoints are rejected.
+- Discovery does not follow links or load checkpoint payloads. Broader filesystem scans require an unchanged, unexpired plan and exact confirmation.
+- Trust state stays outside Git. Private trust never authorizes public evidence, and credentials are rejected recursively.
 - `scripts/install.ps1` downloads Python packages when the user runs it.
 - Diffusers model and LoRA downloads require `--allow-download` or MCP `allow_download: true`.
 - Disabling a model safety checker is explicit and off by default.
@@ -278,7 +297,7 @@ python -m unittest discover -s tests -v
 python .\scripts\verify_mcp.py
 ```
 
-Coverage includes protocol initialization/listing/ping, the exact twelve-tool contract, durable root/child transitions, mask confirmation, idempotency, stale-attempt recovery, atomic publication, bounded preview handling, registry validation, the mocked/model-free anime loop, all nine fixed briefs and three child revisions, fake-runner postprocessing, and download policy.
+Coverage includes protocol initialization/listing/ping, the exact fifteen-tool contract, bounded discovery/trust/routing, WebUI and ComfyUI adapter contracts, durable root/child transitions, mask confirmation, idempotency, stale-attempt recovery, atomic publication, bounded preview handling, the mocked/model-free anime loop, all nine fixed briefs and three child revisions, fake-runner postprocessing, and download policy.
 
 ## Project Status
 
@@ -286,11 +305,11 @@ Verified:
 
 - stdio MCP initialization, tool listing, ping, and tool contract
 - structured tool success/error results
-- ten high-level run/revision tools and two compatibility tools under mocked/model-free coverage
+- thirteen high-level discovery/run/revision tools and two compatibility tools under mocked/model-free coverage
 - adaptive Agent Skill briefing, exact-model confirmation, successful-round budgeting, and honest text-only stopping policy
-- anime style/model registry validation with the production candidate disabled
+- exact local-model identity, user-local trust, deterministic route, and drift-rejection contracts
 - explicit anime-only Real-ESRGAN adapter behavior under fake-runner tests
-- mocked WebUI success and failure paths
+- contract-tested WebUI and ComfyUI adapter success/failure paths
 - durable manifest transitions, idempotency, recovery, review, finalization, and cleanup contracts
 - three Profile contracts plus immutable preserve/change child runs and confirmed geometry/user masks
 - a fake-backend contract matrix covering nine fixed briefs and three child revisions
@@ -298,14 +317,15 @@ Verified:
 
 Pending before a `1.0` claim:
 
-- retained real host/vision review, approved production model, GPU backend response, and generated PNG
+- a complete retained 9+3 real host/vision acceptance matrix
+- real ComfyUI integration evidence and reviewed output
 - real Real-ESRGAN binary/GPU execution evidence
 - published compatibility matrix across named MCP clients
 - measured performance or VRAM data
 
 The mocked/model-free matrix is deterministic protocol evidence, not retained real Codex/vision/GPU evidence. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No real-generation, production, performance, VRAM, image-quality, named-client compatibility, star, or popularity claim is made.
 
-Current AUTOMATIC1111/Forge and Diffusers backend readiness has not been verified for version 0.5.0; use the readiness commands above to inspect the target environment.
+The current branch retains no complete real 9+3 image-acceptance matrix, no real ComfyUI generation result, and no image-quality, performance, or VRAM claim. Use the readiness commands above to inspect the target environment.
 
 ## Documentation
 

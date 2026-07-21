@@ -16,6 +16,9 @@ PUBLIC_TOOLS = {
     "local_gpu_imagegen_check",
     "local_gpu_generate_image",
     "local_gpu_list_profiles",
+    "local_gpu_discover_models",
+    "local_gpu_set_model_trust",
+    "local_gpu_recommend_models",
     "local_gpu_start_run",
     "local_gpu_get_run",
     "local_gpu_branch_run",
@@ -71,10 +74,10 @@ class PublicDocumentationTests(unittest.TestCase):
             "`idempotency_key`",
             "`recoverable_next_actions`",
             "`needs_user_review`",
-            "`stabilityai/sd-turbo`",
-            "No production model is bundled or currently approved",
+            "`civitai/anything-v5@30163`",
+            "No model weights are bundled",
             "Mocked/model-free",
-            "not retained real Codex, vision, model, GPU, or Real-ESRGAN evidence",
+            "not retained real Codex, vision, model, GPU, ComfyUI, or Real-ESRGAN generation evidence",
             "`LOCAL_GPU_IMAGEGEN_REALESRGAN_DIR`",
             "`realesrgan-x4plus-anime`",
             "`realesr-animevideov3-x4`",
@@ -82,7 +85,7 @@ class PublicDocumentationTests(unittest.TestCase):
             "low-level `local_gpu_generate_image` compatibility tool is unchanged",
             "confirmation must exactly equal the `run_id`",
             "publishes that nominated reviewed round",
-            "exactly twelve tools",
+            "exactly fifteen tools",
             "`standalone-illustration`",
             "`presentation-visual`",
             "`ui-visual-asset`",
@@ -128,6 +131,49 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("## [0.5.0] - 2026-07-21", changelog)
         self.assertIn("## [0.4.0] - 2026-07-21", changelog)
         self.assertIn("## [0.3.0]", changelog)
+
+    def test_docs_distinguish_contract_tested_comfyui_from_real_evidence(self) -> None:
+        public = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in ("README.md", "docs/architecture.md", "docs/troubleshooting.md")
+        )
+        self.assertIn("ComfyUI adapter: contract-tested", public)
+        self.assertIn("real ComfyUI integration evidence: not retained", public)
+        self.assertNotIn("supports arbitrary models", public.lower())
+
+    def test_plugin_manifest_describes_current_byom_boundary(self) -> None:
+        plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        description = plugin["interface"]["longDescription"].lower()
+        self.assertIn("bounded local model discovery", description)
+        self.assertIn("no model weights are bundled or downloaded implicitly", description)
+        self.assertNotIn("no production model is bundled or currently approved", description)
+
+    def test_docs_cover_safe_byom_discovery_trust_and_routing(self) -> None:
+        public = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in (
+                "README.md",
+                "docs/architecture.md",
+                "docs/troubleshooting.md",
+                "SECURITY.md",
+            )
+        )
+        for required in (
+            "api_only",
+            "selected_folders",
+            "common_locations",
+            "full_drive",
+            "index",
+            "fingerprint",
+            "LOCAL_GPU_IMAGEGEN_STATE_DIR",
+            "backend_binding",
+            "public_evidence",
+            "no silent model switch",
+            "sd15-txt2img-v1",
+            "model quality still comes from the user's model",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, public)
 
     def test_active_versions_are_v05_and_historical_versions_are_preserved(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

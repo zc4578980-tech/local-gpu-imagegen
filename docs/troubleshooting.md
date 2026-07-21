@@ -14,11 +14,11 @@ Then inspect backend readiness:
 python .\scripts\check_gpu.py
 ```
 
-The second command exits with code 1 when neither backend is ready, but its JSON report is still valid diagnostic output.
+The second command exits with code 1 when no backend is ready, but its JSON report is still valid diagnostic output. ComfyUI adapter: contract-tested; real ComfyUI integration evidence: not retained.
 
-`local_gpu_list_profiles` also returns backend capabilities beside the registered profiles. A run with `backend: auto` still needs at least one advertised backend resolution; capability reporting does not install packages, select a model, or download one.
+`local_gpu_list_profiles` returns the scoped merged model catalog beside backend capabilities. A high-level run uses the exact backend from a confirmed route; there is no `auto` fallback and no silent model switch. Capability reporting does not install packages, trust a model, or download one.
 
-The production model catalog currently contains only disabled `stabilityai/sd-turbo`; no production model is bundled or approved. A high-level Agent run must stop at the unavailable-model boundary until a separate local source and license review enables an approved record. Do not bypass this with the low-level compatibility tool, an arbitrary model name, or an implicit download.
+No model weights are bundled. The repository contains an auditable `civitai/anything-v5@30163` template for one reviewed existing local WebUI checkpoint; actual eligibility still depends on current discovery identity, requested `private` or `public_evidence` scope, backend readiness, and exact route confirmation. Do not bypass this with the low-level compatibility tool, an arbitrary model name, or an implicit download.
 
 On Windows PowerShell 5.1, manual native-process pipelines may prefix stdin with a UTF-8 byte-order mark. The server tolerates that mark, but `scripts/verify_mcp.py` remains the preferred transport check because it controls encoding and validates all required responses.
 
@@ -41,6 +41,44 @@ Checks:
 2. Confirm its API URL and port.
 3. Set `LOCAL_GPU_IMAGEGEN_WEBUI_URL` or pass `--webui-url` when using a non-default port.
 4. Keep the URL on loopback unless remote exposure is intentional and secured.
+
+## Discovery Plan Expired Or Changed
+
+`discovery_plan_expired` means the short-lived plan is no longer valid. `discovery_plan_changed` means mode, roots, exclusions, selected candidates, or endpoint facts differ from what was displayed. Request a new `plan` phase, show the complete scope again, and obtain the new exact confirmation. Never reuse an older confirmation.
+
+The four scan modes are `api_only`, `selected_folders`, `common_locations`, and `full_drive`. `index` is metadata-only; `fingerprint` hashes only explicitly selected indexed candidates. If a scan is canceled, the result is `incomplete: true` and its inventory remains untrusted. Resume with a new plan instead of treating partial results as trusted.
+
+## LAN Or Public Endpoint Is Rejected
+
+Loopback is local. A LAN WebUI/ComfyUI endpoint requires the exact displayed transmission confirmation; otherwise discovery returns `network_scan_confirmation_required`. Public internet endpoints return `public_endpoint_rejected`. Do not work around either result with a DNS alias, credentials in a URL, HTTPS downgrade, port forwarding, or a broader scan.
+
+## No Eligible Route
+
+`no_eligible_model` means every candidate failed at least one hard requirement such as operation, Profile/style, dimensions, VRAM, trust scope, backend readiness, prompt compiler, or ComfyUI workflow. Inspect the returned requirements and catalog limitations. Change a requirement only with the user; do not silently substitute a model or weaken the boundary.
+
+`route_confirmation_expired` means the route token was missing, consumed, expired, or confirmed against another model. Recommend again, display the exact replacement route, and obtain a new post-display confirmation.
+
+## Model Identity Drifted
+
+`model_identity_drifted` means endpoint, backend-visible model binding, file metadata, SHA-256, trust identity, or workflow binding no longer matches the frozen route. Generation stops before backend invocation and before an attempt is created. Rediscover, re-fingerprint if needed, review trust, recommend again, and obtain a new confirmation. Never edit the manifest or transplant the old route token.
+
+User-local trust defaults to the OS state directory; set `LOCAL_GPU_IMAGEGEN_STATE_DIR` only before launching the server when an explicit alternative is needed. A `backend_binding` record remains private. Public evidence requires `cryptographic` identity plus authority; changing the state directory cannot promote trust.
+
+## ComfyUI Workflow Is Rejected
+
+`invalid_workflow_template`, `invalid_workflow_source`, or `workflow_registration_drifted` means the graph is malformed, changed, over budget, contains an unapproved node/input, or no longer matches its registered local copy. Use the shipped `sd15-txt2img-v1` template or re-import a reviewed graph. Shell, Python/script/process, command, HTTP/download/fetch/webhook behavior, unknown custom nodes, unbound parameters, traversal paths, and resource overruns are rejected.
+
+## ComfyUI Job Times Out Or Disappears
+
+`comfyui_submission_rejected`, `comfyui_job_timed_out`, `comfyui_job_disappeared`, `comfyui_job_rejected`, and `comfyui_job_canceled` are distinct outcomes. A timeout queries the exact known job before returning. Query that job and inspect ComfyUI logs; cancellation deletes only an exact queued job, and a running job is never interrupted globally. Do not resubmit blindly with the same idempotency key.
+
+## VRAM Or Model Loading Fails
+
+Routing can filter a declared `required_vram_gb`, but it does not prove runtime fit. A backend load failure or out-of-memory error remains a backend failure and consumes no successful round. Confirm the selected checkpoint is loaded, close unrelated GPU work, or ask the user to choose a smaller eligible route. Do not fall back to CPU, another model, or lower dimensions silently.
+
+## Backend Output Is Not Normalized
+
+`invalid_backend_result`, `invalid_backend_response`, or `invalid_comfyui_output` means the backend did not return the confirmed backend/model identity, dimensions, seed, workflow/compiler fields, bounded output metadata, or a valid PNG. The attempt is retained as failed and does not consume a successful round. Inspect the backend response and route identity; never patch the manifest into success.
 
 ## Diffusers Model Is Not Available Locally
 
