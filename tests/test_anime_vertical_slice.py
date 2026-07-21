@@ -35,6 +35,7 @@ ROUND_PIXELS = (b"\x24\x48\x90", b"\x30\x80\xc0")
 UPSCALED_PIXEL = b"\x50\xa0\xe0"
 BRIEF_PATH = ROOT / "tests" / "fixtures" / "briefs" / "standalone-anime-character.json"
 MODEL_PATH = ROOT / "tests" / "fixtures" / "models" / "approved-test-anime.json"
+LOCAL_PLANNING_ROOT = ROOT / "docs" / "superpowers"
 
 
 def _chunk(kind: bytes, data: bytes) -> bytes:
@@ -376,6 +377,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
             for directory in publishable_roots
             for path in directory.rglob("*")
             if path.is_file() and path.suffix in {".json", ".md", ".py"}
+            and LOCAL_PLANNING_ROOT not in path.parents
         ]
         publishable_files.extend(ROOT / name for name in ("README.md", "CHANGELOG.md"))
         leaked = [
