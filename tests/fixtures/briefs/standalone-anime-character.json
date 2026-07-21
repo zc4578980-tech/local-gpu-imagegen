@@ -1,0 +1,8 @@
+{
+  "user_request": "Create an anime key visual of a lone engineer overlooking a neon coastal city at dawn.",
+  "profile": "standalone-illustration",
+  "style": "anime",
+  "subtype": "character",
+  "constraints": {"aspect_ratio": "16:9", "generated_text": false},
+  "max_rounds": 2
+}

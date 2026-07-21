@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "test/approved-anime",
+  "kind": "model",
+  "source": "test-fixture",
+  "license_id": "test-only",
+  "license_url": null,
+  "license_status": "approved",
+  "backends": ["webui"],
+  "local_discovery_names": ["approved-test-anime"],
+  "strengths": ["Deterministic fixture for the mocked anime vertical slice."],
+  "limitations": ["Test-only record; never valid for production publication or real generation."],
+  "use_cases": ["standalone-illustration"],
+  "styles": ["anime"],
+  "recommended": {
+    "resolution": {"width": 256, "height": 256},
+    "steps": 12,
+    "guidance": 6.5,
+    "sampler": "euler",
+    "scheduler": "euler"
+  },
+  "known_local": true,
+  "enabled": true
+}
