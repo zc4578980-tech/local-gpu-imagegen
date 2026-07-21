@@ -4,6 +4,28 @@ All notable changes will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-21
+
+### Added
+
+- `presentation-visual` and `ui-visual-asset` Profiles beside `standalone-illustration`, with delivery-specific subtypes, hard failures, rubrics, examples, and mutable fields.
+- Immutable child revision runs with reviewed-parent lineage, copied `parent-source.png`, explicit preserve/change contracts, independent one-to-three-round budgets, and preservation review results.
+- Deterministic user/rectangle/polygon inpaint masks, bounded JPEG overlays, content hashes, and explicit confirmation that is invalidated when source or mask bytes change.
+- Three MCP tools: `local_gpu_branch_run`, `local_gpu_prepare_mask`, and `local_gpu_confirm_mask`; high-level generation now maps fixed prompt-refine, img2img, and inpaint child modes.
+- A fixed nine-brief, three-revision fake-backend contract matrix covering all three visual Profiles.
+
+### Changed
+
+- MCP initialize and the Codex plugin manifest now report version `0.5.0`; the public surface contains exactly twelve tools while the low-level compatibility tools remain unchanged.
+- The Agent Skill can gather and confirm preserve/change intent, choose the least destructive supported revision mode, show geometry-mask overlays, and require explicit approval before confirmation.
+- Child mask IDs participate in idempotency hashes and retained round evidence, preventing a different confirmed mask from reusing an earlier completed request.
+
+### Evidence Boundary
+
+- Mocked/model-free tests exercise real registry, engine, store, revision, mask, protocol, and artifact contracts with fake backend output. The matrix does not prove visual quality and is not retained real Codex, vision, model, GPU, backend, or Real-ESRGAN evidence.
+- No production model is bundled or currently approved. No dependency/model download, license selection, remote creation, push, release, or publication is part of this release work.
+- Complete PPT decks, frontend code/components, production icons, SVG, transparent PNG, seamless-texture guarantees, and automatic segmentation remain excluded.
+
 ## [0.4.0] - 2026-07-21
 
 ### Added

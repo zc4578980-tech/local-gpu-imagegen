@@ -84,6 +84,18 @@ The JPEG preview is optional and bounded for MCP transport. The full-resolution 
 
 New previews are named `round-NN-preview.jpg`. A stored legacy manifest may still reference `round-NN.preview.jpg`; that path remains supported and is not a reason to rename or regenerate the retained round.
 
+## A Child Revision Cannot Start
+
+`revision_parent_not_reviewed` means the nominated parent round is missing, failed, or has no review. Read the parent run and select an existing reviewed round. `revision_edit_mode_mismatch` means the generation request tried to override the immutable child contract; use txt2img for `prompt-refine`, img2img for `img2img`, or inpaint for `inpaint`.
+
+The child copies its own `parent-source.png`. A `revision_source_changed` conflict means that copy no longer matches the hash recorded at branch creation. Do not replace it or rewrite the parent manifest. Create a new child from an unchanged reviewed parent round. A valid child workflow never changes the parent manifest or the selected parent PNG.
+
+## An Inpaint Mask Is Rejected
+
+`inpaint_mask_required` means the child generation omitted `mask_id`. `mask_not_found` also covers a mask ID prepared for a foreign run. `mask_not_confirmed` means the overlay has not received explicit user approval. Show the JPEG overlay returned by `local_gpu_prepare_mask`, then call `local_gpu_confirm_mask` only after approval.
+
+`mask_changed_since_prepare` means the child source or mask bytes no longer match the retained hashes. Do not silently reconfirm changed bytes. Prepare a new mask, show its new overlay, and obtain new approval. Empty, full-image, out-of-bounds, or self-intersecting masks must be corrected at preparation time; the plugin does not run automatic segmentation.
+
 ## Anime Postprocessing Is Unavailable Or Failed
 
 Real-ESRGAN is never invoked automatically. It is anime-only and must be requested explicitly during finalization after `LOCAL_GPU_IMAGEGEN_REALESRGAN_DIR` points to an already reviewed local installation containing `realesrgan-ncnn-vulkan.exe` and one supported model pair: `realesrgan-x4plus-anime` or `realesr-animevideov3-x4`. The plugin does not accept an arbitrary binary/model path and does not download either dependency.

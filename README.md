@@ -2,7 +2,7 @@
 
 Give MCP-compatible agents a focused, local-first visual asset workflow for AUTOMATIC1111/Forge WebUI and Hugging Face Diffusers.
 
-> Version 0.4.0 is pre-release and model-free. Mocked/model-free tests cover the MCP contract and an anime two-round vertical slice; that is not retained real Codex, vision, model, GPU, or Real-ESRGAN evidence. Codex and other clients are not verified hosts, and current backend readiness remains unverified.
+> Version 0.5.0 is pre-release and model-free. Mocked/model-free tests cover the MCP contract, three visual Profiles, nine fixed briefs, and three child revisions through a fake-backend contract matrix; that does not prove visual quality and is not retained real Codex, vision, model, GPU, or Real-ESRGAN evidence. Codex and other clients are not verified hosts, and current backend readiness remains unverified.
 
 ## Why This Project
 
@@ -12,6 +12,8 @@ Give MCP-compatible agents a focused, local-first visual asset workflow for AUTO
 - **Agent-readable results:** successful calls and failures include structured JSON, not only console text.
 - **Agent-guided workflow:** a bundled Agent Skill turns a natural-language brief into a catalog-gated, confirmed run.
 - **Durable review loop:** a persisted manifest tracks one to three successful generation rounds, evidence-based reviews, final selection, and recovery actions.
+- **Three delivery Profiles:** standalone illustrations, presentation visuals, and UI visual assets share one deterministic run and review contract.
+- **Auditable hot revision:** an immutable child run records a preserve/change contract and uses prompt refinement, img2img, or explicitly confirmed inpainting.
 - **Anime profile data:** a versioned anime style and model registry make selection rules explicit without bundling a model.
 - **Dependency-light MCP layer:** protocol checks and tests use the Python standard library and require no GPU.
 - **Focused scope:** image generation is kept separate from planning, memory, and unrelated agent features.
@@ -33,16 +35,19 @@ Expected result:
   "ok": true,
   "transport": "stdio",
   "python": "<current-python>",
-  "server": {"name": "local-gpu-imagegen", "version": "0.4.0"},
+  "server": {"name": "local-gpu-imagegen", "version": "0.5.0"},
   "protocolVersion": "2024-11-05",
   "tools": [
+    "local_gpu_branch_run",
     "local_gpu_cleanup_run",
+    "local_gpu_confirm_mask",
     "local_gpu_finalize_run",
     "local_gpu_generate_image",
     "local_gpu_generate_round",
     "local_gpu_get_run",
     "local_gpu_imagegen_check",
     "local_gpu_list_profiles",
+    "local_gpu_prepare_mask",
     "local_gpu_record_review",
     "local_gpu_start_run"
   ]
@@ -106,7 +111,19 @@ The Skill will not start a real high-level run in the production catalog today b
 5. On a vision-capable host, inspect actual image evidence, record the full rubric and constraints, then choose refine, explore, or finalize. A refine preserves the seed; an explore changes the seed. Stop early when an eligible reviewed result needs no useful further work.
 6. On a text-only host, retain exactly one successful round, mark `review unavailable`, report the unreviewed path, and stop. Do not invent scores or call review/finalization tools.
 
+After a reviewed or finalized candidate, the user can describe what to keep and what to change. The Skill presents an auditable preserve/change contract, asks for a separate one-to-three-round revision budget, and creates an immutable child run only after confirmation. It chooses the least destructive mode: same-seed prompt refinement, then low-strength img2img, then inpainting with explicit mask-overlay confirmation. No-mask preservation is best-effort.
+
 The adaptive sequence is catalog -> brief -> exact-model confirmation -> start -> generate -> inspect -> review -> refine/explore -> inspect -> review -> finalize. The configured `max_rounds` must be from `1` through `3`, and urgency or sunk cost never extends it.
+
+### Visual Profiles And Scope
+
+| Profile | Supported subtypes | Delivery focus |
+|---|---|---|
+| `standalone-illustration` | `character`, `environment`, `wallpaper` | Self-contained illustration output. |
+| `presentation-visual` | `cover`, `section`, `content-background` | Visual-only slide assets with safe-area and overlay constraints. |
+| `ui-visual-asset` | `hero`, `section-illustration`, `rectangular-background`, `decorative-texture` | Raster visuals that can be composed into an interface. |
+
+Complete PPT decks are excluded. Frontend code and components are excluded. Production icons, SVG, and transparent PNG are excluded. Automatic segmentation is excluded. Seamless-texture guarantees are excluded. The project produces inspectable raster assets, not slide layouts or interface implementations.
 
 ### Anime Style And Model Registry
 
@@ -116,7 +133,7 @@ No production model is bundled or currently approved. Real high-level generation
 
 ## Tool Reference
 
-The public MCP surface has exactly nine tools: two compatibility tools and the seven high-level run tools below. No Task 5 release work changes their schemas or adds another public tool.
+The public MCP surface has exactly twelve tools: two compatibility tools and ten high-level run/revision tools.
 
 ### `local_gpu_imagegen_check`
 
@@ -137,7 +154,7 @@ Supports:
 
 The tool schema validates types, ranges, enums, unknown fields, image-mode requirements, and dimensions before starting the backend process.
 
-These two compatibility tools remain available beside the seven high-level run tools. In particular, the low-level `local_gpu_generate_image` compatibility tool is unchanged: its optional model value remains a direct compatibility passthrough and is not the catalog-gated Agent workflow. Its WebUI/Diffusers options and explicit model-download controls are unchanged.
+These two compatibility tools remain available beside the ten high-level tools. In particular, the low-level `local_gpu_generate_image` compatibility tool is unchanged: its optional model value remains a direct compatibility passthrough and is not the catalog-gated Agent workflow. Its WebUI/Diffusers options and explicit model-download controls are unchanged.
 
 ### High-Level Run Tools
 
@@ -146,8 +163,11 @@ These two compatibility tools remain available beside the seven high-level run t
 | `local_gpu_list_profiles` | List registered use-case profiles and the current backend capabilities. |
 | `local_gpu_start_run` | Persist a confirmed intent, profile, constraints, backend choice, and round budget. |
 | `local_gpu_get_run` | Read the durable manifest and its `recoverable_next_actions`. |
-| `local_gpu_generate_round` | Generate one confirmed `txt2img` round and optionally return a bounded JPEG preview. |
-| `local_gpu_record_review` | Store rubric scores, hard failures, constraint results, critique, and next action. |
+| `local_gpu_branch_run` | Create an immutable child run from one reviewed parent round and preserve/change contract. |
+| `local_gpu_prepare_mask` | Prepare a user or rectangle/polygon mask and return a bounded JPEG overlay. |
+| `local_gpu_confirm_mask` | Confirm an unchanged prepared mask after explicit user approval. |
+| `local_gpu_generate_round` | Generate one root or fixed-mode child round and optionally return a bounded JPEG preview. |
+| `local_gpu_record_review` | Store rubric scores, hard failures, constraint and preservation results, critique, and next action. |
 | `local_gpu_finalize_run` | Publish the caller-nominated reviewed round as the final local PNG. |
 | `local_gpu_cleanup_run` | Remove intermediates or the entire confirmed run directory. |
 
@@ -164,13 +184,19 @@ outputs/
   runs/
     <run_id>/
       manifest.json
+      parent-source.png
       round-01.png
       round-01-preview.jpg
       final.png
       final-upscaled.png
+      masks/
+        mask-01.png
+        mask-01-overlay.jpg
 ```
 
 `outputs/runs/<run_id>/manifest.json` is the source of truth for confirmed input, attempts, rounds, reviews, warnings, final metadata, and state revisions. A successful first round retains `round-01.png` and may create `round-01-preview.jpg`; later rounds use the same hyphenated preview pattern. Stored legacy manifests that reference `round-01.preview.jpg` remain readable and are not rewritten. Finalization publishes `final.png`. A preview file is optional: the MCP response may include the bounded JPEG preview, while `full_image_path` identifies the full-resolution local PNG. A preview warning or encoding failure does not discard the validated PNG.
+
+An immutable child run copies the selected parent PNG to `parent-source.png`, records parent lineage and hashes, and never writes the parent manifest. Img2img and inpaint use that retained source. Inpaint additionally requires a confirmed `masks/mask-01.png`; `masks/mask-01-overlay.jpg` is returned for approval first. Changing source or mask bytes invalidates confirmation.
 
 Each generation request needs an `idempotency_key`. Repeating the same key with the same request returns the completed round or reports that the attempt is busy; reusing the key for different inputs is rejected. After interruption, call `local_gpu_get_run` and follow `recoverable_next_actions`. The engine can reclaim stale attempts and resume preview creation when a validated full PNG was already retained.
 
@@ -252,7 +278,7 @@ python -m unittest discover -s tests -v
 python .\scripts\verify_mcp.py
 ```
 
-Coverage includes protocol initialization/listing/ping, the exact nine-tool contract, durable run transitions, idempotency, stale-attempt recovery, atomic publication, bounded preview handling, registry validation, the mocked/model-free anime two-round loop, fake-runner postprocessing, and download policy.
+Coverage includes protocol initialization/listing/ping, the exact twelve-tool contract, durable root/child transitions, mask confirmation, idempotency, stale-attempt recovery, atomic publication, bounded preview handling, registry validation, the mocked/model-free anime loop, all nine fixed briefs and three child revisions, fake-runner postprocessing, and download policy.
 
 ## Project Status
 
@@ -260,12 +286,14 @@ Verified:
 
 - stdio MCP initialization, tool listing, ping, and tool contract
 - structured tool success/error results
-- seven high-level run tools and two compatibility tools under mocked/model-free coverage
+- ten high-level run/revision tools and two compatibility tools under mocked/model-free coverage
 - adaptive Agent Skill briefing, exact-model confirmation, successful-round budgeting, and honest text-only stopping policy
 - anime style/model registry validation with the production candidate disabled
 - explicit anime-only Real-ESRGAN adapter behavior under fake-runner tests
 - mocked WebUI success and failure paths
 - durable manifest transitions, idempotency, recovery, review, finalization, and cleanup contracts
+- three Profile contracts plus immutable preserve/change child runs and confirmed geometry/user masks
+- a fake-backend contract matrix covering nine fixed briefs and three child revisions
 - local-only Diffusers hub policy by default
 
 Pending before a `1.0` claim:
@@ -275,9 +303,9 @@ Pending before a `1.0` claim:
 - published compatibility matrix across named MCP clients
 - measured performance or VRAM data
 
-The mocked/model-free anime vertical slice is test evidence, not retained real Codex/vision/GPU evidence. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No real-generation, production, performance, VRAM, image-quality, named-client compatibility, star, or popularity claim is made. Version 0.5 masks, child revisions, PPT workflows, UI workflows, and real acceptance remain outside this release.
+The mocked/model-free matrix is deterministic protocol evidence, not retained real Codex/vision/GPU evidence. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No real-generation, production, performance, VRAM, image-quality, named-client compatibility, star, or popularity claim is made.
 
-Current AUTOMATIC1111/Forge and Diffusers backend readiness has not been verified for version 0.4.0; use the readiness commands above to inspect the target environment.
+Current AUTOMATIC1111/Forge and Diffusers backend readiness has not been verified for version 0.5.0; use the readiness commands above to inspect the target environment.
 
 ## Documentation
 

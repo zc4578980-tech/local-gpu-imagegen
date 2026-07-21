@@ -18,6 +18,9 @@ PUBLIC_TOOLS = {
     "local_gpu_list_profiles",
     "local_gpu_start_run",
     "local_gpu_get_run",
+    "local_gpu_branch_run",
+    "local_gpu_prepare_mask",
+    "local_gpu_confirm_mask",
     "local_gpu_generate_round",
     "local_gpu_record_review",
     "local_gpu_finalize_run",
@@ -40,7 +43,7 @@ ACTIVE_VERSION_FILES = ACTIVE_PUBLIC_DOCS + (
 )
 
 class PublicDocumentationTests(unittest.TestCase):
-    def test_readme_documents_v04_agent_workflow_and_release_boundary(self) -> None:
+    def test_readme_documents_v05_agent_workflow_and_release_boundary(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
         documented_tools = set(re.findall(r"`(local_gpu_[a-z_]+)`", readme))
@@ -79,11 +82,24 @@ class PublicDocumentationTests(unittest.TestCase):
             "low-level `local_gpu_generate_image` compatibility tool is unchanged",
             "confirmation must exactly equal the `run_id`",
             "publishes that nominated reviewed round",
+            "exactly twelve tools",
+            "`standalone-illustration`",
+            "`presentation-visual`",
+            "`ui-visual-asset`",
+            "immutable child run",
+            "preserve/change contract",
+            "explicit mask-overlay confirmation",
+            "`parent-source.png`",
+            "`masks/mask-01.png`",
+            "nine fixed briefs",
+            "three child revisions",
+            "fake-backend contract matrix",
+            "does not prove visual quality",
         ):
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, readme)
 
-    def test_supporting_docs_cover_v04_architecture_recovery_and_release(self) -> None:
+    def test_supporting_docs_cover_v05_architecture_recovery_and_release(self) -> None:
         architecture = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
         troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -103,11 +119,17 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("does not download", architecture)
         self.assertIn("original `final.png`", architecture)
         self.assertIn("`final-upscaled.png`", architecture)
+        self.assertIn("immutable child", architecture)
+        self.assertIn("confirmed mask", architecture)
+        self.assertIn("`mask_changed_since_prepare`", troubleshooting)
+        self.assertIn("`mask_not_confirmed`", troubleshooting)
+        self.assertIn("parent manifest", troubleshooting)
         self.assertIn("Mocked/model-free", changelog)
+        self.assertIn("## [0.5.0] - 2026-07-21", changelog)
         self.assertIn("## [0.4.0] - 2026-07-21", changelog)
         self.assertIn("## [0.3.0]", changelog)
 
-    def test_active_versions_are_v04_and_historical_versions_are_preserved(self) -> None:
+    def test_active_versions_are_v05_and_historical_versions_are_preserved(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -116,9 +138,10 @@ class PublicDocumentationTests(unittest.TestCase):
             for path in ACTIVE_VERSION_FILES
         )
 
-        self.assertEqual(plugin["version"], "0.4.0")
-        self.assertIn('"version": "0.4.0"', readme)
+        self.assertEqual(plugin["version"], "0.5.0")
+        self.assertIn('"version": "0.5.0"', readme)
         self.assertEqual(active_version_findings(active_documents), [])
+        self.assertIn("## [0.5.0] - 2026-07-21", changelog)
         self.assertIn("## [0.4.0] - 2026-07-21", changelog)
         self.assertIn("## [0.3.0] - 2026-07-21", changelog)
 
@@ -129,16 +152,15 @@ class PublicDocumentationTests(unittest.TestCase):
         )
 
         self.assertEqual(unsupported_release_claims(public_copy), [])
-        for unsupported_scope in (
-            "includes a mask workflow",
-            "includes a child revision workflow",
-            "includes a hot revision workflow",
-            "includes a ppt workflow",
-            "includes a ui workflow",
-            "v0.5 feature",
+        for excluded_scope in (
+            "Complete PPT decks are excluded",
+            "Frontend code and components are excluded",
+            "Production icons, SVG, and transparent PNG are excluded",
+            "Automatic segmentation is excluded",
+            "Seamless-texture guarantees are excluded",
         ):
-            with self.subTest(unsupported_scope=unsupported_scope):
-                self.assertNotIn(unsupported_scope, public_copy.lower())
+            with self.subTest(excluded_scope=excluded_scope):
+                self.assertIn(excluded_scope, public_copy)
 
     def test_claim_scanner_rejects_equivalent_false_claims(self) -> None:
         false_claims = (
@@ -175,6 +197,10 @@ class PublicDocumentationTests(unittest.TestCase):
             "A license record is available.",
             "A license record is present.",
             "The license is not unapproved.",
+            "This release generates complete PPT decks.",
+            "This release provides frontend code and components.",
+            "This release supports SVG and transparent PNG.",
+            "This release includes automatic segmentation.",
         )
         for false_claim in false_claims:
             with self.subTest(false_claim=false_claim):
@@ -182,18 +208,22 @@ class PublicDocumentationTests(unittest.TestCase):
 
     def test_stale_active_version_mutations_are_rejected(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        for stale_version in ("v0.3", "version 0.3", '"version": "0.3.0"'):
+        for stale_version in (
+            "v0.3", "version 0.3", '"version": "0.3.0"',
+            "v0.4", "version 0.4", '"version": "0.4.0"',
+        ):
             with self.subTest(stale_version=stale_version):
                 mutated = readme + "\nActive release: " + stale_version
                 self.assertTrue(active_version_findings((("README.md", mutated),)))
 
-    def test_skill_active_v03_mutation_is_rejected(self) -> None:
+    def test_skill_stale_version_mutation_is_rejected(self) -> None:
         skill_path = ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md"
         self.assertIn(skill_path, ACTIVE_VERSION_FILES)
-        mutated = skill_path.read_text(encoding="utf-8") + "\nActive Skill release: v0.3"
-        findings = active_version_findings((("skills/local-gpu-imagegen/SKILL.md", mutated),))
-        self.assertEqual(len(findings), 1)
-        self.assertIn("skills/local-gpu-imagegen/SKILL.md", findings[0])
+        for stale_version in ("v0.3", "v0.4"):
+            mutated = skill_path.read_text(encoding="utf-8") + f"\nActive Skill release: {stale_version}"
+            findings = active_version_findings((("skills/local-gpu-imagegen/SKILL.md", mutated),))
+            self.assertEqual(len(findings), 1)
+            self.assertIn("skills/local-gpu-imagegen/SKILL.md", findings[0])
 
     def test_claim_scanner_preserves_truthful_negative_boundaries(self) -> None:
         truthful_boundaries = (

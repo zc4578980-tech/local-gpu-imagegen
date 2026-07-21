@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterable
 
 
-_STALE_ACTIVE_VERSION = re.compile(r"\b(?:v|version\s*)?0\.3(?:\.0)?\b", re.IGNORECASE)
+_STALE_ACTIVE_VERSION = re.compile(r"\b(?:v|version\s*)?0\.[34](?:\.0)?\b", re.IGNORECASE)
 _ASSERTION_BOUNDARY = re.compile(
     r"[:;.!?]+\s*(?:(?:however|nevertheless|nonetheless|still|yet)\s*,?\s*)?"
     r"|,\s*(?:and|but|or|nor|yet|however|though|although|even\s+though)\b\s*"
@@ -42,7 +42,8 @@ _CLAIM_RULES = tuple(
         ("performance", r"\b(?P<predicate>uses?|requires?|needs?)\s+\d+(?:\.\d+)?\s*(?:gb|gib)\s+(?:of\s+)?vram\b"),
         ("performance", r"\b(?P<predicate>\d+(?:\.\d+)?\s*(?:x|%|percent))\s+(?:faster|speedup)\b"),
         ("popularity", r"\b(?P<predicate>five|[1-5])[- ]star(?:s| rating)?\b"),
-        ("future", r"\b(?P<predicate>supports|includes|ships|provides)\b.{0,80}?\b(?:masks?|child revisions?|ppt|ui|v0\.5)\b"),
+        ("legacy", r"(?:\bversion\s+0\.4\b|\b4)\s+(?P<predicate>includes|supports|ships|provides)\b.{0,48}?\b(?:masks?|child revisions?|hot revisions?)\b"),
+        ("scope", r"\b(?P<predicate>supports|includes|ships|provides|generates)\b.{0,80}?\b(?:complete ppt|ppt decks?|frontend (?:code|components?)|production icons?|svg|transparent png|automatic segmentation)\b"),
     )
 )
 

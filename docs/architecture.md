@@ -10,9 +10,11 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 |---|---|---|
 | MCP client | Sends JSON-RPC requests and consumes tool results | GPU/model execution |
 | `mcp_server.py` | Protocol lifecycle, schemas, validation, dispatch, timeout, structured results | Diffusion pipeline logic |
-| `AssetRunEngine` | Confirmed run orchestration, generation plans, previews, review, and final publication | Filesystem locking details |
+| `AssetRunEngine` | Confirmed root/child orchestration, edit-mode mapping, previews, review, and final publication | Filesystem locking details |
 | `RunStore` | Atomic manifest updates, attempt ownership, idempotency, recovery, and cleanup | Backend execution |
 | `ProfileRegistry` | Validated Profile/style/model catalog loading, constraint merging, and model approval checks | Local model installation or license selection |
+| `RevisionService` | Preserve/change validation, reviewed-parent lineage, and immutable child creation | Prompt policy or visual judgment |
+| `MaskService` | Deterministic user/geometry masks, JPEG overlays, hashes, and explicit confirmation | Automatic segmentation or user approval |
 | `RealEsrganAdapter` | Optional explicit anime-only 4x postprocessing from one configured tool root | Downloads, arbitrary commands, or automatic invocation |
 | Subprocess boundary | Isolates backend execution and provides exit code/stdout/stderr | MCP semantics |
 | `generate_image.py` | WebUI/Diffusers selection, model loading, image generation, PNG output | JSON-RPC transport |
@@ -25,10 +27,11 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 3. `handle_request` handles initialization, ping, tool listing, or tool calls.
 4. Tool arguments are checked against the published input schema before a subprocess starts.
 5. Compatibility tools run the readiness or generation script with a bounded timeout.
-6. High-level tools delegate to `AssetRunEngine`, which validates confirmed plans before changing run state.
-7. The run engine uses the same subprocess backend boundary, validates the returned PNG, and persists the transition through `RunStore`.
-8. Structured data is returned as MCP `structuredContent` plus text content; a generation round may also include a bounded JPEG preview.
-9. Tool failures use `isError: true`; protocol failures use JSON-RPC error envelopes.
+6. High-level tools delegate to `AssetRunEngine`, which validates confirmed plans and immutable child contracts before changing run state.
+7. Revision services copy the reviewed parent source or validate a confirmed mask before any backend invocation.
+8. The run engine maps the fixed child mode to txt2img, img2img, or inpaint arguments, validates the returned PNG, and persists the transition through `RunStore`.
+9. Structured data is returned as MCP `structuredContent` plus text content; generation and mask preparation may also include a bounded JPEG preview.
+10. Tool failures use `isError: true`; protocol failures use JSON-RPC error envelopes.
 
 Before step 6, the Agent Skill lists the catalog, asks only for missing high-impact boundaries, displays the exact resolved model and run summary, and requires post-display confirmation. On a vision-capable host it can inspect preview evidence and record review/refine/explore/finalize decisions within the confirmed one-to-three-successful-round budget. A text-only host stops after one retained round without inventing review evidence or finalizing it.
 
@@ -44,6 +47,12 @@ Generation attempts carry an idempotency key plus a hash of their confirmed requ
 
 Run responses expose `recoverable_next_actions`, derived from persisted state. A run permits one to three successful rounds; failed backend attempts do not consume that budget. Review eligibility comes from the merged profile rubric and hard-failure rules. Final metadata marks the nominated reviewed round as `accepted` or `needs_user_review`; finalization does not replace the nomination with a weighted-best candidate.
 
+## Immutable Revision And Mask Flow
+
+`RevisionService` branches only from a successful reviewed parent round. It copies the selected PNG to the immutable child path `parent-source.png`, records parent run/round/image hash plus the preserve/change contract, and never updates the parent manifest. Prompt refinement maps to backend txt2img without a source image; img2img and inpaint inject the child source plus the contract's validated denoising strength.
+
+`MaskService` operates only on an inpaint child. It accepts either one user mask path or normalized rectangle/polygon geometry, stores a grayscale mask and visible JPEG overlay under `masks/`, and records source/mask hashes. A confirmed mask is revalidated immediately before generation. Missing, unconfirmed, foreign-run, or changed masks fail before backend invocation; changed hard preserve targets make the reviewed child ineligible.
+
 ## Error Layers
 
 | Layer | Example | Contract |
@@ -56,6 +65,8 @@ Run responses expose `recoverable_next_actions`, derived from persisted state. A
 | Backend response | successful process prints invalid JSON | tool error code `invalid_backend_response` |
 | Readiness state | CUDA/WebUI not ready | successful tool result with `ready: false` |
 | Run transition | generation before review or premature finalization | structured state/conflict tool error |
+| Revision lineage | missing/changed parent source or wrong fixed edit mode | structured validation/conflict error; parent remains unchanged |
+| Mask confirmation | missing, unconfirmed, or changed mask | `mask_not_confirmed` or `mask_changed_since_prepare`; backend is not invoked |
 | Artifact validation | retained path, digest, or PNG is invalid | structured artifact tool error; no publication |
 
 Readiness is deliberately separated from execution failure. A healthy diagnostic tool must be able to report that a backend is unavailable without presenting itself as broken.
@@ -79,4 +90,4 @@ Success preserves the original `final.png`, atomically publishes `final-upscaled
 
 The server implements the narrow protocol surface it uses: initialize, ping, tools/list, and tools/call over newline-delimited stdio JSON-RPC. The public verification script launches this exact path without relying on an AI client, output directory, model, or GPU import. Named client compatibility and real GPU generation remain integration-test responsibilities and should be documented only after retained evidence exists.
 
-Public v0.4.0 evidence is mocked/model-free. The deterministic anime two-round vertical slice uses real registry/engine/store logic but fake backend and postprocessor boundaries; it is not retained real Codex, vision, model, GPU, or Real-ESRGAN acceptance evidence.
+Public v0.5.0 evidence is Mocked/model-free. The deterministic matrix uses real registry/engine/store/revision/mask logic for nine fixed briefs and three child revisions, but fake backend and postprocessor boundaries; it is not retained real Codex, vision, model, GPU, or Real-ESRGAN acceptance evidence and does not prove visual quality.
