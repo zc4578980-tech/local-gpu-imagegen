@@ -22,9 +22,9 @@ class GenerationPlanTests(unittest.TestCase):
             "style": None,
             "intent": "A sailor looking over a calm sea.",
             "constraints": {"aspect_ratio": "1:1"},
-            "model_choice": "local-model",
+            "model_choice": None,
             "max_rounds": 2,
-            "upscale_policy": "auto",
+            "upscale_policy": "off",
             "backend": "auto",
             "available_backends": ["webui"],
             "merged_profile": {"refine_mutable": ["denoise_strength"], "explore_mutable": ["seed"]},
@@ -36,16 +36,18 @@ class GenerationPlanTests(unittest.TestCase):
             "positive_prompt": "a sailor looking over a calm sea, illustration",
             "negative_prompt": "",
             "constraints": {"aspect_ratio": "1:1"},
-            "model_choice": "local-model",
+            "model_choice": None,
             "backend": "webui",
             "parameters": {},
             "max_rounds": 2,
-            "upscale_policy": "auto",
+            "upscale_policy": "off",
         }
 
     def test_accepts_complete_plan_matching_confirmed_run(self) -> None:
         validated = validate_generation_plan(self.plan, self.run_request, "initial")
         self.assertEqual(validated["positive_prompt"], self.plan["positive_prompt"])
+        self.assertIsNone(validated["model_choice"])
+        self.assertEqual(validated["upscale_policy"], "off")
 
     def test_rejects_profile_or_budget_drift(self) -> None:
         with self.assertRaisesRegex(ValidationError, "generation_plan_mismatch"):
@@ -89,7 +91,7 @@ class GenerationPlanTests(unittest.TestCase):
     def test_shared_confirmed_request_validator_rejects_semantic_invalidity(self) -> None:
         invalid = (
             {**self.run_request, "intent": "   "},
-            {**self.run_request, "model_choice": ""},
+            {**self.run_request, "model_choice": 42},
             {**self.run_request, "backend": "comfyui"},
             {**self.run_request, "upscale_policy": "sometimes"},
             {**self.run_request, "available_backends": ["comfyui"]},

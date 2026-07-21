@@ -92,10 +92,8 @@ class AssetRunEngineTests(unittest.TestCase):
             "style": None,
             "intent": "A calm coast at dawn.",
             "constraints": {"width": 256, "height": 256},
-            "model_choice": "local-model",
             "backend": "webui",
-            "available_backends": ["webui", "diffusers"],
-            "upscale_policy": "never",
+            "upscale_policy": "off",
             "max_rounds": max_rounds,
         }
 
@@ -107,11 +105,11 @@ class AssetRunEngineTests(unittest.TestCase):
             "positive_prompt": "calm coast at dawn",
             "negative_prompt": "watermark, text",
             "constraints": {"width": 256, "height": 256},
-            "model_choice": "local-model",
+            "model_choice": None,
             "backend": "webui",
             "parameters": parameters or {"mode": "txt2img", "scheduler": "euler"},
             "max_rounds": max_rounds,
-            "upscale_policy": "never",
+            "upscale_policy": "off",
         }
 
     def generate_arguments(
@@ -170,6 +168,9 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertIn("subject_completeness", started["merged_rubric"])
         fetched = self.engine.get_run({"run_id": started["run_id"]})
         self.assertEqual(fetched["recoverable_next_actions"], ["generate_round"])
+        self.assertIsNone(fetched["request"]["model_choice"])
+        self.assertEqual(fetched["request"]["upscale_policy"], "off")
+        self.assertEqual(fetched["request"]["available_backends"], ["webui", "diffusers"])
 
     def test_start_rejects_invalid_round_budget_before_creating_run(self) -> None:
         arguments = self.start_arguments(max_rounds=4)
@@ -181,8 +182,6 @@ class AssetRunEngineTests(unittest.TestCase):
     def test_start_rejects_invalid_confirmed_requests_before_creating_run(self) -> None:
         invalid_changes: dict[str, dict[str, object]] = {
             "empty-intent": {"intent": "   "},
-            "empty-model": {"model_choice": ""},
-            "nullable-model-not-supported": {"model_choice": None},
             "unknown-backend": {"backend": "comfyui"},
             "invalid-upscale": {"upscale_policy": "sometimes"},
             "zero-budget": {"max_rounds": 0},
@@ -190,8 +189,6 @@ class AssetRunEngineTests(unittest.TestCase):
             "empty-style": {"style": ""},
             "unknown-style": {"style": "missing-style"},
             "unknown-profile": {"profile": "missing-profile"},
-            "fixed-backend-not-advertised": {"available_backends": ["diffusers"]},
-            "unknown-advertised-backend": {"available_backends": ["webui", "comfyui"]},
         }
         for name, changes in invalid_changes.items():
             with self.subTest(name=name):
@@ -208,8 +205,8 @@ class AssetRunEngineTests(unittest.TestCase):
                         engine.start_run(arguments)
                     self.assertFalse((output_root / "runs").exists())
 
-    def test_start_rejects_capabilities_that_disagree_with_provider(self) -> None:
-        for advertised in (["webui"], ["webui", "diffusers", "diffusers"]):
+    def test_start_rejects_invalid_provider_capabilities(self) -> None:
+        for advertised in ([], ["webui", "diffusers", "diffusers"], ["webui", "comfyui"]):
             with self.subTest(advertised=advertised):
                 with tempfile.TemporaryDirectory() as directory:
                     output_root = Path(directory) / "output"
@@ -221,7 +218,7 @@ class AssetRunEngineTests(unittest.TestCase):
                     )
                     with self.assertRaises(ValidationError) as raised:
                         engine.start_run(self.start_arguments())
-                    self.assertEqual(raised.exception.code, "inconsistent_capabilities")
+                    self.assertIn(raised.exception.code, {"invalid_capabilities", "invalid_backend"})
                     self.assertFalse((output_root / "runs").exists())
 
     def test_argument_validation_happens_before_state_mutation(self) -> None:
@@ -244,6 +241,7 @@ class AssetRunEngineTests(unittest.TestCase):
         data, preview = self.engine.generate_round(self.generate_arguments(started["run_id"]))
         run_root = self.output_root / "runs" / started["run_id"]
         self.assertEqual(len(self.runner.calls), 1)
+        self.assertNotIn("--model", self.runner.calls[0])
         self.assertEqual(self.runner.calls[0][self.runner.calls[0].index("--filename") + 1], "round-01.pending.png")
         self.assertFalse((run_root / "round-01.pending.png").exists())
         self.assertTrue((run_root / "round-01.png").is_file())

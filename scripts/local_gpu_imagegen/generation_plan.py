@@ -12,7 +12,7 @@ PLAN_REQUIRED = {
     "upscale_policy",
 }
 _BACKENDS = {"auto", "webui", "diffusers"}
-_UPSCALE_POLICIES = {"auto", "never", "always"}
+_UPSCALE_POLICIES = {"auto", "off"}
 
 
 def validate_generation_plan(plan: dict[str, object], run_request: dict[str, object], action: str) -> dict[str, object]:
@@ -33,8 +33,12 @@ def validate_generation_plan(plan: dict[str, object], run_request: dict[str, obj
         raise ValidationError("invalid_generation_plan", "constraints and parameters must be objects.")
     if not isinstance(plan["backend"], str) or plan["backend"] not in _BACKENDS:
         raise ValidationError("invalid_backend", "backend must be auto, webui, or diffusers.")
+    if plan["model_choice"] is not None and (
+        not isinstance(plan["model_choice"], str) or not plan["model_choice"].strip()
+    ):
+        raise ValidationError("invalid_model_choice", "model_choice must be a non-empty string or null.")
     if not isinstance(plan["upscale_policy"], str) or plan["upscale_policy"] not in _UPSCALE_POLICIES:
-        raise ValidationError("invalid_upscale_policy", "upscale_policy must be auto, never, or always.")
+        raise ValidationError("invalid_upscale_policy", "upscale_policy must be auto or off.")
     if type(plan["max_rounds"]) is not int or not 1 <= plan["max_rounds"] <= 3:
         raise ValidationError("invalid_round_budget", "max_rounds must be an integer from 1 to 3.")
     if action not in {"initial", "refine", "explore"}:
@@ -94,8 +98,10 @@ def validate_confirmed_run_request(run_request: object) -> dict[str, object]:
         json.dumps(run_request["constraints"], allow_nan=False)
     except (TypeError, ValueError, RecursionError) as error:
         raise ValidationError("invalid_run_request", "Confirmed constraints must be JSON serializable.") from error
-    if not isinstance(run_request["model_choice"], str) or not run_request["model_choice"].strip():
-        raise ValidationError("invalid_run_request", "Confirmed model_choice must be a non-empty string.")
+    if run_request["model_choice"] is not None and (
+        not isinstance(run_request["model_choice"], str) or not run_request["model_choice"].strip()
+    ):
+        raise ValidationError("invalid_run_request", "Confirmed model_choice must be a non-empty string or null.")
     if type(run_request["max_rounds"]) is not int or not 1 <= run_request["max_rounds"] <= 3:
         raise ValidationError("invalid_run_request", "Confirmed max_rounds must be an integer from 1 to 3.")
     if not isinstance(run_request["upscale_policy"], str) or run_request["upscale_policy"] not in _UPSCALE_POLICIES:

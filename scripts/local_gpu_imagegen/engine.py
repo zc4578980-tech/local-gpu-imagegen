@@ -49,35 +49,24 @@ class AssetRunEngine:
         style = _optional(arguments, "style", str, None)
         constraints = _optional(arguments, "constraints", dict, {})
         _required(arguments, "intent", str)
-        _required(arguments, "model_choice", str)
         _required(arguments, "backend", str)
-        available_backends = _required(arguments, "available_backends", list)
         _required(arguments, "upscale_policy", str)
         max_rounds = _optional(arguments, "max_rounds", int, 3, reject_bool=True)
         if not 1 <= max_rounds <= 3:
             raise ValidationError("invalid_round_budget", "max_rounds must be an integer from 1 to 3.")
-        if not all(isinstance(value, str) for value in available_backends):
-            raise ValidationError("invalid_argument_type", "available_backends must contain only strings.")
         merged = _engine_profile(self.registry.merge(profile, style, constraints))
+        capabilities = self.capability_provider()
+        if not isinstance(capabilities, dict) or not isinstance(capabilities.get("available_backends"), list):
+            raise ValidationError("invalid_capabilities", "Capability provider must advertise available_backends.")
+        available_backends = capabilities["available_backends"]
         request = {
             **copy.deepcopy(arguments),
             "merged_profile": merged,
             "max_rounds": max_rounds,
+            "model_choice": None,
+            "available_backends": copy.deepcopy(available_backends),
         }
         request = validate_confirmed_run_request(request)
-        capabilities = self.capability_provider()
-        if not isinstance(capabilities, dict) or not isinstance(capabilities.get("available_backends"), list):
-            raise ValidationError("invalid_capabilities", "Capability provider must advertise available_backends.")
-        provider_backends = capabilities["available_backends"]
-        if (
-            not all(isinstance(value, str) for value in provider_backends)
-            or len(set(provider_backends)) != len(provider_backends)
-            or set(provider_backends) != set(request["available_backends"])
-        ):
-            raise ValidationError(
-                "inconsistent_capabilities",
-                "Confirmed available_backends must match the capability provider.",
-            )
         manifest = self.store.create(request)
         return {
             "ok": True,
@@ -483,7 +472,6 @@ def _backend_arguments(
     values: list[tuple[str, object]] = [
         ("--prompt", plan["positive_prompt"]),
         ("--negative-prompt", plan["negative_prompt"]),
-        ("--model", plan["model_choice"]),
         ("--backend", plan["backend"]),
         ("--mode", mode),
         ("--width", width),
@@ -492,6 +480,8 @@ def _backend_arguments(
         ("--output-dir", str(output_dir)),
         ("--filename", filename),
     ]
+    if plan["model_choice"] is not None:
+        values.insert(2, ("--model", plan["model_choice"]))
     mappings = {
         "steps": "--steps",
         "guidance_scale": "--guidance-scale",

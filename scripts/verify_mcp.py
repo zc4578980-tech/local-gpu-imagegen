@@ -11,7 +11,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "scripts" / "mcp_server.py"
-EXPECTED_TOOLS = {"local_gpu_imagegen_check", "local_gpu_generate_image"}
+REQUIRED_COMPATIBILITY_TOOLS = {"local_gpu_imagegen_check", "local_gpu_generate_image"}
 
 
 def build_requests(include_readiness: bool = False) -> str:
@@ -32,7 +32,11 @@ def build_requests(include_readiness: bool = False) -> str:
     return "\n".join(json.dumps(request) for request in requests) + "\n"
 
 
-def verify(python_executable: str = sys.executable, check_readiness: bool = False) -> dict[str, Any]:
+def verify(
+    python_executable: str = sys.executable,
+    check_readiness: bool = False,
+    expected_tools: set[str] | None = None,
+) -> dict[str, Any]:
     completed = subprocess.run(
         [python_executable, str(SERVER)],
         input=build_requests(check_readiness),
@@ -56,7 +60,10 @@ def verify(python_executable: str = sys.executable, check_readiness: bool = Fals
 
     initialize = by_id[1]["result"]
     tools = {tool["name"] for tool in by_id[2]["result"]["tools"]}
-    if tools != EXPECTED_TOOLS:
+    missing_compatibility_tools = REQUIRED_COMPATIBILITY_TOOLS - tools
+    if missing_compatibility_tools:
+        raise RuntimeError(f"Missing compatibility tools: {sorted(missing_compatibility_tools)}")
+    if expected_tools is not None and tools != expected_tools:
         raise RuntimeError(f"Unexpected tools: {sorted(tools)}")
     if by_id[3]["result"] != {}:
         raise RuntimeError("Ping did not return an empty result object.")

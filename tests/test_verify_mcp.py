@@ -10,6 +10,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 
+EXPECTED_TOOLS = {
+    "local_gpu_imagegen_check",
+    "local_gpu_generate_image",
+    "local_gpu_list_profiles",
+    "local_gpu_start_run",
+    "local_gpu_get_run",
+    "local_gpu_generate_round",
+    "local_gpu_record_review",
+    "local_gpu_finalize_run",
+    "local_gpu_cleanup_run",
+}
+
 
 class VerifyMcpTests(unittest.TestCase):
     def test_readiness_request_is_optional(self) -> None:
@@ -34,10 +46,17 @@ class VerifyMcpTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["transport"], "stdio")
         self.assertEqual(report["server"]["name"], "local-gpu-imagegen")
-        self.assertEqual(
-            set(report["tools"]),
-            {"local_gpu_imagegen_check", "local_gpu_generate_image"},
-        )
+        self.assertEqual(set(report["tools"]), EXPECTED_TOOLS)
+
+    def test_verify_accepts_optional_exact_tool_contract(self) -> None:
+        sys.path.insert(0, str(SCRIPTS))
+        import verify_mcp
+
+        try:
+            report = verify_mcp.verify(expected_tools=EXPECTED_TOOLS)
+        except TypeError as exc:
+            self.fail(f"verify must accept expected_tools: {exc}")
+        self.assertEqual(set(report["tools"]), EXPECTED_TOOLS)
 
     def test_missing_python_returns_json_error_without_traceback(self) -> None:
         completed = subprocess.run(

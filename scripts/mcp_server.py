@@ -9,11 +9,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from local_gpu_imagegen.errors import AssetEngineError
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 PYTHON = sys.executable
 DEFAULT_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("LOCAL_GPU_IMAGEGEN_COMMAND_TIMEOUT_SECONDS", "900"))
+MAX_PREVIEW_BASE64_CHARS = 4 * ((1024 * 1024 + 2) // 3)
+_asset_engine: Any | None = None
 
 
 def send(payload: dict[str, Any]) -> None:
@@ -84,9 +88,12 @@ def command_error(
     )
 
 
-def tool_success(data: dict[str, Any]) -> dict[str, Any]:
+def tool_success(data: dict[str, Any], preview: dict[str, str] | None = None) -> dict[str, Any]:
+    content: list[dict[str, str]] = text_content(json.dumps(data, indent=2))
+    if preview:
+        content.append({"type": "image", "data": preview["data"], "mimeType": preview["mimeType"]})
     return {
-        "content": text_content(json.dumps(data, indent=2)),
+        "content": content,
         "structuredContent": data,
         "isError": False,
     }
@@ -141,8 +148,76 @@ def run_script(script: str, args: list[str] | None = None) -> tuple[int, str, st
         return 124, "", f"{script} exceeded the {DEFAULT_COMMAND_TIMEOUT_SECONDS}s timeout."
 
 
+def get_capabilities() -> dict[str, object]:
+    code, stdout, _stderr = run_script("check_gpu.py", [])
+    if code != 0:
+        return {
+            "ready": False,
+            "backends": {},
+            "warnings": ["capability_check_failed"],
+        }
+    try:
+        value = json.loads(stdout)
+    except json.JSONDecodeError:
+        return {
+            "ready": False,
+            "backends": {},
+            "warnings": ["capability_check_invalid_json"],
+        }
+    if not isinstance(value, dict):
+        return {
+            "ready": False,
+            "backends": {},
+            "warnings": ["capability_check_invalid_result"],
+        }
+    available_backends = []
+    if value.get("webui_ready") is True:
+        available_backends.append("webui")
+    if value.get("diffusers_ready") is True:
+        available_backends.append("diffusers")
+    return {**value, "available_backends": available_backends}
+
+
+def get_asset_engine() -> Any:
+    global _asset_engine
+    if _asset_engine is None:
+        from local_gpu_imagegen.engine import AssetRunEngine
+        from local_gpu_imagegen.profile_registry import ProfileRegistry
+        from local_gpu_imagegen.run_store import RunStore
+
+        registry = ProfileRegistry(ROOT / "profiles")
+        store = RunStore(Path(os.environ.get("LOCAL_GPU_IMAGEGEN_OUTPUT_DIR", ROOT / "outputs")))
+        _asset_engine = AssetRunEngine(
+            registry,
+            store,
+            lambda args: run_script("generate_image.py", args),
+            get_capabilities,
+        )
+    return _asset_engine
+
+
+def _object_schema(
+    properties: dict[str, Any],
+    required: list[str],
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": required,
+        "properties": properties,
+        "additionalProperties": False,
+    }
+
+
+def _output_schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    common = {
+        "ok": {"type": "boolean"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+    }
+    return _object_schema({**common, **properties}, ["ok", *required, "warnings"])
+
+
 def tool_schema() -> list[dict[str, Any]]:
-    return [
+    tools = [
         {
             "name": "local_gpu_imagegen_check",
             "description": "Check Python packages and CUDA readiness for local GPU image generation.",
@@ -213,9 +288,139 @@ def tool_schema() -> list[dict[str, Any]]:
             },
         },
     ]
+    json_object = {"type": "object", "additionalProperties": True}
+    json_value = {"type": ["object", "array", "string", "number", "boolean", "null"]}
+    json_array = {"type": "array", "items": json_value}
+    run_manifest_properties = {
+        "run_id": {"type": "string"},
+        "schema_version": {"type": "integer"},
+        "manifest_revision": {"type": "integer"},
+        "state": {"type": "string"},
+        "last_stable_state": {"type": "string"},
+        "active_attempt": json_value,
+        "parent": json_value,
+        "request": json_object,
+        "attempts": json_array,
+        "rounds": json_array,
+        "reviews": json_array,
+        "masks": json_array,
+        "final": json_value,
+        "recoverable_next_actions": {"type": "array", "items": {"type": "string"}},
+    }
+    tools.extend([
+        {
+            "name": "local_gpu_list_profiles",
+            "description": "List registered visual-asset profiles and current local backend capabilities.",
+            "inputSchema": _object_schema({}, []),
+            "outputSchema": _output_schema({
+                "profiles": json_object,
+                "styles": json_object,
+                "capabilities": json_object,
+            }, ["profiles", "styles", "capabilities"]),
+        },
+        {
+            "name": "local_gpu_start_run",
+            "description": "Create a confirmed visual-asset run.",
+            "inputSchema": _object_schema({
+                "intent": {"type": "string", "minLength": 1},
+                "profile": {"type": "string", "enum": _registered_profile_ids()},
+                "style": {"type": ["string", "null"], "enum": [None, *_registered_style_ids()]},
+                "constraints": json_object,
+                "backend": {"type": "string", "enum": ["auto", "webui", "diffusers"]},
+                "max_rounds": {"type": "integer", "minimum": 1, "maximum": 3},
+                "upscale_policy": {"type": "string", "enum": ["auto", "off"]},
+            }, ["intent", "profile", "style", "constraints", "backend", "max_rounds", "upscale_policy"]),
+            "outputSchema": _output_schema({
+                "run_id": {"type": "string"},
+                "state": {"type": "string"},
+                "max_rounds": {"type": "integer"},
+                "merged_rubric": json_object,
+            }, ["run_id", "state", "max_rounds", "merged_rubric"]),
+        },
+        {
+            "name": "local_gpu_get_run",
+            "description": "Get the current persisted state of a visual-asset run.",
+            "inputSchema": _object_schema({"run_id": {"type": "string", "minLength": 1}}, ["run_id"]),
+            "outputSchema": _output_schema(run_manifest_properties, ["run_id", "state", "rounds", "recoverable_next_actions"]),
+        },
+        {
+            "name": "local_gpu_generate_round",
+            "description": "Generate one confirmed txt2img round and return an optional bounded JPEG preview.",
+            "inputSchema": _object_schema({
+                "run_id": {"type": "string", "minLength": 1},
+                "idempotency_key": {"type": "string", "minLength": 1},
+                "action": {"type": "string", "enum": ["initial", "refine", "explore"]},
+                "edit_mode": {"type": "string", "const": "txt2img"},
+                "plan": json_object,
+                "seed": {"type": "integer"},
+                "change_summary": {"type": "string", "minLength": 1},
+            }, ["run_id", "idempotency_key", "action", "edit_mode", "plan", "seed", "change_summary"]),
+            "outputSchema": _output_schema({
+                "run_id": {"type": "string"},
+                "state": {"type": "string"},
+                "round": json_object,
+                "full_image_path": {"type": "string"},
+                "recoverable_next_actions": {"type": "array", "items": {"type": "string"}},
+            }, ["run_id", "state", "round", "full_image_path"]),
+        },
+        {
+            "name": "local_gpu_record_review",
+            "description": "Record human or model review evidence for one generated round.",
+            "inputSchema": _object_schema({
+                "run_id": {"type": "string", "minLength": 1},
+                "round_number": {"type": "integer", "minimum": 1, "maximum": 3},
+                "scores": json_object,
+                "hard_failures": {"type": "array", "items": {"type": "string"}},
+                "critique": {"type": "string", "minLength": 1},
+                "constraint_results": json_object,
+                "next_action": {"type": "string", "enum": ["refine", "explore", "finalize"]},
+            }, ["run_id", "round_number", "scores", "hard_failures", "critique", "constraint_results", "next_action"]),
+            "outputSchema": _output_schema(run_manifest_properties, ["run_id", "state", "rounds", "reviews", "recoverable_next_actions"]),
+        },
+        {
+            "name": "local_gpu_finalize_run",
+            "description": "Publish the selected reviewed round as the run's final PNG.",
+            "inputSchema": _object_schema({
+                "run_id": {"type": "string", "minLength": 1},
+                "round_number": {"type": "integer", "minimum": 1, "maximum": 3},
+                "summary": {"type": "string", "minLength": 1},
+            }, ["run_id", "round_number", "summary"]),
+            "outputSchema": _output_schema({
+                **run_manifest_properties,
+                "max_rounds": {"type": ["integer", "null"]},
+                "full_image_path": {"type": "string"},
+            }, ["run_id", "state", "final", "full_image_path", "recoverable_next_actions"]),
+        },
+        {
+            "name": "local_gpu_cleanup_run",
+            "description": "Remove run intermediates or a fully confirmed run directory.",
+            "inputSchema": _object_schema({
+                "run_id": {"type": "string", "minLength": 1},
+                "scope": {"type": "string", "enum": ["intermediates", "all"]},
+                "confirmation": {"type": "string"},
+            }, ["run_id", "scope", "confirmation"]),
+            "outputSchema": _output_schema({
+                "run_id": {"type": "string"},
+                "scope": {"type": "string", "enum": ["intermediates", "all"]},
+            }, ["run_id", "scope"]),
+        },
+    ])
+    return tools
 
 
-def schema_type_matches(value: object, schema_type: str) -> bool:
+def _registered_profile_ids() -> list[str]:
+    return sorted(path.stem for path in (ROOT / "profiles" / "use-cases").glob("*.json"))
+
+
+def _registered_style_ids() -> list[str]:
+    return sorted(path.stem for path in (ROOT / "profiles" / "styles").glob("*.json"))
+
+
+def schema_type_matches(value: object, schema_type: object) -> bool:
+    if isinstance(schema_type, list):
+        return any(schema_type_matches(value, candidate) for candidate in schema_type)
+    if schema_type == "null":
+        return value is None
     if schema_type == "string":
         return isinstance(value, str)
     if schema_type == "boolean":
@@ -245,10 +450,16 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
 
     for field in schema.get("required", []):
         if field not in arguments:
+            tool_name = tool["name"]
+            message = (
+                "local_gpu_generate_image requires a non-empty prompt."
+                if field == "prompt"
+                else f"{tool_name} requires {field}."
+            )
             return tool_error(
                 "invalid_prompt" if field == "prompt" else "missing_argument",
                 "validation",
-                f"local_gpu_generate_image requires a non-empty {field}.",
+                message,
                 {"field": field},
             )
 
@@ -257,13 +468,15 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
         expected_type = field_schema.get("type")
         if expected_type and not schema_type_matches(value, expected_type):
             code = "invalid_lora" if field == "lora" else "invalid_argument_type"
-            message = "lora must be an array of strings." if field == "lora" else f"{field} must be a JSON {expected_type}."
+            type_name = " or ".join(expected_type) if isinstance(expected_type, list) else expected_type
+            message = "lora must be an array of strings." if field == "lora" else f"{field} must be a JSON {type_name}."
             return tool_error(code, "validation", message, {"field": field, "expectedType": expected_type})
         if "enum" in field_schema and value not in field_schema["enum"]:
+            allowed_text = ", ".join("null" if item is None else str(item) for item in field_schema["enum"])
             return tool_error(
                 "invalid_argument_value",
                 "validation",
-                f"{field} must be one of: {', '.join(field_schema['enum'])}.",
+                f"{field} must be one of: {allowed_text}.",
                 {"field": field, "allowed": field_schema["enum"]},
             )
         if expected_type in ("integer", "number"):
@@ -281,6 +494,20 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
                     f"{field} must be at most {field_schema['maximum']}.",
                     {"field": field, "maximum": field_schema["maximum"]},
                 )
+        if "const" in field_schema and value != field_schema["const"]:
+            return tool_error(
+                "invalid_argument_value",
+                "validation",
+                f"{field} must equal {field_schema['const']}.",
+                {"field": field, "expected": field_schema["const"]},
+            )
+        if expected_type == "string" and "minLength" in field_schema and len(value.strip()) < field_schema["minLength"]:
+            return tool_error(
+                "invalid_argument_value",
+                "validation",
+                f"{field} must be a non-empty string.",
+                {"field": field},
+            )
         if expected_type == "array" and "items" in field_schema:
             item_type = field_schema["items"].get("type")
             if item_type and not all(schema_type_matches(item, item_type) for item in value):
@@ -331,7 +558,46 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
             "input_image and mask_image are only valid for img2img/inpaint modes.",
             {"mode": mode},
         )
+    if (
+        tool["name"] == "local_gpu_cleanup_run"
+        and arguments.get("scope") == "all"
+        and arguments.get("confirmation") != arguments.get("run_id")
+    ):
+        return tool_error(
+            "invalid_confirmation",
+            "validation",
+            "confirmation must exactly equal run_id when scope is all.",
+            {"field": "confirmation"},
+        )
     return None
+
+
+def _successful_engine_data(value: dict[str, Any]) -> dict[str, Any]:
+    data = dict(value)
+    data.setdefault("ok", True)
+    warnings = data.get("warnings")
+    if not isinstance(warnings, list):
+        data["warnings"] = []
+    return data
+
+
+def _preview_block(preview: object) -> dict[str, str] | None:
+    data = getattr(preview, "data_base64", None)
+    mime_type = getattr(preview, "mime_type", None)
+    if (
+        isinstance(data, str)
+        and data
+        and len(data) <= MAX_PREVIEW_BASE64_CHARS
+        and mime_type == "image/jpeg"
+    ):
+        return {"data": data, "mimeType": "image/jpeg"}
+    return None
+
+
+def _asset_error(error: AssetEngineError) -> dict[str, Any]:
+    result = tool_error(error.code, error.category, str(error.args[0]), dict(error.details))
+    result["structuredContent"]["error"]["details"] = dict(error.details)
+    return result
 
 
 def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
@@ -404,6 +670,40 @@ def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
             args.append("--allow-download")
         code, stdout, stderr = run_script("generate_image.py", args)
         return script_json_result("generate_image.py", code, stdout, stderr)
+
+    try:
+        engine = get_asset_engine()
+        if name == "local_gpu_list_profiles":
+            data = _successful_engine_data(engine.list_profiles())
+            return tool_success(data)
+        if name == "local_gpu_start_run":
+            data = _successful_engine_data(engine.start_run(arguments))
+            return tool_success(data)
+        if name == "local_gpu_get_run":
+            data = _successful_engine_data(engine.get_run(arguments))
+            return tool_success(data)
+        if name == "local_gpu_generate_round":
+            data, preview = engine.generate_round(arguments)
+            return tool_success(_successful_engine_data(data), _preview_block(preview))
+        if name == "local_gpu_record_review":
+            review = {
+                field: arguments[field]
+                for field in ("scores", "hard_failures", "critique", "constraint_results", "next_action")
+            }
+            data = _successful_engine_data(engine.record_review({
+                "run_id": arguments["run_id"],
+                "round_number": arguments["round_number"],
+                "review": review,
+            }))
+            return tool_success(data)
+        if name == "local_gpu_finalize_run":
+            data = _successful_engine_data(engine.finalize_run(arguments))
+            return tool_success(data)
+        if name == "local_gpu_cleanup_run":
+            data = _successful_engine_data(engine.cleanup_run(arguments))
+            return tool_success(data)
+    except AssetEngineError as error:
+        return _asset_error(error)
 
     raise AssertionError(f"Unhandled tool schema: {name}")
 
