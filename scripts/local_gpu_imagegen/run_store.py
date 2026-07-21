@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .artifacts import atomic_write_json, ensure_within, sha256_file, validate_json_serializable
 from .errors import ArtifactError, AssetEngineError, ConflictError, StateError, ValidationError
+from .visual_review import review_is_eligible, validate_visual_checks, visual_checks_pass
 
 
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$")
@@ -1078,7 +1079,14 @@ class RunStore:
         round_number: int,
         review: dict[str, object],
     ) -> None:
-        required_fields = {"scores", "hard_failures", "critique", "constraint_results", "next_action"}
+        required_fields = {
+            "scores",
+            "hard_failures",
+            "critique",
+            "constraint_results",
+            "visual_checks",
+            "next_action",
+        }
         child_run = isinstance(manifest.get("parent"), dict)
         if child_run:
             required_fields.add("preservation_results")
@@ -1131,6 +1139,12 @@ class RunStore:
             raise ValidationError("invalid_review_critique", "Review critique must be non-empty and concise.")
         if review.get("next_action") not in {"refine", "explore", "finalize"}:
             raise ValidationError("invalid_next_action", "Review next_action must be refine, explore, or finalize.")
+        visual_checks = validate_visual_checks(review.get("visual_checks"))
+        if review.get("next_action") == "finalize" and not visual_checks_pass(visual_checks):
+            raise ValidationError(
+                "visual_checks_require_revision",
+                "Failed or uncertain visual checks cannot request finalization.",
+            )
 
         constraints = run_request.get("constraints", {})
         results = review.get("constraint_results")
@@ -1401,35 +1415,7 @@ class RunStore:
         return None
 
     def _quality_status(self, manifest: dict[str, object], review: dict[str, object]) -> str:
-        hard_failures = review.get("hard_failures")
-        scores = review.get("scores")
-        run_request = manifest.get("request")
-        if not isinstance(hard_failures, list) or not isinstance(scores, dict) or not isinstance(run_request, dict):
-            raise ArtifactError("corrupt_manifest", "Stored review eligibility fields are invalid.")
-        profile = run_request.get("merged_profile", {})
-        if not isinstance(profile, dict):
-            raise ArtifactError("corrupt_manifest", "Merged profile must be an object.")
-        rubric = profile.get("rubric", {})
-        if not isinstance(rubric, dict):
-            raise ArtifactError("corrupt_manifest", "Merged profile rubric must be an object.")
-        critical_dimensions = {
-            name for name, specification in rubric.items()
-            if isinstance(specification, dict) and specification.get("critical") is True
-        }
-        preservation_results = review.get("preservation_results", [])
-        if not isinstance(preservation_results, list):
-            raise ArtifactError("corrupt_manifest", "Stored preservation results must be an array.")
-        preservation_uncertain = any(
-            isinstance(result, dict) and result.get("status") == "uncertain"
-            for result in preservation_results
-        )
-        eligible = not hard_failures and not preservation_uncertain and all(
-            isinstance(scores.get(name), int)
-            and not isinstance(scores.get(name), bool)
-            and scores[name] >= 3
-            for name in critical_dimensions
-        )
-        return "accepted" if eligible else "needs_user_review"
+        return "accepted" if review_is_eligible(manifest, review) else "needs_user_review"
 
     @staticmethod
     def _validate_final_summary(summary: object) -> None:

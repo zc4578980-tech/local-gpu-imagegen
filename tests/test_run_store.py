@@ -42,6 +42,29 @@ REFINE = {
 }
 
 
+def visual_checks(*, limb_status: str = "pass") -> dict[str, object]:
+    return {
+        "full_resolution_inspected": True,
+        "prominent_human": True,
+        "limb_separation": {
+            "status": limb_status,
+            "observation": "Both leg silhouettes were inspected at full resolution.",
+        },
+        "feet_and_contact": {
+            "status": "pass",
+            "observation": "Both feet and contact points are distinct.",
+        },
+        "hands_and_held_objects": {
+            "status": "pass",
+            "observation": "Both hands are distinct from held objects.",
+        },
+        "text_and_watermarks": {
+            "status": "pass",
+            "observation": "No text or watermark is visible.",
+        },
+    }
+
+
 def replace_with_directory_alias(alias: Path, target: Path) -> None:
     shutil.rmtree(alias)
     if os.name == "nt":
@@ -504,14 +527,27 @@ class RunStoreTransitionTests(unittest.TestCase):
             "image": {"path": "round-01.png", "sha256": "a" * 64, "width": 16, "height": 16},
         })
 
-    def review_initial(self) -> dict[str, object]:
-        return self.store.record_review(self.manifest["run_id"], 1, {
+    def review_value(
+        self,
+        *,
+        next_action: str = "refine",
+        limb_status: str = "pass",
+    ) -> dict[str, object]:
+        return {
             "scores": {"intent_adherence": 3},
             "hard_failures": [],
             "critique": "Intent is present; detail can improve.",
             "constraint_results": {},
-            "next_action": "refine",
-        })
+            "visual_checks": visual_checks(limb_status=limb_status),
+            "next_action": next_action,
+        }
+
+    def review_initial(self, *, next_action: str = "refine") -> dict[str, object]:
+        return self.store.record_review(
+            self.manifest["run_id"],
+            1,
+            self.review_value(next_action=next_action),
+        )
 
     def complete_marked_and_reviewed_initial(self) -> dict[str, object]:
         handle = self.store.begin_attempt(self.manifest["run_id"], "initial-published", INITIAL)
@@ -627,7 +663,7 @@ class RunStoreTransitionTests(unittest.TestCase):
         self.store.complete_attempt(handle, {"seed": 42, "image": {"path": "round-01.png"}})
         self.store.record_review(one_round["run_id"], 1, {
             "scores": {}, "hard_failures": [], "critique": "Complete.",
-            "constraint_results": {}, "next_action": "finalize",
+            "constraint_results": {}, "visual_checks": visual_checks(), "next_action": "finalize",
         })
         with self.assertRaisesRegex(StateError, "round_budget_exhausted"):
             self.store.begin_attempt(one_round["run_id"], "refine-1", REFINE)
@@ -850,10 +886,62 @@ class RunStoreTransitionTests(unittest.TestCase):
             "hard_failures": [],
             "critique": "Missing score.",
             "constraint_results": {},
+            "visual_checks": visual_checks(),
             "next_action": "refine",
         }
         with self.assertRaisesRegex(ValidationError, "invalid_review_scores"):
             self.store.record_review(self.manifest["run_id"], 1, review)
+
+    def test_review_requires_visual_checks_without_manifest_mutation(self) -> None:
+        self.complete_initial()
+        before = self.store.get(self.manifest["run_id"])
+        review = self.review_value()
+        review.pop("visual_checks")
+
+        with self.assertRaisesRegex(ValidationError, "invalid_review"):
+            self.store.record_review(self.manifest["run_id"], 1, review)
+
+        self.assertEqual(self.store.get(self.manifest["run_id"]), before)
+
+    def test_failed_or_uncertain_visual_check_rejects_finalize_without_mutation(self) -> None:
+        for index, status in enumerate(("fail", "uncertain"), start=1):
+            manifest = self.store.create({
+                "profile": "standalone-illustration",
+                "max_rounds": 2,
+                "merged_profile": {
+                    "rubric": {"intent_adherence": {"weight": 1, "critical": True}},
+                    "hard_failures": ["missing_subject"],
+                },
+            })
+            handle = self.store.begin_attempt(manifest["run_id"], f"initial-{index}", INITIAL)
+            self.store.complete_attempt(handle, {
+                "seed": 42,
+                "image": {"path": "round-01.png", "sha256": "a" * 64, "width": 16, "height": 16},
+            })
+            before = self.store.get(manifest["run_id"])
+            review = self.review_value(next_action="finalize", limb_status=status)
+
+            with self.subTest(status=status), self.assertRaisesRegex(
+                ValidationError,
+                "visual_checks_require_revision",
+            ):
+                self.store.record_review(manifest["run_id"], 1, review)
+
+            self.assertEqual(self.store.get(manifest["run_id"]), before)
+
+    def test_failed_visual_check_can_request_refine_and_preserves_round_budget(self) -> None:
+        self.complete_initial()
+
+        reviewed = self.store.record_review(
+            self.manifest["run_id"],
+            1,
+            self.review_value(next_action="refine", limb_status="fail"),
+        )
+
+        self.assertEqual(reviewed["state"], "reviewed")
+        self.assertEqual(len(reviewed["rounds"]), 1)
+        self.assertEqual(reviewed["request"]["max_rounds"], 2)
+        self.assertEqual(reviewed["reviews"][0]["visual_checks"]["limb_separation"]["status"], "fail")
 
     def test_required_failed_constraint_requires_registered_hard_failure(self) -> None:
         constrained = self.store.create({
@@ -872,6 +960,7 @@ class RunStoreTransitionTests(unittest.TestCase):
             "hard_failures": [],
             "critique": "The required logo was omitted.",
             "constraint_results": {"keep_logo": {"status": "fail", "observation": "No logo is visible."}},
+            "visual_checks": visual_checks(),
             "next_action": "finalize",
         }
         with self.assertRaisesRegex(ValidationError, "inconsistent_hard_failures"):
@@ -884,7 +973,7 @@ class RunStoreTransitionTests(unittest.TestCase):
 
     def test_finalize_records_selected_reviewed_round(self) -> None:
         self.complete_initial()
-        self.review_initial()
+        self.review_initial(next_action="finalize")
 
         finalized = self.store.finalize(self.manifest["run_id"], 1, "Selected result.")
 
@@ -900,6 +989,7 @@ class RunStoreTransitionTests(unittest.TestCase):
             "hard_failures": ["missing_subject"],
             "critique": "The requested subject is missing.",
             "constraint_results": {},
+            "visual_checks": visual_checks(),
             "next_action": "finalize",
         })
 
@@ -914,6 +1004,7 @@ class RunStoreTransitionTests(unittest.TestCase):
             "hard_failures": [],
             "critique": "Intent adherence remains below the acceptance threshold.",
             "constraint_results": {},
+            "visual_checks": visual_checks(),
             "next_action": "finalize",
         })
 
@@ -984,6 +1075,7 @@ class RunStoreTransitionTests(unittest.TestCase):
             "hard_failures": [],
             "critique": "The refined intent is clear.",
             "constraint_results": {},
+            "visual_checks": visual_checks(),
             "next_action": "finalize",
         })
         self.store.finalize(self.manifest["run_id"], 1, "First reviewed round selected.")
