@@ -160,6 +160,14 @@ class PublicDocumentationTests(unittest.TestCase):
             "No production model is bundled, and Codex is a verified host.",
             "Real GPU generation is not unverified: it is validated.",
             "The model is not disabled and its license is approved.",
+            "Real GPU generation is not verified, but it is validated.",
+            "The production model is not approved, but it is ready.",
+            "Codex and other clients are verified hosts.",
+            "The production model is available.",
+            "The production model is selectable.",
+            "Real backend acceptance is verified.",
+            "The production model is not unavailable.",
+            "Real backend acceptance is not unverified.",
         )
         for false_claim in false_claims:
             with self.subTest(false_claim=false_claim):
@@ -186,6 +194,12 @@ class PublicDocumentationTests(unittest.TestCase):
             "Codex is not a verified host.",
             "Real GPU generation remains unverified.",
             "The model is disabled and its license is not approved.",
+            "The production model is absent.",
+            "The production model is unavailable.",
+            "The model license is unapproved.",
+            "The model is disabled.",
+            "Real backend execution remains unsupported.",
+            "Real backend acceptance remains unverified.",
         )
         for boundary in truthful_boundaries:
             with self.subTest(boundary=boundary):

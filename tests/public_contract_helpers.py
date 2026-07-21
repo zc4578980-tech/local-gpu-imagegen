@@ -5,44 +5,55 @@ from collections.abc import Iterable
 
 
 _STALE_ACTIVE_VERSION = re.compile(r"\b(?:v|version\s*)?0\.3(?:\.0)?\b", re.IGNORECASE)
-_CLAUSE_BOUNDARY = re.compile(
-    r"[:,;.!?]|,?\s+\b(?:and|but|or|nor|yet|however|though)\b\s*",
+_ASSERTION_BOUNDARY = re.compile(
+    r"[:;.!?]+|,\s*(?:and|but|or|nor|yet|however|though)\b\s*",
     re.IGNORECASE,
 )
-_LOCAL_NEGATION = re.compile(
-    r"\b(?:no|not|never|without|neither|cannot|can't|doesn't|isn't|aren't|"
-    r"wasn't|weren't|hasn't|haven't|has not|have not|does not|do not)\b",
+_TERMINAL_NEGATION = re.compile(
+    r"\b(?:no|not|never|without|cannot|can't|doesn't|isn't|aren't|wasn't|weren't|"
+    r"hasn't|haven't|has not|have not|does not|do not)\b",
     re.IGNORECASE,
 )
-_DOUBLE_NEGATION = re.compile(
-    r"\bnot\s+(?:unverified|unvalidated|disabled|unapproved|unsupported|unavailable)\b|\bnot\s+only\b",
+_NOT_ONLY = re.compile(r"\bnot\s+only\b", re.IGNORECASE)
+_DOUBLE_NEGATIVE_PREDICATE = re.compile(
+    r"\bnot\s+(?P<predicate>absent|unavailable|unapproved|disabled|unsupported|unverified|unvalidated)\b",
     re.IGNORECASE,
 )
 
-_RELEASE_CLAIM_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"\bcodex\b[^\n.]{0,80}\b(?:verified|validated|supported)\s+host\b",
-        r"\bverified\s+(?:on|with|by)\s+codex\b",
-        r"\breal\s+(?:codex|vision|gpu|generation|image)[^\n.]{0,80}\b(?:accepted|approved|verified|validated)\b",
-        r"\bretained\s+real\s+(?:codex|vision|model|gpu|image|real-esrgan)[^\n.]{0,80}\bevidence\s+exists\b",
-        r"\bproduction[- ](?:ready|proven|verified)\b",
-        r"\bproduction\s+model[^\n.]{0,80}\b(?:bundled|included|approved|enabled|ready)\b",
-        r"\b(?:bundles?|bundled|includes?|ships with|comes with)[^\n.]{0,40}\b(?:approved|production|ready|enabled)\s+model\b",
-        r"\bapproved\s+(?:catalog\s+)?(?:production\s+)?model\s+(?:selection|available|included|bundled|ready)\b",
-        r"\b(?:sd-turbo|model)[^\n.]{0,40}\blicense\s+(?:is\s+)?approved\b",
-        r"\blicense\s+(?:is\s+)?approved\b",
-        r"\bapproved\s+license\s+(?:record|status|for)\b",
-        r"\b(?:production\s+)?model\b[^\n.]{0,24}\bnot\s+disabled\b",
-        r"\blicense\b[^\n.]{0,16}\bnot\s+unapproved\b",
-        r"\breal\s+(?:codex|vision|gpu|generation|image)[^\n.]{0,60}\bnot\s+(?:unverified|unvalidated|unsupported)\b",
-        r"\b(?:quality|performance|vram)\s+(?:is|was|are|has been)\s+(?:verified|proven|measured)\b",
-        r"\b(?:production|professional|high)[- ]quality\b",
-        r"\b(?:uses?|requires?|needs?)\s+\d+(?:\.\d+)?\s*(?:gb|gib)\s+(?:of\s+)?vram\b",
-        r"\b\d+(?:\.\d+)?\s*(?:x|%|percent)\s+(?:faster|speedup)\b",
-        r"\b(?:five|[1-5])[- ]star(?:s| rating)?\b",
-        r"\b(?:supports|includes|ships|provides)\b[^\n.]{0,80}\b(?:masks?|child revisions?|ppt|ui|v0\.5)\b",
+_CLAIM_RULES = tuple(
+    (category, re.compile(pattern, re.IGNORECASE))
+    for category, pattern in (
+        ("host", r"\b(?:codex|hosts?|clients?)\b.{0,48}?\b(?:is|are|was|were|has been)\s+(?:not\s+)?(?:a\s+)?(?P<predicate>verified|validated|supported)\s+hosts?\b"),
+        ("host", r"\bcodex\s+(?P<predicate>verified|validated|supported)\s+host\b"),
+        ("host", r"\b(?P<predicate>verified|validated|supported)\s+(?:on|with|by)\s+codex\b"),
+        ("real", r"\breal\s+(?:codex|vision|gpu|backend|generation|image|output|host)(?:\s+(?:generation|output|acceptance|execution|review|host))?.{0,48}?\b(?:is|are|was|were|has been)\s+(?:not\s+)?(?P<predicate>accepted|approved|verified|validated|ready|available|selectable|supported)\b"),
+        ("real", r"\bretained\s+real\s+(?:codex|vision|model|gpu|backend|image|real-esrgan).{0,64}?\bevidence\s+(?P<predicate>exists|available)\b"),
+        ("model", r"\bproduction\s+model\b.{0,32}?\b(?:is|are|was|were|has been)\s+(?:currently\s+)?(?:not\s+)?(?P<predicate>bundled|included|approved|enabled|ready|available|selectable|verified|validated|supported)\b"),
+        ("model", r"\bproduction[- ](?P<predicate>ready|proven|verified)\b"),
+        ("model", r"\b(?P<predicate>bundled|included)\b.{0,40}?\b(?:approved|production|ready|enabled)\s+model\b"),
+        ("model", r"\b(?P<predicate>approved)\s+(?:catalog\s+)?(?:production\s+)?model\s+(?:selection|available|included|bundled|ready)\b"),
+        ("model", r"\blicense(?:\s+(?:record|status))?\s+(?:is|are|was|were|has been)\s+(?:not\s+)?(?P<predicate>approved|ready|verified)\b"),
+        ("model", r"\b(?P<predicate>approved)\s+license\s+(?:record|status|for)\b"),
+        ("quality", r"\b(?:quality|performance|vram)\s+(?:is|was|are|has been)\s+(?P<predicate>verified|proven|measured)\b"),
+        ("quality", r"\b(?P<predicate>production|professional|high)[- ]quality\b"),
+        ("performance", r"\b(?P<predicate>uses?|requires?|needs?)\s+\d+(?:\.\d+)?\s*(?:gb|gib)\s+(?:of\s+)?vram\b"),
+        ("performance", r"\b(?P<predicate>\d+(?:\.\d+)?\s*(?:x|%|percent))\s+(?:faster|speedup)\b"),
+        ("popularity", r"\b(?P<predicate>five|[1-5])[- ]star(?:s| rating)?\b"),
+        ("future", r"\b(?P<predicate>supports|includes|ships|provides)\b.{0,80}?\b(?:masks?|child revisions?|ppt|ui|v0\.5)\b"),
     )
+)
+
+_CATEGORY_HINTS = (
+    ("model", re.compile(r"\b(?:production\s+model|model|license|sd-turbo)\b", re.IGNORECASE)),
+    ("real", re.compile(r"\breal\s+(?:codex|vision|gpu|backend|generation|image|output|host)\b", re.IGNORECASE)),
+    ("host", re.compile(r"\b(?:codex|hosts?|clients?)\b", re.IGNORECASE)),
+    ("quality", re.compile(r"\b(?:quality|performance|vram)\b", re.IGNORECASE)),
+)
+_INHERITED_TAIL = re.compile(
+    r"^\s*(?:(?:it|they|this|that|the result|the output|the model)\s+"
+    r"(?:is|are|was|were|has been)\s+)?"
+    r"(?P<predicate>accepted|approved|verified|validated|ready|available|selectable|enabled|supported)\b",
+    re.IGNORECASE,
 )
 
 _PLUGIN_EDIT_SCOPE = tuple(
@@ -78,33 +89,49 @@ def user_facing_strings(value: object, path: str = "$") -> list[tuple[str, str]]
     return []
 
 
-def _local_clause(text: str, start: int, end: int) -> str:
-    left = 0
-    right = len(text)
-    for boundary in _CLAUSE_BOUNDARY.finditer(text):
-        if boundary.end() <= start:
-            left = boundary.end()
-        elif boundary.start() >= end:
-            right = boundary.start()
-            break
-    return text[left:right].strip()
+def _assertion_clauses(text: str) -> list[str]:
+    return [clause.strip() for clause in _ASSERTION_BOUNDARY.split(text) if clause.strip()]
 
 
-def _is_locally_negated(clause: str) -> bool:
-    without_double_negation = _DOUBLE_NEGATION.sub("", clause)
-    return _LOCAL_NEGATION.search(without_double_negation) is not None
+def _claim_category(clause: str) -> str | None:
+    for category, pattern in _CATEGORY_HINTS:
+        if pattern.search(clause):
+            return category
+    return None
+
+
+def _terminal_is_negated(clause: str, match: re.Match[str]) -> bool:
+    predicate_start = match.start("predicate")
+    scope_start = max(0, match.start() - 12)
+    predicate_scope = _NOT_ONLY.sub("", clause[scope_start:predicate_start])
+    return _TERMINAL_NEGATION.search(predicate_scope) is not None
+
+
+def _append_finding(findings: list[str], clause: str) -> None:
+    if clause not in findings:
+        findings.append(clause)
 
 
 def unsupported_release_claims(public_copy: str) -> list[str]:
     findings: list[str] = []
     for line in public_copy.splitlines():
-        for pattern in _RELEASE_CLAIM_PATTERNS:
-            for match in pattern.finditer(line):
-                clause = _local_clause(line, match.start(), match.end())
-                if _is_locally_negated(clause):
-                    continue
-                if clause and clause not in findings:
-                    findings.append(clause)
+        inherited_category: str | None = None
+        for clause in _assertion_clauses(line):
+            explicit_category = _claim_category(clause)
+            effective_category = explicit_category or inherited_category
+            for _, pattern in _CLAIM_RULES:
+                for match in pattern.finditer(clause):
+                    if not _terminal_is_negated(clause, match):
+                        _append_finding(findings, clause)
+            if effective_category in {"host", "real", "model"}:
+                double_negative = _DOUBLE_NEGATIVE_PREDICATE.search(clause)
+                if double_negative is not None:
+                    _append_finding(findings, clause)
+                inherited_tail = _INHERITED_TAIL.search(clause) if explicit_category is None else None
+                if inherited_tail is not None and not _terminal_is_negated(clause, inherited_tail):
+                    _append_finding(findings, clause)
+            if explicit_category is not None:
+                inherited_category = explicit_category
     return findings
 
 
