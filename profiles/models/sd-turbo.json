@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "stabilityai/sd-turbo",
+  "kind": "model",
+  "source": "https://huggingface.co/stabilityai/sd-turbo",
+  "license_id": null,
+  "license_url": null,
+  "license_status": "requires_user_review",
+  "backends": ["diffusers"],
+  "local_discovery_names": [],
+  "strengths": ["Candidate record available for explicit local source and license review."],
+  "limitations": ["License, local availability, backend readiness, and output quality are unverified."],
+  "use_cases": ["standalone-illustration"],
+  "styles": ["anime"],
+  "recommended": {
+    "resolution": {"width": 512, "height": 512},
+    "steps": 4,
+    "guidance": 0.0,
+    "sampler": null,
+    "scheduler": "default"
+  },
+  "known_local": false,
+  "enabled": false
+}

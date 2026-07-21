@@ -51,6 +51,10 @@ class AssetRunEngine:
         _required(arguments, "intent", str)
         _required(arguments, "backend", str)
         _required(arguments, "upscale_policy", str)
+        model_choice = _required(arguments, "model_choice", str)
+        if not model_choice.strip():
+            raise ValidationError("invalid_model_choice", "model_choice must be a non-empty registered model ID.")
+        model_record = self.registry.validate_model_choice(model_choice)
         max_rounds = _optional(arguments, "max_rounds", int, 3, reject_bool=True)
         if not 1 <= max_rounds <= 3:
             raise ValidationError("invalid_round_budget", "max_rounds must be an integer from 1 to 3.")
@@ -63,7 +67,8 @@ class AssetRunEngine:
             **copy.deepcopy(arguments),
             "merged_profile": merged,
             "max_rounds": max_rounds,
-            "model_choice": None,
+            "model_choice": model_choice,
+            "model_record": copy.deepcopy(model_record),
             "available_backends": copy.deepcopy(available_backends),
         }
         request = validate_confirmed_run_request(request)
@@ -162,6 +167,7 @@ class AssetRunEngine:
             warnings = [preview.warning] if preview.warning is not None else []
             completed = self.store.complete_attempt(handle, {
                 **_backend_round_fields(backend_result),
+                "registry_metadata": _registry_metadata(request),
                 "preview": preview_metadata,
                 "warnings": warnings,
             })
@@ -575,6 +581,33 @@ def _backend_round_fields(result: dict[str, object]) -> dict[str, object]:
     if "model" in result:
         fields["model"] = copy.deepcopy(result["model"])
     return fields
+
+
+def _registry_metadata(request: dict[str, object]) -> dict[str, object]:
+    merged = request.get("merged_profile")
+    model = request.get("model_record")
+    if not isinstance(merged, dict) or not isinstance(model, dict):
+        raise ArtifactError("corrupt_manifest", "Run registry metadata is missing.")
+    profile = merged.get("profile")
+    style = merged.get("style")
+    if not isinstance(profile, dict) or style is not None and not isinstance(style, dict):
+        raise ArtifactError("corrupt_manifest", "Run profile metadata is invalid.")
+
+    def identity(document: dict[str, object]) -> dict[str, object]:
+        identifier = document.get("id")
+        schema_version = document.get("schema_version")
+        if not isinstance(identifier, str) or type(schema_version) is not int:
+            raise ArtifactError("corrupt_manifest", "Registry identity metadata is invalid.")
+        return {"id": identifier, "schema_version": schema_version}
+
+    model_fields = ("id", "source", "license_id", "license_url", "license_status")
+    if any(field not in model for field in model_fields):
+        raise ArtifactError("corrupt_manifest", "Run model metadata is incomplete.")
+    return {
+        "profile": identity(profile),
+        "style": identity(style) if isinstance(style, dict) else None,
+        "model": {field: copy.deepcopy(model[field]) for field in model_fields},
+    }
 
 
 def _preview_metadata(preview: PreviewResult, run_root: Path) -> dict[str, object] | None:

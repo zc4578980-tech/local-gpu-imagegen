@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local GPU Image Generation Model Record",
+  "type": "object",
+  "required": [
+    "schema_version", "id", "kind", "source", "license_id", "license_url",
+    "license_status", "backends", "local_discovery_names", "strengths", "limitations",
+    "use_cases", "styles", "recommended", "known_local", "enabled"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "id": {"type": "string", "minLength": 1},
+    "kind": {"type": "string", "const": "model"},
+    "source": {"type": "string", "minLength": 1},
+    "license_id": {"type": ["string", "null"]},
+    "license_url": {"type": ["string", "null"]},
+    "license_status": {"type": "string", "enum": ["approved", "requires_user_review", "rejected"]},
+    "backends": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "local_discovery_names": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "strengths": {"type": "array", "items": {"type": "string"}},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "use_cases": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "styles": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "recommended": {
+      "type": "object",
+      "required": ["resolution", "steps", "guidance", "sampler", "scheduler"],
+      "properties": {
+        "resolution": {
+          "type": "object",
+          "required": ["width", "height"],
+          "properties": {
+            "width": {"type": "integer", "minimum": 1},
+            "height": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        "steps": {"type": "integer", "minimum": 1},
+        "guidance": {"type": "number", "minimum": 0},
+        "sampler": {"type": ["string", "null"]},
+        "scheduler": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "known_local": {"type": "boolean"},
+    "enabled": {"type": "boolean"}
+  },
+  "additionalProperties": true
+}

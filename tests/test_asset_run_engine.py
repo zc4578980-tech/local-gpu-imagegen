@@ -26,6 +26,9 @@ from local_gpu_imagegen.profile_registry import ProfileRegistry  # noqa: E402
 from local_gpu_imagegen.run_store import RunStore  # noqa: E402
 
 
+TEST_MODEL_ID = "test/approved-anime"
+
+
 def _chunk(kind: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(data, zlib.crc32(kind)) & 0xFFFFFFFF)
 
@@ -74,10 +77,25 @@ class AssetRunEngineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.output_root = Path(self.temporary_directory.name) / "output"
+        profiles_root = Path(self.temporary_directory.name) / "profiles"
+        shutil.copytree(ROOT / "profiles", profiles_root)
+        model_path = profiles_root / "models" / "sd-turbo.json"
+        model = json.loads(model_path.read_text(encoding="utf-8"))
+        model.update({
+            "id": TEST_MODEL_ID,
+            "source": "test-fixture",
+            "license_id": "test-only",
+            "license_status": "approved",
+            "backends": ["webui"],
+            "known_local": True,
+            "enabled": True,
+        })
+        model_path.write_text(json.dumps(model), encoding="utf-8")
+        self.registry = ProfileRegistry(profiles_root)
         self.runner = FakeBackendRunner()
         self.capabilities = {"available_backends": ["webui", "diffusers"], "cuda": True}
         self.engine = AssetRunEngine(
-            ProfileRegistry(ROOT / "profiles"),
+            self.registry,
             RunStore(self.output_root),
             self.runner,
             lambda: self.capabilities,
@@ -92,6 +110,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "style": None,
             "intent": "A calm coast at dawn.",
             "constraints": {"width": 256, "height": 256},
+            "model_choice": TEST_MODEL_ID,
             "backend": "webui",
             "upscale_policy": "off",
             "max_rounds": max_rounds,
@@ -105,7 +124,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "positive_prompt": "calm coast at dawn",
             "negative_prompt": "watermark, text",
             "constraints": {"width": 256, "height": 256},
-            "model_choice": None,
+            "model_choice": TEST_MODEL_ID,
             "backend": "webui",
             "parameters": parameters or {"mode": "txt2img", "scheduler": "euler"},
             "max_rounds": max_rounds,
@@ -170,9 +189,15 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertIn("subject_completeness", started["merged_rubric"])
         fetched = self.engine.get_run({"run_id": started["run_id"]})
         self.assertEqual(fetched["recoverable_next_actions"], ["generate_round"])
-        self.assertIsNone(fetched["request"]["model_choice"])
+        self.assertEqual(fetched["request"]["model_choice"], TEST_MODEL_ID)
+        self.assertEqual(fetched["request"]["model_record"]["id"], TEST_MODEL_ID)
+        self.assertEqual(fetched["request"]["model_record"]["source"], "test-fixture")
+        self.assertEqual(fetched["request"]["model_record"]["license_id"], "test-only")
         self.assertEqual(fetched["request"]["upscale_policy"], "off")
         self.assertEqual(fetched["request"]["available_backends"], ["webui", "diffusers"])
+        fetched["request"]["model_record"]["recommended"]["steps"] = 99
+        fresh = self.engine.get_run({"run_id": started["run_id"]})
+        self.assertEqual(fresh["request"]["model_record"]["recommended"]["steps"], 4)
 
     def test_start_rejects_invalid_round_budget_before_creating_run(self) -> None:
         arguments = self.start_arguments(max_rounds=4)
@@ -180,6 +205,42 @@ class AssetRunEngineTests(unittest.TestCase):
             self.engine.start_run(arguments)
         self.assertEqual(raised.exception.code, "invalid_round_budget")
         self.assertFalse((self.output_root / "runs").exists())
+
+    def test_start_requires_non_empty_model_choice_before_engine_work(self) -> None:
+        for value, expected_code in ((None, "missing_argument"), (" ", "invalid_model_choice")):
+            with self.subTest(value=value):
+                arguments = self.start_arguments()
+                if value is None:
+                    arguments.pop("model_choice")
+                else:
+                    arguments["model_choice"] = value
+                with patch.object(self.engine, "capability_provider") as capabilities:
+                    with self.assertRaises(ValidationError) as raised:
+                        self.engine.start_run(arguments)
+
+                self.assertEqual(raised.exception.code, expected_code)
+                capabilities.assert_not_called()
+                self.assertFalse((self.output_root / "runs").exists())
+
+    def test_start_rejects_disabled_production_model_before_engine_work(self) -> None:
+        output_root = Path(self.temporary_directory.name) / "production-output"
+        engine = AssetRunEngine(
+            ProfileRegistry(ROOT / "profiles"),
+            RunStore(output_root),
+            self.runner,
+            lambda: self.capabilities,
+        )
+        arguments = self.start_arguments()
+        arguments["model_choice"] = "stabilityai/sd-turbo"
+
+        with patch.object(engine, "capability_provider") as capabilities:
+            with self.assertRaises(ValidationError) as raised:
+                engine.start_run(arguments)
+
+        self.assertEqual(raised.exception.code, "model_not_enabled")
+        capabilities.assert_not_called()
+        self.assertEqual(self.runner.calls, [])
+        self.assertFalse((output_root / "runs").exists())
 
     def test_start_rejects_invalid_confirmed_requests_before_creating_run(self) -> None:
         invalid_changes: dict[str, dict[str, object]] = {
@@ -197,7 +258,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     output_root = Path(directory) / "output"
                     engine = AssetRunEngine(
-                        ProfileRegistry(ROOT / "profiles"),
+                        self.registry,
                         RunStore(output_root),
                         FakeBackendRunner(),
                         lambda: self.capabilities,
@@ -213,7 +274,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     output_root = Path(directory) / "output"
                     engine = AssetRunEngine(
-                        ProfileRegistry(ROOT / "profiles"),
+                        self.registry,
                         RunStore(output_root),
                         FakeBackendRunner(),
                         lambda: {"available_backends": advertised},
@@ -262,7 +323,10 @@ class AssetRunEngineTests(unittest.TestCase):
         data, preview = self.engine.generate_round(self.generate_arguments(started["run_id"]))
         run_root = self.output_root / "runs" / started["run_id"]
         self.assertEqual(len(self.runner.calls), 1)
-        self.assertNotIn("--model", self.runner.calls[0])
+        self.assertEqual(
+            self.runner.calls[0][self.runner.calls[0].index("--model") + 1],
+            TEST_MODEL_ID,
+        )
         self.assertEqual(self.runner.calls[0][self.runner.calls[0].index("--filename") + 1], "round-01.pending.png")
         self.assertFalse((run_root / "round-01.pending.png").exists())
         self.assertTrue((run_root / "round-01.png").is_file())
@@ -284,12 +348,37 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(manifest["rounds"][0]["generation_plan"], expected_plan)
         self.assertEqual(manifest["rounds"][0]["change_summary"], "Initial candidate.")
 
+    def test_completed_round_copies_immutable_registry_metadata(self) -> None:
+        start_arguments = self.start_arguments()
+        start_arguments["style"] = "anime"
+        started = self.engine.start_run(start_arguments)
+        generation_arguments = self.generate_arguments(started["run_id"])
+        generation_arguments["plan"]["style"] = "anime"
+
+        data, _ = self.engine.generate_round(generation_arguments)
+
+        expected = {
+            "profile": {"id": "standalone-illustration", "schema_version": 1},
+            "style": {"id": "anime", "schema_version": 1},
+            "model": {
+                "id": TEST_MODEL_ID,
+                "source": "test-fixture",
+                "license_id": "test-only",
+                "license_url": None,
+                "license_status": "approved",
+            },
+        }
+        self.assertEqual(data["round"]["registry_metadata"], expected)
+        data["round"]["registry_metadata"]["model"]["source"] = "mutated"
+        stored = self.engine.get_run({"run_id": started["run_id"]})
+        self.assertEqual(stored["rounds"][0]["registry_metadata"], expected)
+
     def test_nested_mode_mismatch_is_rejected_before_attempt_or_backend(self) -> None:
         for nested_mode in ("img2img", "inpaint"):
             with self.subTest(nested_mode=nested_mode), tempfile.TemporaryDirectory() as directory:
                 runner = FakeBackendRunner()
                 engine = AssetRunEngine(
-                    ProfileRegistry(ROOT / "profiles"),
+                    self.registry,
                     RunStore(Path(directory) / "output"),
                     runner,
                     lambda: self.capabilities,
@@ -321,7 +410,7 @@ class AssetRunEngineTests(unittest.TestCase):
                     runner = FakeBackendRunner()
                     runner.result_overrides = overrides
                     engine = AssetRunEngine(
-                        ProfileRegistry(ROOT / "profiles"),
+                        self.registry,
                         RunStore(output_root),
                         runner,
                         lambda: self.capabilities,
@@ -879,7 +968,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     output_root = Path(directory) / "output"
                     engine = AssetRunEngine(
-                        ProfileRegistry(ROOT / "profiles"),
+                        self.registry,
                         RunStore(output_root),
                         FakeBackendRunner(),
                         lambda: self.capabilities,

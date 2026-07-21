@@ -16,6 +16,11 @@ STYLE_REQUIRED = {
     "schema_version", "id", "kind", "description", "aliases", "prompt_guidance",
     "negative_guidance", "rubric", "hard_failures", "known_failure_patterns", "model_hints",
 }
+MODEL_REQUIRED = {
+    "schema_version", "id", "kind", "source", "license_id", "license_url",
+    "license_status", "backends", "local_discovery_names", "strengths", "limitations",
+    "use_cases", "styles", "recommended", "known_local", "enabled",
+}
 BASE_CRITICAL_RUBRIC = frozenset({"intent_adherence", "composition", "artifact_control"})
 PROFILE_CRITICAL_RUBRIC = {
     "standalone-illustration": frozenset({
@@ -48,9 +53,20 @@ def _validate(document: dict[str, object], required: set[str], expected_kind: st
         raise ValidationError("unsupported_profile_schema", "Only schema_version 1 is supported.")
 
 
+def _validate_model_approval(document: dict[str, object]) -> None:
+    if type(document["enabled"]) is not bool or type(document["known_local"]) is not bool:
+        raise ValidationError("invalid_profile_document", "Model enabled and known_local must be booleans.")
+    license_status = document["license_status"]
+    if not isinstance(license_status, str) or license_status not in {
+        "approved", "requires_user_review", "rejected",
+    }:
+        raise ValidationError("invalid_profile_document", "Model license_status is invalid.")
+
+
 class ProfileRegistry:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self._models = self._documents(self.root / "models", MODEL_REQUIRED, "model")
 
     def list_catalog(self) -> dict[str, dict[str, dict[str, object]]]:
         self._validated_base()
@@ -59,6 +75,7 @@ class ProfileRegistry:
         return {
             "profiles": {identifier: self._catalog_entry(document) for identifier, document in profiles.items()},
             "styles": {identifier: self._catalog_entry(document) for identifier, document in styles.items()},
+            "models": {identifier: self._catalog_entry(document) for identifier, document in self._models.items()},
         }
 
     def merge(self, profile_id: str, style_id: str | None, constraints: dict[str, object]) -> dict[str, object]:
@@ -103,12 +120,19 @@ class ProfileRegistry:
             "rubric": copy.deepcopy(rubric),
         }
 
+    def validate_model_choice(self, model_id: str) -> dict[str, object]:
+        model = self._models.get(model_id)
+        if model is None:
+            raise ValidationError("unknown_model", f"Unknown model: {model_id}")
+        if not model["enabled"]:
+            raise ValidationError("model_not_enabled", f"Model is not approved for generation: {model_id}")
+        if model["license_status"] != "approved":
+            raise ValidationError("model_license_unapproved", f"Model license is not approved: {model_id}")
+        return copy.deepcopy(model)
+
     @staticmethod
     def _catalog_entry(document: dict[str, object]) -> dict[str, object]:
-        return {
-            "description": document["description"],
-            "aliases": copy.deepcopy(document["aliases"]),
-        }
+        return copy.deepcopy(document)
 
     @staticmethod
     def _object(document: dict[str, object], field: str) -> dict[str, object]:
@@ -151,6 +175,8 @@ class ProfileRegistry:
             identifier = document["id"]
             if not isinstance(identifier, str) or not identifier:
                 raise ValidationError("invalid_profile_document", f"Profile id must be a non-empty string: {path.name}")
+            if kind == "model":
+                _validate_model_approval(document)
             required_critical = PROFILE_CRITICAL_RUBRIC.get(identifier)
             if required_critical is not None:
                 ProfileRegistry._require_critical_dimensions(

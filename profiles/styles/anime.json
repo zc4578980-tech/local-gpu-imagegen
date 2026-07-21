@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "anime",
+  "kind": "style",
+  "description": "Anime and illustration visual language with clean shapes and coherent line work.",
+  "aliases": ["anime", "动漫", "二次元", "illustration"],
+  "prompt_guidance": ["state subject, pose, environment, lighting, composition, and rendering finish"],
+  "negative_guidance": ["unreadable text", "watermark", "extra limbs", "broken hands", "inconsistent eyes"],
+  "rubric": {
+    "face_quality": {"weight": 2, "critical": true},
+    "hand_quality": {"weight": 1, "critical": false},
+    "line_coherence": {"weight": 1, "critical": true},
+    "anime_style_consistency": {"weight": 2, "critical": true}
+  },
+  "hard_failures": ["severe_face_error", "severe_anatomy", "watermark", "unreadable_text"],
+  "known_failure_patterns": ["asymmetric eyes", "fused fingers", "inconsistent line weight", "unreadable decorative text"],
+  "model_hints": []
+}

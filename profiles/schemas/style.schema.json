@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local GPU Image Generation Style Preset",
+  "type": "object",
+  "required": [
+    "schema_version", "id", "kind", "description", "aliases", "prompt_guidance",
+    "negative_guidance", "rubric", "hard_failures", "known_failure_patterns", "model_hints"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "id": {"type": "string", "minLength": 1},
+    "kind": {"type": "string", "const": "style"},
+    "description": {"type": "string"},
+    "aliases": {"type": "array", "items": {"type": "string"}},
+    "prompt_guidance": {"type": "array", "items": {"type": "string"}},
+    "negative_guidance": {"type": "array", "items": {"type": "string"}},
+    "rubric": {"type": "object", "additionalProperties": {"type": "object"}},
+    "hard_failures": {"type": "array", "items": {"type": "string"}},
+    "known_failure_patterns": {"type": "array", "items": {"type": "string"}},
+    "model_hints": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

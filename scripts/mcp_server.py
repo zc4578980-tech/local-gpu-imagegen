@@ -327,8 +327,9 @@ def tool_schema() -> list[dict[str, Any]]:
             "outputSchema": _output_schema({
                 "profiles": json_object,
                 "styles": json_object,
+                "models": json_object,
                 "capabilities": json_object,
-            }, ["profiles", "styles", "capabilities"]),
+            }, ["profiles", "styles", "models", "capabilities"]),
         },
         {
             "name": "local_gpu_start_run",
@@ -338,10 +339,14 @@ def tool_schema() -> list[dict[str, Any]]:
                 "profile": {"type": "string", "enum": _registered_profile_ids()},
                 "style": {"type": ["string", "null"], "enum": [None, *_registered_style_ids()]},
                 "constraints": json_object,
+                "model_choice": {"type": "string", "minLength": 1},
                 "backend": {"type": "string", "enum": ["auto", "webui", "diffusers"]},
                 "max_rounds": {"type": "integer", "minimum": 1, "maximum": 3},
                 "upscale_policy": {"type": "string", "enum": ["auto", "off"]},
-            }, ["intent", "profile", "style", "constraints", "backend", "max_rounds", "upscale_policy"]),
+            }, [
+                "intent", "profile", "style", "constraints", "model_choice", "backend", "max_rounds",
+                "upscale_policy",
+            ]),
             "outputSchema": _output_schema({
                 "run_id": {"type": "string"},
                 "state": {"type": "string"},
@@ -426,6 +431,17 @@ def _registered_profile_ids() -> list[str]:
 
 def _registered_style_ids() -> list[str]:
     return sorted(path.stem for path in (ROOT / "profiles" / "styles").glob("*.json"))
+
+
+def _approved_model_ids() -> list[str]:
+    from local_gpu_imagegen.profile_registry import ProfileRegistry
+
+    models = ProfileRegistry(ROOT / "profiles").list_catalog()["models"]
+    return sorted(
+        model_id
+        for model_id, model in models.items()
+        if model.get("enabled") is True and model.get("license_status") == "approved"
+    )
 
 
 def schema_type_matches(value: object, schema_type: object) -> bool:
@@ -529,6 +545,16 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
                     f"{field} must be an array of {item_type}s.",
                     {"field": field, "itemType": item_type},
                 )
+
+    if tool["name"] == "local_gpu_start_run":
+        approved_model_ids = _approved_model_ids()
+        if arguments.get("model_choice") not in approved_model_ids:
+            return tool_error(
+                "invalid_argument_value",
+                "validation",
+                "model_choice must name a registered, enabled model with an approved license.",
+                {"field": "model_choice", "allowed": approved_model_ids},
+            )
 
     prompt = arguments.get("prompt")
     if "prompt" in properties and (not isinstance(prompt, str) or not prompt.strip()):

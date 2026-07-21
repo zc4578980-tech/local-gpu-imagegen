@@ -45,6 +45,9 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertIn("allow_download", tools["local_gpu_generate_image"]["inputSchema"]["properties"])
         self.assertIn("outputSchema", tools["local_gpu_imagegen_check"])
         self.assertIn("outputSchema", tools["local_gpu_generate_image"])
+        list_profiles_success = tools["local_gpu_list_profiles"]["outputSchema"]["oneOf"][0]
+        self.assertIn("models", list_profiles_success["properties"])
+        self.assertIn("models", list_profiles_success["required"])
         for name in HIGH_LEVEL_TOOLS:
             with self.subTest(name=name):
                 self.assertFalse(tools[name]["inputSchema"]["additionalProperties"])
@@ -74,7 +77,8 @@ class McpServerUnitTests(unittest.TestCase):
         expected = {
             "local_gpu_list_profiles": set(),
             "local_gpu_start_run": {
-                "intent", "profile", "style", "constraints", "backend", "max_rounds", "upscale_policy",
+                "intent", "profile", "style", "constraints", "model_choice", "backend", "max_rounds",
+                "upscale_policy",
             },
             "local_gpu_get_run": {"run_id"},
             "local_gpu_generate_round": {
@@ -108,7 +112,8 @@ class McpServerUnitTests(unittest.TestCase):
             ("local_gpu_start_run", {}),
             ("local_gpu_start_run", {
                 "intent": "valid", "profile": "missing-profile", "style": None, "constraints": {},
-                "backend": "auto", "max_rounds": 3, "upscale_policy": "auto",
+                "model_choice": "stabilityai/sd-turbo", "backend": "auto", "max_rounds": 3,
+                "upscale_policy": "auto",
             }),
             ("local_gpu_get_run", {"run_id": 1}),
             ("local_gpu_generate_round", {
@@ -151,6 +156,7 @@ class McpServerUnitTests(unittest.TestCase):
             "profile": "standalone-illustration",
             "style": None,
             "constraints": {},
+            "model_choice": "stabilityai/sd-turbo",
             "backend": "auto",
             "max_rounds": 3,
             "upscale_policy": "auto",
@@ -160,12 +166,42 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertEqual(result["structuredContent"]["error"]["code"], "invalid_argument_value")
         get_engine.assert_not_called()
 
-    def test_start_run_forwards_public_v03_fields_without_model_inference(self) -> None:
+    def test_start_run_rejects_missing_or_unapproved_model_before_engine_work(self) -> None:
+        base = {
+            "intent": "A calm coast at dawn.",
+            "profile": "standalone-illustration",
+            "style": None,
+            "constraints": {},
+            "backend": "auto",
+            "max_rounds": 3,
+            "upscale_policy": "auto",
+        }
+        cases = (
+            (None, "missing_argument"),
+            (" ", "invalid_argument_value"),
+            ("missing/model", "invalid_argument_value"),
+            ("stabilityai/sd-turbo", "invalid_argument_value"),
+        )
+        for model_choice, expected_code in cases:
+            arguments = dict(base)
+            if model_choice is not None:
+                arguments["model_choice"] = model_choice
+            with self.subTest(model_choice=model_choice), patch.object(
+                mcp_server, "get_asset_engine", create=True
+            ) as get_engine:
+                result = mcp_server.handle_tool_call({"name": "local_gpu_start_run", "arguments": arguments})
+
+                self.assertTrue(result["isError"])
+                self.assertEqual(result["structuredContent"]["error"]["code"], expected_code)
+                get_engine.assert_not_called()
+
+    def test_start_run_forwards_public_v04_fields_and_model_choice_exactly(self) -> None:
         arguments = {
             "intent": "A calm coast at dawn.",
             "profile": "standalone-illustration",
             "style": None,
             "constraints": {},
+            "model_choice": "test/approved-anime",
             "backend": "webui",
             "max_rounds": 3,
             "upscale_policy": "off",
@@ -179,7 +215,9 @@ class McpServerUnitTests(unittest.TestCase):
             "merged_rubric": {},
             "warnings": [],
         }
-        with patch.object(mcp_server, "get_asset_engine", return_value=engine):
+        with patch.object(mcp_server, "_approved_model_ids", return_value=["test/approved-anime"]), patch.object(
+            mcp_server, "get_asset_engine", return_value=engine
+        ):
             result = mcp_server.handle_tool_call({"name": "local_gpu_start_run", "arguments": arguments})
 
         self.assertFalse(result["isError"])
@@ -393,6 +431,24 @@ class McpServerUnitTests(unittest.TestCase):
 
         self.assertFalse(result["isError"])
         self.assertEqual(result["structuredContent"], report)
+
+    def test_low_level_model_option_remains_compatibility_passthrough(self) -> None:
+        tool = next(tool for tool in mcp_server.tool_schema() if tool["name"] == "local_gpu_generate_image")
+        self.assertEqual(tool["inputSchema"]["required"], ["prompt"])
+        self.assertIn("model", tool["inputSchema"]["properties"])
+        report = {"ok": True, "path": "output.png", "backend": "diffusers", "mode": "txt2img"}
+        with patch.object(mcp_server, "_approved_model_ids") as approved_models, patch.object(
+            mcp_server, "run_script", return_value=(0, json.dumps(report), "")
+        ) as run_script:
+            result = mcp_server.handle_tool_call({
+                "name": "local_gpu_generate_image",
+                "arguments": {"prompt": "test", "model": "advanced/local-checkpoint"},
+            })
+
+        self.assertFalse(result["isError"])
+        approved_models.assert_not_called()
+        command = run_script.call_args.args[1]
+        self.assertEqual(command[command.index("--model") + 1], "advanced/local-checkpoint")
 
     def test_download_permission_is_forwarded_only_when_enabled(self) -> None:
         report = {"ok": True, "path": "output.png", "backend": "diffusers", "mode": "txt2img"}
