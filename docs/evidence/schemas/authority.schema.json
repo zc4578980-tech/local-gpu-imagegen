@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local-gpu-imagegen.invalid/schemas/authority.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "approved_at": {"type": ["string", "null"]},
+    "backend": {"type": ["object", "null"]},
+    "briefs_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "copyright_holder": {"type": ["string", "null"]},
+    "installation_or_download": {"type": "object"},
+    "models": {"items": {"type": "object"}, "type": "array"},
+    "repository_license": {"enum": ["MIT", "Apache-2.0", null]},
+    "schema_version": {"const": 1},
+    "status": {"enum": ["approved", "unapproved"]}
+  },
+  "required": ["schema_version", "status", "approved_at", "backend", "repository_license", "copyright_holder", "installation_or_download"],
+  "title": "Local GPU Imagegen acceptance authority",
+  "type": "object"
+}

@@ -1,0 +1,12 @@
+{
+  "approved_at": null,
+  "backend": null,
+  "copyright_holder": null,
+  "installation_or_download": {
+    "approved": false,
+    "items": []
+  },
+  "repository_license": null,
+  "schema_version": 1,
+  "status": "unapproved"
+}

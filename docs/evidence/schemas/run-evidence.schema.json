@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local-gpu-imagegen.invalid/schemas/run-evidence.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "backend": {"type": "object"},
+    "brief_id": {"minLength": 1, "type": "string"},
+    "completed_at": {"format": "date-time", "type": "string"},
+    "decision_summary": {"minLength": 1, "type": "string"},
+    "environment": {"type": "object"},
+    "evidence_class": {"const": "real-codex-mcp-run"},
+    "files": {"type": "object"},
+    "host": {"type": "object"},
+    "known_limitations": {"items": {"minLength": 1, "type": "string"}, "minItems": 1, "type": "array"},
+    "model": {"type": "object"},
+    "profile": {"minLength": 1, "type": "string"},
+    "quality_status": {"const": "accepted"},
+    "run_id": {"minLength": 1, "type": "string"},
+    "schema_version": {"const": 1},
+    "selected_round": {"maximum": 3, "minimum": 1, "type": "integer"},
+    "started_at": {"format": "date-time", "type": "string"},
+    "style": {"type": ["string", "null"]}
+  },
+  "required": ["schema_version", "evidence_class", "brief_id", "run_id", "host", "profile", "style", "backend", "model", "environment", "started_at", "completed_at", "files", "selected_round", "quality_status", "known_limitations", "decision_summary"],
+  "title": "Local GPU Imagegen run evidence",
+  "type": "object"
+}
