@@ -175,6 +175,20 @@ class PublicDocumentationTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, public)
 
+    def test_docs_describe_candidate_and_user_bound_confirmation(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        architecture = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+        troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8")
+
+        for document in (readme, architecture):
+            with self.subTest(document=document[:40]):
+                self.assertIn("quality status `candidate`", document)
+                self.assertIn("finalize:<run_id>:<round_number>:<image_sha256>", document)
+                self.assertIn("later user message", document)
+        self.assertIn("visual_checks_require_revision", troubleshooting)
+        self.assertIn("finalization_confirmation_mismatch", troubleshooting)
+        self.assertNotIn("An ineligible nomination receives `needs_user_review`", readme)
+
     def test_active_versions_are_v05_and_historical_versions_are_preserved(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))

@@ -116,12 +116,13 @@ The Skill will not guess from a checkpoint filename or silently select a backend
 4. Call `local_gpu_recommend_models`. It returns one exact route and at most two alternatives without weakening hard requirements.
 5. Display the exact resolved `model_choice`, backend, identity strength/hash or binding warning, workflow, compiler, dimensions, and budget. Wait for a new explicit confirmation after that display.
 6. Start the frozen route and spend at most the confirmed successful-round budget. A retained image consumes a round; a backend failure does not.
-7. On a vision-capable host, inspect actual image evidence, record the full rubric and constraints, then choose refine, explore, or finalize. A refine preserves the seed; an explore changes the seed.
-8. On a text-only host, retain exactly one successful round, mark `review unavailable`, report the unreviewed path, and stop. Do not invent scores or call review/finalization tools.
+7. On a vision-capable host, display and inspect the original full-resolution image. Record the required anatomy, feet/contact, hands/objects, and text/watermark checks with the full rubric; a preview alone is insufficient. Failed or uncertain checks require refine or explore. A refine preserves the seed; an explore changes the seed.
+8. When an eligible review returns quality status `candidate`, display its limitations, image SHA-256, and exact `finalize:<run_id>:<round_number>:<image_sha256>` value, then stop. Only a later user message containing that displayed value may authorize finalization; the Agent cannot accept its own candidate.
+9. On a text-only host, retain exactly one successful round, mark `review unavailable`, report the unreviewed path, and stop. Do not invent scores or call review/finalization tools.
 
 After a reviewed or finalized candidate, the user can describe what to keep and what to change. The Skill presents an auditable preserve/change contract, asks for a separate one-to-three-round revision budget, and creates an immutable child run only after confirmation. It chooses the least destructive mode: same-seed prompt refinement, then low-strength img2img, then inpainting with explicit mask-overlay confirmation. No-mask preservation is best-effort.
 
-The adaptive sequence is discovery -> trust when needed -> scoped catalog -> brief -> exact-route recommendation -> post-display confirmation -> start -> generate -> inspect -> review -> refine/explore -> finalize. The configured `max_rounds` must be from `1` through `3`, and urgency or sunk cost never extends it.
+The adaptive sequence is discovery -> trust when needed -> scoped catalog -> brief -> exact-route recommendation -> post-display confirmation -> start -> generate -> full-resolution inspect -> review -> refine/explore or display candidate -> wait for a later user message -> finalize. The configured `max_rounds` must be from `1` through `3`, and urgency or sunk cost never extends it.
 
 ### Visual Profiles And Scope
 
@@ -182,11 +183,15 @@ These two compatibility tools remain available beside the thirteen high-level to
 | `local_gpu_prepare_mask` | Prepare a user or rectangle/polygon mask and return a bounded JPEG overlay. |
 | `local_gpu_confirm_mask` | Confirm an unchanged prepared mask after explicit user approval. |
 | `local_gpu_generate_round` | Generate one root or fixed-mode child round and optionally return a bounded JPEG preview. |
-| `local_gpu_record_review` | Store rubric scores, hard failures, constraint and preservation results, critique, and next action. |
-| `local_gpu_finalize_run` | Publish the caller-nominated reviewed round as the final local PNG. |
+| `local_gpu_record_review` | Store rubric scores, required structured visual checks, hard failures, constraint and preservation results, critique, and next action. |
+| `local_gpu_finalize_run` | Verify the image-bound user confirmation and publish the nominated eligible round as the final local PNG. |
 | `local_gpu_cleanup_run` | Remove intermediates or the entire confirmed run directory. |
 
-`max_rounds` must be from `1` through `3`. Only successfully retained PNG rounds consume that budget; a backend failure is recorded as an attempt without consuming a round. `local_gpu_finalize_run` requires a `round_number` from 1 through 3 and a summary. It validates the current run state and review under the run lock, then publishes that nominated reviewed round without substituting a higher-scoring round. An eligible nomination receives quality status `accepted`; an ineligible nomination receives `needs_user_review`, which is a warning to inspect the file rather than an acceptance claim.
+`max_rounds` must be from `1` through `3`. Only successfully retained PNG rounds consume that budget; a backend failure is recorded as an attempt without consuming a round. Every new review requires `full_resolution_inspected: true`, whether a prominent human is present, and explicit observations for limb separation, feet/contact, hands/held objects, and text/watermarks. Human anatomy checks cannot be `not_applicable`; any required `fail` or `uncertain` result can request only refine or explore.
+
+An eligible review exposes quality status `candidate`, never acceptance, and binds the run, round, and retained image SHA-256. The Agent displays the original image, limitations, hash, and exact `finalize:<run_id>:<round_number>:<image_sha256>`, then waits for a later user message. `local_gpu_finalize_run` requires that exact confirmation plus the nominated `round_number` and summary. It revalidates the candidate under the run lock, then publishes that nominated reviewed round without substituting a higher-scoring round; only the published result receives `accepted`.
+
+An ineligible reviewed artifact is never published. Refine or explore while confirmed budget remains; otherwise retain it and request a new user decision without publication. Existing finalized manifests and the lower-level store compatibility path may still contain `needs_user_review`, but an unfinalized legacy review without structured visual checks cannot produce a public-engine candidate.
 
 `local_gpu_list_profiles` returns the scoped merged catalog and current capabilities. `local_gpu_start_run` requires the exact `route_token`, authorization scope, model, backend, dimensions, workflow, and compiler that were displayed. Identity drift fails before backend invocation; root and child runs never switch routes silently.
 

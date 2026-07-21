@@ -112,9 +112,11 @@ Retry the exact generation with the same `idempotency_key` and the same request.
 
 ## Round Budget And Final Selection
 
-`max_rounds` is limited to 1 through 3 successful rounds. Backend failures do not consume a round. Every generated round must be reviewed before another round is created. Finalization requires an explicit reviewed `round_number`; the engine publishes that exact nomination rather than selecting another round by score.
+`max_rounds` is limited to 1 through 3 successful rounds. Backend failures do not consume a round. Every generated round must be reviewed before another round is created. Inspect the original full-resolution PNG, not only its preview, and supply all structured visual checks. For a prominent human, limb separation, feet/contact, and hands/held objects are always applicable; text/watermark inspection is always applicable.
 
-When a caller nominates an ineligible reviewed round, final metadata uses `quality_status: needs_user_review`. Inspect the full local PNG and the recorded failures; this status does not mean the result passed the rubric.
+`visual_checks_require_revision` means a required check was `fail` or `uncertain` while the review requested finalization. The review is rejected before manifest mutation. Record the honest observation again with `next_action: refine` or `explore`; when confirmed budget remains, generate the next round on the same run. Do not reset the run or relabel the retained image as a failed attempt to regain budget.
+
+An eligible review response contains quality status `candidate` and the exact `finalize:<run_id>:<round_number>:<image_sha256>` value. Display the original image, limitations, and that value, then wait for a later user message. `finalization_confirmation_mismatch` means the supplied value is missing, stale, belongs to another run or round, has another image hash, or the reviewed round is not eligible. Nothing is published. Call `local_gpu_get_run`; if it returns a candidate, display its current exact value and obtain a new later confirmation. If it returns no candidate, refine or explore while budget remains, or retain the reviewed artifact and request a new user decision without publication.
 
 ## A Preview Is Missing
 

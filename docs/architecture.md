@@ -41,7 +41,7 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 11. The exact WebUI, ComfyUI, or Diffusers compatibility adapter returns one normalized result. Only a validated PNG and matching identity consume a successful round.
 12. Structured data is returned as MCP `structuredContent` plus text content; tool failures use `isError: true`, while protocol failures use JSON-RPC error envelopes.
 
-Before step 9, the Agent Skill asks only for missing high-impact boundaries, displays the exact route and run summary, and requires post-display confirmation. On a vision-capable host it can inspect preview evidence and record review/refine/explore/finalize decisions within the confirmed one-to-three-successful-round budget. A text-only host stops after one retained round without inventing review evidence or finalizing it.
+Before step 9, the Agent Skill asks only for missing high-impact boundaries, displays the exact route and run summary, and requires post-display confirmation. On a vision-capable host it displays and inspects the original full-resolution image, records structured visual checks, and chooses refine or explore when a required check fails or is uncertain. An eligible review exposes quality status `candidate`; the Agent displays `finalize:<run_id>:<round_number>:<image_sha256>` and stops until a later user message supplies that exact value. A text-only host stops after one retained round without inventing review evidence or finalizing it.
 
 ## Discovery, Trust, And Frozen Routes
 
@@ -55,13 +55,15 @@ A route freezes authorization scope, backend, endpoint identity, model ID and id
 
 Each high-level run lives under `outputs/runs/<run_id>/` by default. `manifest.json` is the durable source of truth for the confirmed request, attempt history, retained rounds, reviews, warnings, final selection, and monotonically increasing revision. The output root can be replaced with `LOCAL_GPU_IMAGEGEN_OUTPUT_DIR`.
 
-Full generated artifacts are validated full-resolution local PNG files such as `round-01.png`. The optional `round-01-preview.jpg` is a bounded JPEG preview for MCP content; it is not the authoritative image. Finalization validates the caller-nominated reviewed round and current state under the run lock, copies that exact round through `final.pending.png`, and atomically publishes `final.png` before committing final manifest metadata.
+Full generated artifacts are validated full-resolution local PNG files such as `round-01.png`. The optional `round-01-preview.jpg` is a bounded JPEG preview for MCP content; it is not the authoritative image and cannot satisfy `full_resolution_inspected`. Each new review records whether a prominent human is present plus explicit limb-separation, feet/contact, hands/held-object, and text/watermark observations. Required failed or uncertain checks reject a finalize action before manifest mutation.
+
+An eligible stored review derives, but does not persist, a candidate bound to the retained PNG SHA-256. Recovery derives the same candidate after restart. Its strongest pre-user quality status is `candidate`; it becomes publication authority only when a later user message returns the exact `finalize:<run_id>:<round_number>:<image_sha256>` value. Finalization verifies this value before postprocessing and again under the run lock, copies that exact round through `final.pending.png`, and atomically publishes `final.png` before committing final manifest metadata.
 
 New previews use `round-NN-preview.jpg`. Stored manifests using the legacy `round-NN.preview.jpg` name remain readable; loading or retrying them does not rewrite their retained path.
 
 Generation attempts carry an idempotency key plus a hash of their confirmed request. The same key and request can return a retained completed round without rerunning the backend. A conflicting request is rejected. Run locks include process identity so stale ownership can be reclaimed without taking a live attempt. If interruption occurs after the PNG is retained, the next matching call can resume preview creation rather than regenerate the image.
 
-Run responses expose `recoverable_next_actions`, derived from persisted state. A run permits one to three successful rounds; failed backend attempts do not consume that budget. Review eligibility comes from the merged profile rubric and hard-failure rules. Final metadata marks the nominated reviewed round as `accepted` or `needs_user_review`; finalization does not replace the nomination with a weighted-best candidate.
+Run responses expose `recoverable_next_actions`, derived from persisted state. A run permits one to three successful rounds; failed backend attempts do not consume that budget. Review eligibility comes from one shared predicate covering the Profile rubric, hard failures, preservation results, and structured visual checks. Ineligible reviews expose refine/explore while budget remains and never expose finalization. Existing finalized manifests with `needs_user_review` remain readable, but unfinalized legacy reviews without visual checks fail closed and cannot create a candidate. Eligible publication produces `accepted`; finalization does not replace the nomination with a weighted-best candidate.
 
 ## Immutable Revision And Mask Flow
 
@@ -85,6 +87,8 @@ Run responses expose `recoverable_next_actions`, derived from persisted state. A
 | ComfyUI workflow | unknown/unsafe node, binding, or changed registered copy | `invalid_workflow_template` or `workflow_registration_drifted` |
 | ComfyUI job | submission, timeout, disappearance, rejection, or cancel | distinct `comfyui_*` result/error states; no fabricated success |
 | Readiness state | CUDA/WebUI not ready | successful tool result with `ready: false` |
+| Visual review | required check failed/uncertain while requesting finalization | `visual_checks_require_revision`; review is not stored |
+| Final confirmation | missing, stale, wrong-round, wrong-hash, or ineligible candidate confirmation | `finalization_confirmation_mismatch`; no final artifact is published |
 | Run transition | generation before review or premature finalization | structured state/conflict tool error |
 | Revision lineage | missing/changed parent source or wrong fixed edit mode | structured validation/conflict error; parent remains unchanged |
 | Mask confirmation | missing, unconfirmed, or changed mask | `mask_not_confirmed` or `mask_changed_since_prepare`; backend is not invoked |
