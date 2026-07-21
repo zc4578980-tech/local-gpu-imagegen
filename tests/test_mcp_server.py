@@ -43,6 +43,17 @@ HIGH_LEVEL_TOOLS = EXPECTED_TOOLS - {
 }
 
 
+def visual_checks() -> dict[str, object]:
+    return {
+        "full_resolution_inspected": True,
+        "prominent_human": True,
+        "limb_separation": {"status": "pass", "observation": "Limbs are distinct."},
+        "feet_and_contact": {"status": "pass", "observation": "Feet are distinct."},
+        "hands_and_held_objects": {"status": "pass", "observation": "Hands are distinct."},
+        "text_and_watermarks": {"status": "pass", "observation": "No text is visible."},
+    }
+
+
 class McpServerUnitTests(unittest.TestCase):
     def test_schema_exposes_expected_tools(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
@@ -112,9 +123,9 @@ class McpServerUnitTests(unittest.TestCase):
             },
             "local_gpu_record_review": {
                 "run_id", "round_number", "scores", "hard_failures", "critique", "constraint_results",
-                "preservation_results", "next_action",
+                "visual_checks", "preservation_results", "next_action",
             },
-            "local_gpu_finalize_run": {"run_id", "round_number", "summary", "postprocess"},
+            "local_gpu_finalize_run": {"run_id", "round_number", "summary", "confirmation", "postprocess"},
             "local_gpu_cleanup_run": {"run_id", "scope", "confirmation"},
         }
         for name, fields in expected.items():
@@ -176,6 +187,44 @@ class McpServerUnitTests(unittest.TestCase):
             postprocess["properties"]["model"]["enum"],
             ["realesr-animevideov3-x4", "realesrgan-x4plus-anime"],
         )
+
+    def test_review_visual_checks_schema_is_required_and_exact(self) -> None:
+        tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
+        schema = tools["local_gpu_record_review"]["inputSchema"]
+
+        self.assertIn("visual_checks", schema["required"])
+        checks = schema["properties"]["visual_checks"]
+        self.assertFalse(checks["additionalProperties"])
+        self.assertEqual(set(checks["required"]), {
+            "full_resolution_inspected",
+            "prominent_human",
+            "limb_separation",
+            "feet_and_contact",
+            "hands_and_held_objects",
+            "text_and_watermarks",
+        })
+        self.assertIs(checks["properties"]["full_resolution_inspected"]["const"], True)
+        for name in (
+            "limb_separation",
+            "feet_and_contact",
+            "hands_and_held_objects",
+            "text_and_watermarks",
+        ):
+            evidence = checks["properties"][name]
+            self.assertFalse(evidence["additionalProperties"])
+            self.assertEqual(set(evidence["required"]), {"status", "observation"})
+            self.assertEqual(
+                evidence["properties"]["status"]["enum"],
+                ["pass", "fail", "uncertain", "not_applicable"],
+            )
+
+    def test_finalize_confirmation_schema_is_required(self) -> None:
+        tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
+        schema = tools["local_gpu_finalize_run"]["inputSchema"]
+
+        self.assertIn("confirmation", schema["required"])
+        self.assertEqual(schema["properties"]["confirmation"]["type"], "string")
+        self.assertEqual(schema["properties"]["confirmation"]["minLength"], 1)
 
     def test_each_high_level_tool_rejects_unknown_arguments_before_engine_work(self) -> None:
         for name in HIGH_LEVEL_TOOLS:
@@ -382,7 +431,12 @@ class McpServerUnitTests(unittest.TestCase):
                 get_engine.assert_not_called()
 
     def test_finalize_run_forwards_nominated_round_to_engine(self) -> None:
-        arguments = {"run_id": "run-1", "round_number": 2, "summary": "Use round two."}
+        arguments = {
+            "run_id": "run-1",
+            "round_number": 2,
+            "summary": "Use round two.",
+            "confirmation": "finalize:run-1:2:" + "a" * 64,
+        }
         engine = Mock()
         engine.finalize_run.return_value = {
             "ok": True,
@@ -401,7 +455,12 @@ class McpServerUnitTests(unittest.TestCase):
         engine.finalize_run.assert_called_once_with(arguments)
 
     def test_finalize_run_rejects_nested_postprocess_errors_before_engine_work(self) -> None:
-        base = {"run_id": "run-1", "round_number": 1, "summary": "Done."}
+        base = {
+            "run_id": "run-1",
+            "round_number": 1,
+            "summary": "Done.",
+            "confirmation": "finalize:run-1:1:" + "a" * 64,
+        }
         cases = (
             ({}, "missing_argument"),
             ({"type": "anime_upscale"}, "missing_argument"),
@@ -426,6 +485,7 @@ class McpServerUnitTests(unittest.TestCase):
             "run_id": "run-1",
             "round_number": 1,
             "summary": "Publish the 4x result.",
+            "confirmation": "finalize:run-1:1:" + "a" * 64,
             "postprocess": postprocess,
         }
         engine = Mock()
@@ -557,6 +617,7 @@ class McpServerUnitTests(unittest.TestCase):
             "hard_failures": [],
             "critique": "Reviewed child candidate.",
             "constraint_results": {},
+            "visual_checks": visual_checks(),
             "preservation_results": preservation_results,
             "next_action": "finalize",
         }
@@ -576,6 +637,7 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertFalse(result["isError"])
         forwarded = engine.record_review.call_args.args[0]
         self.assertEqual(forwarded["review"]["preservation_results"], preservation_results)
+        self.assertIs(forwarded["review"]["visual_checks"], arguments["visual_checks"])
 
     def test_generate_round_rejects_nested_non_txt2img_mode_before_engine_work(self) -> None:
         for nested_mode in ("img2img", "inpaint"):

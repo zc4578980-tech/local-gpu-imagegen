@@ -388,6 +388,28 @@ def tool_schema() -> list[dict[str, Any]]:
         "height": {"type": "number", "minimum": 0, "maximum": 1},
         "points": {"type": "array", "minItems": 3, "items": point},
     }, ["type"])
+    visual_check = _object_schema({
+        "status": {
+            "type": "string",
+            "enum": ["pass", "fail", "uncertain", "not_applicable"],
+        },
+        "observation": {"type": "string", "minLength": 1, "maxLength": 500},
+    }, ["status", "observation"])
+    visual_checks = _object_schema({
+        "full_resolution_inspected": {"type": "boolean", "const": True},
+        "prominent_human": {"type": "boolean"},
+        "limb_separation": visual_check,
+        "feet_and_contact": visual_check,
+        "hands_and_held_objects": visual_check,
+        "text_and_watermarks": visual_check,
+    }, [
+        "full_resolution_inspected",
+        "prominent_human",
+        "limb_separation",
+        "feet_and_contact",
+        "hands_and_held_objects",
+        "text_and_watermarks",
+    ])
     run_manifest_properties = {
         "run_id": {"type": "string"},
         "schema_version": {"type": "integer"},
@@ -403,6 +425,7 @@ def tool_schema() -> list[dict[str, Any]]:
         "reviews": json_array,
         "masks": json_array,
         "final": json_value,
+        "finalization_candidate": json_value,
         "recoverable_next_actions": {"type": "array", "items": {"type": "string"}},
     }
     tools.extend([
@@ -615,9 +638,19 @@ def tool_schema() -> list[dict[str, Any]]:
                 "hard_failures": {"type": "array", "items": {"type": "string"}},
                 "critique": {"type": "string", "minLength": 1},
                 "constraint_results": json_object,
+                "visual_checks": visual_checks,
                 "preservation_results": {"type": "array", "items": json_object},
                 "next_action": {"type": "string", "enum": ["refine", "explore", "finalize"]},
-            }, ["run_id", "round_number", "scores", "hard_failures", "critique", "constraint_results", "next_action"]),
+            }, [
+                "run_id",
+                "round_number",
+                "scores",
+                "hard_failures",
+                "critique",
+                "constraint_results",
+                "visual_checks",
+                "next_action",
+            ]),
             "outputSchema": _output_schema(run_manifest_properties, ["run_id", "state", "rounds", "reviews", "recoverable_next_actions"]),
         },
         {
@@ -627,11 +660,12 @@ def tool_schema() -> list[dict[str, Any]]:
                 "run_id": {"type": "string", "minLength": 1},
                 "round_number": {"type": "integer", "minimum": 1, "maximum": 3},
                 "summary": {"type": "string", "minLength": 1},
+                "confirmation": {"type": "string", "minLength": 1},
                 "postprocess": _object_schema({
                     "type": {"type": "string", "enum": ["anime_upscale"]},
                     "model": {"type": "string", "enum": sorted(SUPPORTED_MODELS)},
                 }, ["type", "model"]),
-            }, ["run_id", "round_number", "summary"]),
+            }, ["run_id", "round_number", "summary", "confirmation"]),
             "outputSchema": _output_schema({
                 **run_manifest_properties,
                 "max_rounds": {"type": ["integer", "null"]},
@@ -1232,7 +1266,7 @@ def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
                 field: arguments[field]
                 for field in (
                     "scores", "hard_failures", "critique", "constraint_results",
-                    "preservation_results", "next_action",
+                    "visual_checks", "preservation_results", "next_action",
                 )
                 if field in arguments
             }
