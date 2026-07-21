@@ -4,6 +4,24 @@ All notable changes will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-21
+
+### Added
+
+- Seven high-level MCP tools for profile discovery, durable run creation, status recovery, generation rounds, review, final publication, and confirmed cleanup.
+- A persisted run manifest with one-to-three-round budgets, idempotent attempts, stale-attempt recovery, review evidence, and recoverable next actions.
+- Bounded JPEG previews beside validated full local PNG artifacts and atomic final publication.
+- A standalone-illustration profile with merged constraints, rubric dimensions, hard failures, and allowed refine/explore changes.
+
+### Changed
+
+- MCP initialize and the Codex plugin manifest now report version `0.3.0`.
+- The run engine stores a nullable internal model choice and accepts only `auto` or `off` for the recorded upscale policy.
+- Public documentation now distinguishes model-free and mocked coverage from the still-absent retained real Codex-client/GPU generation evidence.
+- The original readiness and direct generation compatibility tools, local-only Diffusers default, and explicit download permission remain available.
+
+## [0.2.0]
+
 ### Added
 
 - Structured success output schemas for readiness and generation tools.

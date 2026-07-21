@@ -17,6 +17,7 @@ SCRIPTS = ROOT / "scripts"
 PYTHON = sys.executable
 DEFAULT_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("LOCAL_GPU_IMAGEGEN_COMMAND_TIMEOUT_SECONDS", "900"))
 MAX_PREVIEW_BASE64_CHARS = 4 * ((1024 * 1024 + 2) // 3)
+SERVER_VERSION = "0.3.0"
 _asset_engine: Any | None = None
 
 
@@ -749,7 +750,7 @@ def handle_request(request: dict[str, Any]) -> None:
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "local-gpu-imagegen", "version": "0.2.0"},
+                    "serverInfo": {"name": "local-gpu-imagegen", "version": SERVER_VERSION},
                 },
             }
         )

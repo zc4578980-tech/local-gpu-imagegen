@@ -16,6 +16,8 @@ python .\scripts\check_gpu.py
 
 The second command exits with code 1 when neither backend is ready, but its JSON report is still valid diagnostic output.
 
+`local_gpu_list_profiles` also returns backend capabilities beside the registered profiles. A run with `backend: auto` still needs at least one advertised backend resolution; capability reporting does not install packages, select a model, or download one.
+
 On Windows PowerShell 5.1, manual native-process pipelines may prefix stdin with a UTF-8 byte-order mark. The server tolerates that mark, but `scripts/verify_mcp.py` remains the preferred transport check because it controls encoding and validates all required responses.
 
 To test a specific environment without activating it:
@@ -61,6 +63,26 @@ Native OpenMP or DLL collisions usually indicate a contaminated shared environme
 ## Generation Times Out
 
 The MCP subprocess timeout defaults to 900 seconds. Set `LOCAL_GPU_IMAGEGEN_COMMAND_TIMEOUT_SECONDS` before launching the server if a verified model/hardware combination needs a different limit. Raising the timeout does not fix a hung backend; inspect the backend directly first.
+
+## A Run Was Interrupted Or Reports Busy
+
+Call `local_gpu_get_run` and inspect its state, warnings, attempts, and `recoverable_next_actions`. A live attempt remains busy so a concurrent caller cannot overwrite it. Stale attempt and lock metadata are recovered when process ownership can no longer be verified.
+
+Retry the exact generation with the same `idempotency_key` and the same request. A completed retry returns the retained round without calling the backend again. If a validated PNG was retained before interruption, the engine can rebuild its preview. Do not reuse an idempotency key after changing the action, seed, or plan; that returns `idempotency_conflict`.
+
+## The Round Budget Is Exhausted
+
+`max_rounds` is limited to 1 through 3 successful rounds. Backend failures do not consume a round. Every generated round must be reviewed before another round is created. An eligible reviewed round can finalize early; an ineligible round cannot finalize until the budget is exhausted.
+
+When an exhausted run publishes its best reviewed but ineligible round, final metadata uses `quality_status: needs_user_review`. Inspect the full local PNG and the recorded failures; this status does not mean the result passed the rubric.
+
+## A Preview Is Missing
+
+The JPEG preview is optional and bounded for MCP transport. The full-resolution local PNG is authoritative. Check the tool's `full_image_path`, manifest round image metadata, and warnings such as `preview_unavailable:pillow_missing`. Installing or repairing Pillow should happen only in the project environment; a preview failure does not justify regenerating a valid retained PNG.
+
+## Cleanup Confirmation Is Rejected
+
+For both `intermediates` and `all`, confirmation must exactly equal the `run_id`. The `intermediates` scope keeps `manifest.json` and the final PNG. The `all` scope deletes the run directory, so read the run and verify the identifier before confirming it.
 
 ## WebUI Returns Invalid Image Data
 

@@ -65,6 +65,10 @@ class McpServerUnitTests(unittest.TestCase):
                 self.assertEqual(set(error_value["required"]), {"code", "category", "message"})
                 self.assertFalse(error_value["additionalProperties"])
 
+    def test_plugin_manifest_reports_release_version(self) -> None:
+        plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(plugin["version"], "0.3.0")
+
     def test_high_level_input_contracts_are_exact(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
         expected = {
@@ -416,6 +420,7 @@ class McpServerProtocolTests(unittest.TestCase):
         )
         responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "local-gpu-imagegen")
+        self.assertEqual(responses[0]["result"]["serverInfo"]["version"], "0.3.0")
         self.assertEqual(responses[1]["result"]["tools"][0]["name"], "local_gpu_imagegen_check")
         self.assertEqual(responses[2]["result"], {})
 
