@@ -168,6 +168,13 @@ class PublicDocumentationTests(unittest.TestCase):
             "Real backend acceptance is verified.",
             "The production model is not unavailable.",
             "Real backend acceptance is not unverified.",
+            "Real GPU generation is not verified but it is validated.",
+            "Real GPU generation is not verified, although it is validated.",
+            "Real GPU generation is not verified; however, it is validated.",
+            "A license record is approved.",
+            "A license record is available.",
+            "A license record is present.",
+            "The license is not unapproved.",
         )
         for false_claim in false_claims:
             with self.subTest(false_claim=false_claim):
@@ -200,6 +207,10 @@ class PublicDocumentationTests(unittest.TestCase):
             "The model is disabled.",
             "Real backend execution remains unsupported.",
             "Real backend acceptance remains unverified.",
+            "An approved license record is absent.",
+            "An approved license record is unavailable.",
+            "Real GPU generation is not verified but it is also not validated.",
+            "Real GPU generation is unverified; however, it remains unvalidated.",
         )
         for boundary in truthful_boundaries:
             with self.subTest(boundary=boundary):

@@ -6,7 +6,9 @@ from collections.abc import Iterable
 
 _STALE_ACTIVE_VERSION = re.compile(r"\b(?:v|version\s*)?0\.3(?:\.0)?\b", re.IGNORECASE)
 _ASSERTION_BOUNDARY = re.compile(
-    r"[:;.!?]+|,\s*(?:and|but|or|nor|yet|however|though)\b\s*",
+    r"[:;.!?]+\s*(?:(?:however|nevertheless|nonetheless|still|yet)\s*,?\s*)?"
+    r"|,\s*(?:and|but|or|nor|yet|however|though|although|even\s+though)\b\s*"
+    r"|\s+(?:but|although|even\s+though|yet)\b\s*",
     re.IGNORECASE,
 )
 _TERMINAL_NEGATION = re.compile(
@@ -32,8 +34,9 @@ _CLAIM_RULES = tuple(
         ("model", r"\bproduction[- ](?P<predicate>ready|proven|verified)\b"),
         ("model", r"\b(?P<predicate>bundled|included)\b.{0,40}?\b(?:approved|production|ready|enabled)\s+model\b"),
         ("model", r"\b(?P<predicate>approved)\s+(?:catalog\s+)?(?:production\s+)?model\s+(?:selection|available|included|bundled|ready)\b"),
-        ("model", r"\blicense(?:\s+(?:record|status))?\s+(?:is|are|was|were|has been)\s+(?:not\s+)?(?P<predicate>approved|ready|verified)\b"),
-        ("model", r"\b(?P<predicate>approved)\s+license\s+(?:record|status|for)\b"),
+        ("model", r"\blicense(?:\s+(?:record|status))?\s+(?:is|are|was|were|has been)\s+(?:not\s+)?(?P<predicate>approved|ready|verified|available|present|enabled)\b"),
+        ("model", r"\b(?:an?\s+)?approved\s+license\s+(?:record|status)\s+(?:is|are|was|were|has been)\s+(?P<predicate>approved|ready|verified|available|present|enabled)\b"),
+        ("model", r"\b(?P<predicate>approved)\s+license\s+for\b"),
         ("quality", r"\b(?:quality|performance|vram)\s+(?:is|was|are|has been)\s+(?P<predicate>verified|proven|measured)\b"),
         ("quality", r"\b(?P<predicate>production|professional|high)[- ]quality\b"),
         ("performance", r"\b(?P<predicate>uses?|requires?|needs?)\s+\d+(?:\.\d+)?\s*(?:gb|gib)\s+(?:of\s+)?vram\b"),
@@ -51,7 +54,7 @@ _CATEGORY_HINTS = (
 )
 _INHERITED_TAIL = re.compile(
     r"^\s*(?:(?:it|they|this|that|the result|the output|the model)\s+"
-    r"(?:is|are|was|were|has been)\s+)?"
+    r"(?:is|are|was|were|has been|remains?)\s+(?:(?:currently|now|already|also)\s+)?(?:not\s+)?\s*)?"
     r"(?P<predicate>accepted|approved|verified|validated|ready|available|selectable|enabled|supported)\b",
     re.IGNORECASE,
 )
