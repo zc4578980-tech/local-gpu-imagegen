@@ -200,6 +200,11 @@ class RunStore:
             return copy.deepcopy(manifest)
         return self._recover_stale_attempt(run_id, manifest)
 
+    def run_root(self, run_id: str) -> Path:
+        """Return the validated filesystem root for an existing run."""
+        self.get(run_id)
+        return self._run_root(run_id)
+
     def begin_attempt(self, run_id: str, idempotency_key: str, request: dict[str, object]) -> AttemptHandle:
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
             raise ValidationError("invalid_idempotency_key", "Idempotency key must be a non-empty string.")
@@ -1049,6 +1054,9 @@ class RunStore:
         review: dict[str, object],
     ) -> None:
         required_fields = {"scores", "hard_failures", "critique", "constraint_results", "next_action"}
+        child_run = isinstance(manifest.get("parent"), dict)
+        if child_run:
+            required_fields.add("preservation_results")
         if set(review) != required_fields:
             raise ValidationError("invalid_review", "Review fields do not match the required structure.")
         if not isinstance(round_number, int) or isinstance(round_number, bool):
@@ -1080,13 +1088,16 @@ class RunStore:
 
         registered_failures = profile.get("hard_failures", [])
         hard_failures = review.get("hard_failures")
+        dynamic_failures: set[str] = set()
+        if child_run:
+            dynamic_failures = self._validate_preservation_results(manifest, review, hard_failures)
         if (
             not isinstance(registered_failures, list)
             or not all(isinstance(value, str) for value in registered_failures)
             or not isinstance(hard_failures, list)
             or not all(isinstance(value, str) for value in hard_failures)
             or len(set(hard_failures)) != len(hard_failures)
-            or any(value not in registered_failures for value in hard_failures)
+            or any(value not in registered_failures and value not in dynamic_failures for value in hard_failures)
         ):
             raise ValidationError("invalid_hard_failures", "Review hard failures must be registered unique strings.")
 
@@ -1121,6 +1132,85 @@ class RunStore:
                 "inconsistent_hard_failures",
                 "A failed required constraint requires explicit_constraint_violation.",
             )
+
+    @staticmethod
+    def _validate_preservation_results(
+        manifest: dict[str, object],
+        review: dict[str, object],
+        hard_failures: object,
+    ) -> set[str]:
+        revision = manifest.get("revision")
+        contract = revision.get("contract") if isinstance(revision, dict) else None
+        preserve = contract.get("preserve") if isinstance(contract, dict) else None
+        if not isinstance(preserve, list) or not all(isinstance(item, dict) for item in preserve):
+            raise ArtifactError("corrupt_manifest", "Child revision preserve contract is invalid.")
+        expected: dict[str, dict[str, object]] = {}
+        for item in preserve:
+            target = item.get("target")
+            strength = item.get("strength")
+            if not isinstance(target, str) or strength not in {"hard", "soft"}:
+                raise ArtifactError("corrupt_manifest", "Child revision preserve contract is invalid.")
+            key = target.casefold()
+            if key in expected:
+                raise ArtifactError("corrupt_manifest", "Child revision preserve targets are duplicated.")
+            expected[key] = item
+
+        results = review.get("preservation_results")
+        if not isinstance(results, list) or len(results) != len(expected):
+            raise ValidationError(
+                "invalid_preservation_results",
+                "preservation_results must contain one entry per preserve target.",
+            )
+        observed: dict[str, str] = {}
+        for result in results:
+            if not isinstance(result, dict) or set(result) != {"target", "status", "observation"}:
+                raise ValidationError(
+                    "invalid_preservation_results",
+                    "Each preservation result requires target, status, and observation.",
+                )
+            target = result.get("target")
+            status = result.get("status")
+            observation = result.get("observation")
+            if not isinstance(target, str) or target.casefold() not in expected or target.casefold() in observed:
+                raise ValidationError(
+                    "invalid_preservation_results",
+                    "Preservation targets must exactly match the revision contract.",
+                )
+            if status not in {"preserved", "changed", "uncertain"}:
+                raise ValidationError("invalid_preservation_results", "Preservation status is invalid.")
+            if not isinstance(observation, str) or not observation.strip() or len(observation.strip()) > 2000:
+                raise ValidationError(
+                    "invalid_preservation_results",
+                    "Preservation observations must be non-empty and concise.",
+                )
+            observed[target.casefold()] = status
+        if set(observed) != set(expected):
+            raise ValidationError(
+                "invalid_preservation_results",
+                "Preservation targets must exactly match the revision contract.",
+            )
+
+        dynamic = {
+            f"hard_preserve_violation:{item['target'].casefold()}"
+            for item in preserve
+            if item.get("strength") == "hard"
+        }
+        if not isinstance(hard_failures, list) or not all(
+            isinstance(failure, str) for failure in hard_failures
+        ):
+            return dynamic
+        required = {
+            f"hard_preserve_violation:{expected[key]['target'].casefold()}"
+            for key, status in observed.items()
+            if expected[key].get("strength") == "hard" and status == "changed"
+        }
+        reported = {failure for failure in hard_failures if failure in dynamic}
+        if reported != required:
+            raise ValidationError(
+                "inconsistent_preservation_results",
+                "Changed hard-preserve targets require exactly their registered hard failures.",
+            )
+        return dynamic
 
     def _recover_stale_attempt(
         self,
@@ -1301,7 +1391,14 @@ class RunStore:
             name for name, specification in rubric.items()
             if isinstance(specification, dict) and specification.get("critical") is True
         }
-        eligible = not hard_failures and all(
+        preservation_results = review.get("preservation_results", [])
+        if not isinstance(preservation_results, list):
+            raise ArtifactError("corrupt_manifest", "Stored preservation results must be an array.")
+        preservation_uncertain = any(
+            isinstance(result, dict) and result.get("status") == "uncertain"
+            for result in preservation_results
+        )
+        eligible = not hard_failures and not preservation_uncertain and all(
             isinstance(scores.get(name), int)
             and not isinstance(scores.get(name), bool)
             and scores[name] >= 3
