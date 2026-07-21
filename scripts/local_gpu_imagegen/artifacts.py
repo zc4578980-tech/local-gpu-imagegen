@@ -6,6 +6,7 @@ import os
 import struct
 import zlib
 from pathlib import Path
+from typing import BinaryIO
 
 from .errors import ArtifactError
 
@@ -18,6 +19,25 @@ PNG_BIT_DEPTHS_BY_COLOR_TYPE = {
     4: frozenset((8, 16)),
     6: frozenset((8, 16)),
 }
+PNG_CHANNELS_BY_COLOR_TYPE = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+MAX_PNG_FILE_BYTES = 64 * 1024 * 1024
+MAX_PNG_CHUNK_BYTES = 32 * 1024 * 1024
+MAX_PNG_DECOMPRESSED_BYTES = 128 * 1024 * 1024
+ADAM7_PASSES = (
+    (0, 0, 8, 8),
+    (4, 0, 8, 8),
+    (0, 4, 4, 8),
+    (2, 0, 4, 4),
+    (0, 2, 2, 4),
+    (1, 0, 2, 2),
+    (0, 1, 1, 2),
+)
+
+
+class _PngValidationFailure(ValueError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def ensure_within(root: Path, candidate: Path) -> Path:
@@ -46,55 +66,70 @@ def validate_png(path: Path, expected_width: int, expected_height: int) -> dict[
     if not _is_positive_dimension(expected_width) or not _is_positive_dimension(expected_height):
         raise _invalid_generated_image(path, "invalid_expected_dimensions")
 
+    digest = hashlib.sha256()
     try:
-        contents = path.read_bytes()
+        file_size = path.stat().st_size
+        if file_size > MAX_PNG_FILE_BYTES:
+            raise _PngValidationFailure("png_file_too_large")
+        with path.open("rb") as stream:
+            width, height = _parse_png(stream, digest, expected_width, expected_height)
+    except _PngValidationFailure as error:
+        raise _invalid_generated_image(path, error.reason) from error
     except OSError as error:
         raise _invalid_generated_image(path, "unreadable_image") from error
-
-    try:
-        width, height = _parse_png(contents)
     except (ValueError, struct.error, zlib.error) as error:
         raise _invalid_generated_image(path, "malformed_png") from error
 
-    if width != expected_width or height != expected_height:
-        raise _invalid_generated_image(path, "dimension_mismatch")
-
     return {
         "path": str(path),
-        "sha256": hashlib.sha256(contents).hexdigest(),
+        "sha256": digest.hexdigest(),
         "width": width,
         "height": height,
         "mime_type": "image/png",
     }
 
 
-def _parse_png(contents: bytes) -> tuple[int, int]:
-    if not contents.startswith(PNG_SIGNATURE):
+def _parse_png(
+    stream: BinaryIO,
+    digest: "hashlib._Hash",
+    expected_width: int,
+    expected_height: int,
+) -> tuple[int, int]:
+    bytes_read = 0
+
+    def read_exact(length: int) -> bytes:
+        nonlocal bytes_read
+        if length < 0 or length > MAX_PNG_FILE_BYTES - bytes_read:
+            raise _PngValidationFailure("png_file_too_large")
+        data = stream.read(length)
+        digest.update(data)
+        bytes_read += len(data)
+        if len(data) != length:
+            raise ValueError("truncated PNG data")
+        return data
+
+    if read_exact(len(PNG_SIGNATURE)) != PNG_SIGNATURE:
         raise ValueError("missing PNG signature")
 
-    offset = len(PNG_SIGNATURE)
     chunk_index = 0
     ihdr_count = 0
     dimensions: tuple[int, int] | None = None
-    idat_payloads: list[bytes] = []
+    decompressor: zlib.Decompress | None = None
+    decompressed_bytes = 0
+    decompression_limit: int | None = None
     saw_iend = False
 
-    while offset < len(contents):
-        if len(contents) - offset < 12:
-            raise ValueError("truncated PNG chunk")
-
-        length = struct.unpack(">I", contents[offset : offset + 4])[0]
-        chunk_type = contents[offset + 4 : offset + 8]
-        chunk_end = offset + 12 + length
-        if chunk_end > len(contents):
-            raise ValueError("truncated PNG chunk payload")
+    while True:
+        header = read_exact(8)
+        length = struct.unpack(">I", header[:4])[0]
+        chunk_type = header[4:]
+        if length > MAX_PNG_CHUNK_BYTES:
+            raise _PngValidationFailure("png_chunk_too_large")
         if not all(65 <= value <= 90 or 97 <= value <= 122 for value in chunk_type):
             raise ValueError("invalid PNG chunk type")
 
-        data_start = offset + 8
-        data_end = data_start + length
-        data = contents[data_start:data_end]
-        stored_crc = struct.unpack(">I", contents[data_end:chunk_end])[0]
+        data = read_exact(length)
+        stored_crc = struct.unpack(">I", read_exact(4))[0]
         calculated_crc = zlib.crc32(data, zlib.crc32(chunk_type)) & 0xFFFFFFFF
         if stored_crc != calculated_crc:
             raise ValueError("invalid PNG chunk CRC")
@@ -117,36 +152,69 @@ def _parse_png(contents: bytes) -> tuple[int, int]:
                 raise ValueError("invalid PNG filter method")
             if interlace not in (0, 1):
                 raise ValueError("invalid PNG interlace method")
+            if width != expected_width or height != expected_height:
+                raise _PngValidationFailure("dimension_mismatch")
             dimensions = (width, height)
+            decompression_limit = min(
+                _png_scanline_bound(width, height, bit_depth, color_type, interlace),
+                MAX_PNG_DECOMPRESSED_BYTES,
+            )
         elif chunk_type == b"IDAT":
-            if dimensions is None:
+            if dimensions is None or decompression_limit is None:
                 raise ValueError("IDAT precedes IHDR")
-            idat_payloads.append(data)
+            if decompressor is None:
+                decompressor = zlib.decompressobj()
+            remaining = decompression_limit - decompressed_bytes
+            output = decompressor.decompress(data, remaining + 1)
+            if len(output) > remaining or decompressor.unconsumed_tail:
+                raise _PngValidationFailure("png_decompression_limit_exceeded")
+            decompressed_bytes += len(output)
+            if decompressor.unused_data:
+                raise ValueError("bytes follow IDAT zlib stream")
         elif chunk_type == b"IEND":
             if length != 0:
                 raise ValueError("invalid IEND")
             saw_iend = True
-            offset = chunk_end
-            if offset != len(contents):
+            if stream.read(1):
                 raise ValueError("bytes follow IEND")
             break
 
-        offset = chunk_end
         chunk_index += 1
 
     if ihdr_count != 1 or dimensions is None:
         raise ValueError("missing IHDR")
-    if not idat_payloads:
+    if decompressor is None or decompression_limit is None:
         raise ValueError("missing IDAT")
     if not saw_iend:
         raise ValueError("missing IEND")
 
-    decompressor = zlib.decompressobj()
-    decompressor.decompress(b"".join(idat_payloads))
-    decompressor.flush()
+    remaining = decompression_limit - decompressed_bytes
+    output = decompressor.flush(remaining + 1)
+    if len(output) > remaining:
+        raise _PngValidationFailure("png_decompression_limit_exceeded")
     if not decompressor.eof or decompressor.unused_data or decompressor.unconsumed_tail:
         raise ValueError("invalid IDAT stream")
     return dimensions
+
+
+def _png_scanline_bound(width: int, height: int, bit_depth: int, color_type: int, interlace: int) -> int:
+    bits_per_pixel = PNG_CHANNELS_BY_COLOR_TYPE[color_type] * bit_depth
+
+    def pass_size(pass_width: int, pass_height: int) -> int:
+        if pass_width <= 0 or pass_height <= 0:
+            return 0
+        row_bytes = (pass_width * bits_per_pixel + 7) // 8
+        return pass_height * (1 + row_bytes)
+
+    if interlace == 0:
+        return pass_size(width, height)
+
+    total = 0
+    for start_x, start_y, step_x, step_y in ADAM7_PASSES:
+        pass_width = 0 if width <= start_x else (width - start_x + step_x - 1) // step_x
+        pass_height = 0 if height <= start_y else (height - start_y + step_y - 1) // step_y
+        total += pass_size(pass_width, pass_height)
+    return total
 
 
 def _is_positive_dimension(value: object) -> bool:

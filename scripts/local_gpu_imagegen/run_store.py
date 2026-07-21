@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -205,10 +206,21 @@ class RunStore:
         if not isinstance(request, dict):
             raise ValidationError("invalid_attempt_request", "Attempt request must be an object.")
         validate_json_serializable(request)
-        request_hash_value = request_hash(request)
+        normalized_request = self._normalize_attempt_request(request)
+        request_hash_value = request_hash(normalized_request)
+        legacy_request_hash_value = request_hash({
+            "action": normalized_request["action"],
+            "seed": normalized_request["seed"],
+            "plan": normalized_request["generation_plan"],
+        })
 
         manifest = self.get(run_id)
-        existing = self._find_idempotent_attempt(manifest, idempotency_key, request_hash_value)
+        existing = self._find_idempotent_attempt(
+            manifest,
+            idempotency_key,
+            request_hash_value,
+            legacy_request_hash_value,
+        )
         if existing is not None:
             status, value = existing
             if status == "completed":
@@ -223,7 +235,7 @@ class RunStore:
         if isinstance(active_attempt, dict) and active_attempt.get("status") == "running":
             raise ConflictError("run_busy", "Run already has a live generation attempt.", {"run_id": run_id})
 
-        self._validate_attempt_transition(manifest, request)
+        self._validate_attempt_transition(manifest, normalized_request)
 
         run_root = self._run_root(run_id)
         try:
@@ -232,7 +244,12 @@ class RunStore:
             if error.code != "run_busy":
                 raise
             current = self._read_manifest(run_id)
-            raced = self._find_idempotent_attempt(current, idempotency_key, request_hash_value)
+            raced = self._find_idempotent_attempt(
+                current,
+                idempotency_key,
+                request_hash_value,
+                legacy_request_hash_value,
+            )
             if raced is not None:
                 return self._attempt_handle(run_id, idempotency_key, request_hash_value, raced)
             raise
@@ -240,20 +257,32 @@ class RunStore:
         retain_lock = False
         try:
             current = self._read_manifest(run_id)
-            raced = self._find_idempotent_attempt(current, idempotency_key, request_hash_value)
+            raced = self._find_idempotent_attempt(
+                current,
+                idempotency_key,
+                request_hash_value,
+                legacy_request_hash_value,
+            )
             if raced is not None:
                 return self._attempt_handle(run_id, idempotency_key, request_hash_value, raced)
             active_attempt = current.get("active_attempt")
             if isinstance(active_attempt, dict) and active_attempt.get("status") == "running":
                 raise ConflictError("run_busy", "Run already has a live generation attempt.", {"run_id": run_id})
-            self._validate_attempt_transition(current, request)
-            resumable = self._find_resumable_attempt(current, idempotency_key, request_hash_value)
+            self._validate_attempt_transition(current, normalized_request)
+            resumable = self._find_resumable_attempt(
+                current,
+                idempotency_key,
+                request_hash_value,
+                legacy_request_hash_value,
+            )
 
             active: dict[str, object] = {
                 "idempotency_key": idempotency_key,
                 "request_hash": request_hash_value,
-                "action": request["action"],
-                "seed": request["seed"],
+                "action": normalized_request["action"],
+                "seed": normalized_request["seed"],
+                "generation_plan": copy.deepcopy(normalized_request["generation_plan"]),
+                "change_summary": normalized_request["change_summary"],
                 "status": "running",
                 "started_at": utc_now(),
             }
@@ -312,6 +341,8 @@ class RunStore:
                 "request_hash": handle.request_hash,
                 "action": active["action"],
                 "seed": active["seed"],
+                "generation_plan": copy.deepcopy(active["generation_plan"]),
+                "change_summary": active["change_summary"],
             })
             rounds.append(round_value)
 
@@ -513,17 +544,37 @@ class RunStore:
         run_root = self._run_root(run_id)
         lock_path, owner_token = self._acquire_lock(run_root)
         try:
+            manifest = self._read_manifest(run_id)
             if scope == "all":
                 shutil.rmtree(run_root)
                 return
 
-            manifest = self._read_manifest(run_id)
+            if manifest.get("state") != "finalized" or manifest.get("final") is None:
+                raise StateError(
+                    "run_not_finalized",
+                    "Intermediate cleanup is allowed only after finalization.",
+                    {"run_id": run_id},
+                )
+            final_paths = self._final_paths(run_root, manifest)
+            started_at = utc_now()
+            self._prune_intermediate_references(manifest, started_at)
+            manifest["intermediate_cleanup"] = {"status": "pending", "started_at": started_at}
+            manifest.pop("intermediates_cleaned_at", None)
+            manifest = self._save_manifest(run_id, manifest)
             preserved_paths = {
                 self._manifest_path(run_id),
                 lock_path,
-                *self._final_paths(run_root, manifest),
+                *final_paths,
             }
             self._remove_intermediates(run_root, preserved_paths)
+            completed_at = utc_now()
+            manifest["intermediate_cleanup"] = {
+                "status": "completed",
+                "started_at": started_at,
+                "completed_at": completed_at,
+            }
+            manifest["intermediates_cleaned_at"] = completed_at
+            self._save_manifest(run_id, manifest)
         finally:
             self._release_lock(lock_path, owner_token)
 
@@ -534,7 +585,10 @@ class RunStore:
     def _run_root(self, run_id: str) -> Path:
         if not isinstance(run_id, str) or RUN_ID_PATTERN.fullmatch(run_id) is None:
             raise ArtifactError("invalid_run_id", "Run identifier has an invalid format.", {"run_id": run_id})
-        return ensure_within(self.output_root, self.output_root / "runs" / run_id)
+        runs_root = self.output_root / "runs"
+        candidate = runs_root / run_id
+        self._reject_run_directory_aliases(runs_root, candidate)
+        return ensure_within(self.output_root, candidate)
 
     def _manifest_path(self, run_id: str) -> Path:
         return ensure_within(self.output_root, self._run_root(run_id) / "manifest.json")
@@ -549,6 +603,12 @@ class RunStore:
             raise ArtifactError("corrupt_manifest", "Run manifest cannot be read as JSON.", {"run_id": run_id}) from error
         if not isinstance(value, dict):
             raise ArtifactError("corrupt_manifest", "Run manifest must be a JSON object.", {"run_id": run_id})
+        if value.get("run_id") != run_id:
+            raise ArtifactError(
+                "manifest_run_id_mismatch",
+                "Run manifest identity does not match the requested run.",
+                {"run_id": run_id, "manifest_run_id": value.get("run_id")},
+            )
         return value
 
     def _acquire_lock(self, run_root: Path) -> tuple[Path, str]:
@@ -720,6 +780,7 @@ class RunStore:
         manifest: dict[str, object],
         idempotency_key: str,
         request_hash_value: str,
+        legacy_request_hash_value: str,
     ) -> tuple[str, dict[str, object] | None] | None:
         candidates: list[dict[str, object]] = []
         active = manifest.get("active_attempt")
@@ -730,7 +791,11 @@ class RunStore:
             if attempt.get("idempotency_key") == idempotency_key
         )
         for attempt in candidates:
-            if attempt.get("request_hash") != request_hash_value:
+            if not self._attempt_request_hash_matches(
+                attempt,
+                request_hash_value,
+                legacy_request_hash_value,
+            ):
                 raise ConflictError(
                     "idempotency_conflict",
                     "Idempotency key was already used for a different request.",
@@ -740,10 +805,22 @@ class RunStore:
             if status == "running":
                 return "busy", None
             if status == "completed":
+                if attempt.get("artifacts_cleaned_at") is not None:
+                    raise StateError(
+                        "run_artifacts_cleaned",
+                        "Completed attempt artifacts were removed by intermediate cleanup.",
+                        {"idempotency_key": idempotency_key},
+                    )
                 round_number = attempt.get("round_number")
                 if isinstance(round_number, int):
                     existing_round = self._round_by_number(manifest, round_number)
                     if existing_round is not None:
+                        if existing_round.get("artifacts_cleaned_at") is not None:
+                            raise StateError(
+                                "run_artifacts_cleaned",
+                                "Completed round artifacts were removed by intermediate cleanup.",
+                                {"idempotency_key": idempotency_key},
+                            )
                         return "completed", existing_round
         return None
 
@@ -768,6 +845,7 @@ class RunStore:
         manifest: dict[str, object],
         idempotency_key: str,
         request_hash_value: str,
+        legacy_request_hash_value: str,
     ) -> dict[str, object] | None:
         run_id = manifest.get("run_id")
         if not isinstance(run_id, str):
@@ -775,7 +853,11 @@ class RunStore:
         for attempt in reversed(self._attempts(manifest)):
             if not (
                 attempt.get("idempotency_key") == idempotency_key
-                and attempt.get("request_hash") == request_hash_value
+                and self._attempt_request_hash_matches(
+                    attempt,
+                    request_hash_value,
+                    legacy_request_hash_value,
+                )
                 and attempt.get("status") == "interrupted"
             ):
                 continue
@@ -785,6 +867,39 @@ class RunStore:
                 continue
             return attempt
         return None
+
+    @staticmethod
+    def _attempt_request_hash_matches(
+        attempt: dict[str, object],
+        request_hash_value: str,
+        legacy_request_hash_value: str,
+    ) -> bool:
+        stored_hash = attempt.get("request_hash")
+        if stored_hash == request_hash_value:
+            return True
+        return (
+            "generation_plan" not in attempt
+            and "change_summary" not in attempt
+            and stored_hash == legacy_request_hash_value
+        )
+
+    @staticmethod
+    def _normalize_attempt_request(request: dict[str, object]) -> dict[str, object]:
+        plan = request.get("plan")
+        if not isinstance(plan, dict):
+            raise ValidationError("invalid_generation_plan", "Attempt generation plan must be an object.")
+        change_summary = request.get("change_summary")
+        if not isinstance(change_summary, str) or not change_summary.strip() or len(change_summary.strip()) > 2000:
+            raise ValidationError(
+                "invalid_change_summary",
+                "Attempt change_summary must be non-empty and concise.",
+            )
+        return {
+            "action": request.get("action"),
+            "seed": request.get("seed"),
+            "generation_plan": copy.deepcopy(plan),
+            "change_summary": change_summary.strip(),
+        }
 
     def _validate_attempt_transition(self, manifest: dict[str, object], request: dict[str, object]) -> None:
         if manifest.get("state") == "finalized" or manifest.get("final") is not None:
@@ -821,6 +936,27 @@ class RunStore:
             raise StateError("refine_seed_mismatch", "Refine must preserve the latest successful seed.")
         if action == "explore" and seed == latest_seed:
             raise StateError("explore_seed_unchanged", "Explore must use a different seed.")
+
+    @staticmethod
+    def _reject_run_directory_aliases(*paths: Path) -> None:
+        for path in paths:
+            try:
+                if _path_is_link_like(path):
+                    raise ArtifactError(
+                        "unsafe_run_directory",
+                        "Run directory components cannot be links, junctions, or reparse points.",
+                        {"path": str(path)},
+                    )
+            except FileNotFoundError:
+                continue
+            except ArtifactError:
+                raise
+            except OSError as error:
+                raise ArtifactError(
+                    "unsafe_run_directory",
+                    "Run directory components could not be validated safely.",
+                    {"path": str(path), "errno": error.errno},
+                ) from error
 
     def _owned_attempt(self, handle: AttemptHandle) -> tuple[dict[str, object], dict[str, object]]:
         self._require_attempt_handle(handle)
@@ -1243,7 +1379,10 @@ class RunStore:
         elif isinstance(final, dict) and isinstance(final.get("path"), str):
             path_value = final["path"]
         else:
-            return set()
+            raise ArtifactError(
+                "invalid_final_artifact",
+                "Final metadata must identify a retained artifact path.",
+            )
 
         candidate = Path(path_value)
         if not candidate.is_absolute():
@@ -1255,7 +1394,44 @@ class RunStore:
                 "Final artifact path escapes its run directory.",
                 {"path": str(resolved)},
             )
+        try:
+            final_stat = os.stat(candidate, follow_symlinks=False)
+            link_like = _path_is_link_like(candidate)
+        except OSError as error:
+            raise ArtifactError(
+                "invalid_final_artifact",
+                "Final artifact must be a retained regular file.",
+                {"path": str(candidate)},
+            ) from error
+        if link_like or not stat.S_ISREG(final_stat.st_mode):
+            raise ArtifactError(
+                "invalid_final_artifact",
+                "Final artifact must be a retained regular file.",
+                {"path": str(candidate)},
+            )
         return {resolved}
+
+    def _prune_intermediate_references(self, manifest: dict[str, object], cleaned_at: str) -> None:
+        if manifest.get("active_attempt") is not None:
+            raise ArtifactError("corrupt_manifest", "Finalized run cannot retain an active attempt.")
+        for field in ("attempts", "rounds", "masks"):
+            records = manifest.get(field)
+            if not isinstance(records, list):
+                raise ArtifactError("corrupt_manifest", f"Manifest {field} must be an array.")
+            for record in records:
+                if not isinstance(record, dict):
+                    raise ArtifactError("corrupt_manifest", f"Manifest {field} entries must be objects.")
+                removed_reference = False
+                for key in ("image", "preview", "path", "overlay"):
+                    if key in record:
+                        del record[key]
+                        removed_reference = True
+                backend_result = record.get("backend_result")
+                if isinstance(backend_result, dict) and "path" in backend_result:
+                    del backend_result["path"]
+                    removed_reference = True
+                if removed_reference:
+                    record["artifacts_cleaned_at"] = cleaned_at
 
     def _remove_intermediates(self, run_root: Path, preserved_paths: set[Path]) -> None:
         def is_preserved(path: Path) -> bool:
@@ -1268,3 +1444,15 @@ class RunStore:
                 path.unlink()
             elif path.is_dir():
                 path.rmdir()
+
+
+def _path_is_link_like(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if callable(is_junction) and is_junction():
+        return True
+    path_stat = os.lstat(path)
+    attributes = getattr(path_stat, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse_flag and attributes & reparse_flag)

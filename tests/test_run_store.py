@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -24,11 +25,31 @@ from local_gpu_imagegen.errors import (  # noqa: E402
     StateError,
     ValidationError,
 )
-from local_gpu_imagegen.run_store import AttemptHandle, RunStore  # noqa: E402
+from local_gpu_imagegen.run_store import AttemptHandle, RunStore, request_hash  # noqa: E402
 
 
-INITIAL = {"action": "initial", "seed": 42, "plan": {"positive_prompt": "coast at dawn"}}
-REFINE = {"action": "refine", "seed": 42, "plan": {"positive_prompt": "coast at dawn, cleaner detail"}}
+INITIAL = {
+    "action": "initial",
+    "seed": 42,
+    "plan": {"positive_prompt": "coast at dawn"},
+    "change_summary": "Initial candidate.",
+}
+REFINE = {
+    "action": "refine",
+    "seed": 42,
+    "plan": {"positive_prompt": "coast at dawn, cleaner detail"},
+    "change_summary": "Improve visible detail.",
+}
+
+
+def replace_with_directory_alias(alias: Path, target: Path) -> None:
+    shutil.rmtree(alias)
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(alias))
+    else:
+        alias.symlink_to(target, target_is_directory=True)
 
 
 class RunStoreTests(unittest.TestCase):
@@ -132,6 +153,50 @@ class RunStoreTests(unittest.TestCase):
             self.store.update(manifest["run_id"], lambda value: value.update({"state": "reviewed"}))
 
         self.assertEqual(path.read_text(encoding="utf-8"), corrupt)
+
+    def test_loaded_manifest_must_match_requested_run_id(self) -> None:
+        for operation in ("get", "update", "cleanup"):
+            with self.subTest(operation=operation):
+                manifest = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+                run_root = self.output_root / "runs" / manifest["run_id"]
+                path = run_root / "manifest.json"
+                value = json.loads(path.read_text(encoding="utf-8"))
+                value["run_id"] = "20260721T000000Z-000000000000"
+                path.write_text(json.dumps(value), encoding="utf-8")
+
+                with self.assertRaisesRegex(ArtifactError, "manifest_run_id_mismatch"):
+                    if operation == "get":
+                        self.store.get(manifest["run_id"])
+                    elif operation == "update":
+                        self.store.update(manifest["run_id"], lambda item: item.update({"state": "reviewed"}))
+                    else:
+                        self.store.cleanup(manifest["run_id"], scope="all", confirmation=manifest["run_id"])
+
+                self.assertTrue(run_root.is_dir())
+
+    def test_internal_run_directory_alias_cannot_read_or_delete_another_run(self) -> None:
+        alias_run = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+        target_run = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+        alias_root = self.output_root / "runs" / alias_run["run_id"]
+        target_root = self.output_root / "runs" / target_run["run_id"]
+        replace_with_directory_alias(alias_root, target_root)
+
+        with self.assertRaisesRegex(ArtifactError, "unsafe_run_directory"):
+            self.store.get(alias_run["run_id"])
+        with self.assertRaisesRegex(ArtifactError, "unsafe_run_directory"):
+            self.store.cleanup(alias_run["run_id"], scope="all", confirmation=alias_run["run_id"])
+
+        self.assertTrue((target_root / "manifest.json").is_file())
+
+    def test_outside_root_run_directory_alias_is_rejected(self) -> None:
+        alias_run = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+        alias_root = self.output_root / "runs" / alias_run["run_id"]
+        outside = Path(self.temporary_directory.name) / "outside-run"
+        outside.mkdir()
+        replace_with_directory_alias(alias_root, outside)
+
+        with self.assertRaisesRegex(ArtifactError, "unsafe_run_directory"):
+            self.store.get(alias_run["run_id"])
 
     def test_update_rejects_live_owner_lock_with_matching_process_identity(self) -> None:
         manifest = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
@@ -312,13 +377,94 @@ class RunStoreTests(unittest.TestCase):
         intermediate.write_bytes(b"intermediate")
         final = run_root / "final.png"
         final.write_bytes(b"final")
-        self.store.update(manifest["run_id"], lambda value: value.update({"final": {"path": "final.png"}}))
+        self.store.update(manifest["run_id"], lambda value: value.update({
+            "state": "finalized",
+            "last_stable_state": "finalized",
+            "final": {"path": "final.png"},
+        }))
 
         self.store.cleanup(manifest["run_id"], scope="intermediates", confirmation=manifest["run_id"])
 
         self.assertTrue((run_root / "manifest.json").is_file())
         self.assertTrue(final.is_file())
         self.assertFalse(intermediate.exists())
+
+    def test_cleanup_invalid_final_reference_does_not_rewrite_manifest(self) -> None:
+        manifest = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+        run_root = self.output_root / "runs" / manifest["run_id"]
+        self.store.update(manifest["run_id"], lambda value: value.update({
+            "state": "finalized",
+            "last_stable_state": "finalized",
+            "final": {"path": "../other-run/final.png"},
+        }))
+        manifest_path = run_root / "manifest.json"
+        original = manifest_path.read_bytes()
+
+        with self.assertRaisesRegex(ArtifactError, "path_outside_output_root"):
+            self.store.cleanup(manifest["run_id"], scope="intermediates", confirmation=manifest["run_id"])
+
+        self.assertEqual(manifest_path.read_bytes(), original)
+
+    def test_cleanup_requires_retained_regular_final_artifact(self) -> None:
+        manifest = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+        run_root = self.output_root / "runs" / manifest["run_id"]
+        intermediate = run_root / "round-01.png"
+        intermediate.write_bytes(b"only retained candidate")
+        self.store.update(manifest["run_id"], lambda value: value.update({
+            "state": "finalized",
+            "last_stable_state": "finalized",
+            "final": {"path": "final.png"},
+        }))
+        manifest_path = run_root / "manifest.json"
+        original = manifest_path.read_bytes()
+
+        with self.assertRaisesRegex(ArtifactError, "invalid_final_artifact"):
+            self.store.cleanup(manifest["run_id"], scope="intermediates", confirmation=manifest["run_id"])
+
+        self.assertEqual(manifest_path.read_bytes(), original)
+        self.assertTrue(intermediate.is_file())
+
+    def test_cleanup_rejects_final_metadata_without_a_path(self) -> None:
+        manifest = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+        run_root = self.output_root / "runs" / manifest["run_id"]
+        intermediate = run_root / "round-01.png"
+        intermediate.write_bytes(b"only retained candidate")
+        self.store.update(manifest["run_id"], lambda value: value.update({
+            "state": "finalized",
+            "last_stable_state": "finalized",
+            "final": {},
+        }))
+
+        with self.assertRaisesRegex(ArtifactError, "invalid_final_artifact"):
+            self.store.cleanup(manifest["run_id"], scope="intermediates", confirmation=manifest["run_id"])
+
+        self.assertTrue(intermediate.is_file())
+
+    def test_cleanup_failure_stays_pending_without_claiming_completion(self) -> None:
+        manifest = self.store.create({"profile": "standalone-illustration", "max_rounds": 2})
+        run_root = self.output_root / "runs" / manifest["run_id"]
+        final = run_root / "final.png"
+        final.write_bytes(b"published final")
+        self.store.update(manifest["run_id"], lambda value: value.update({
+            "state": "finalized",
+            "last_stable_state": "finalized",
+            "final": {"path": "final.png"},
+        }))
+
+        with patch.object(self.store, "_remove_intermediates", side_effect=OSError("cleanup failed")):
+            with self.assertRaisesRegex(OSError, "cleanup failed"):
+                self.store.cleanup(manifest["run_id"], scope="intermediates", confirmation=manifest["run_id"])
+
+        pending = self.store.get(manifest["run_id"])
+        self.assertIn("intermediate_cleanup", pending)
+        self.assertEqual(pending["intermediate_cleanup"]["status"], "pending")
+        self.assertNotIn("intermediates_cleaned_at", pending)
+        self.assertTrue(final.is_file())
+
+        self.store.cleanup(manifest["run_id"], scope="intermediates", confirmation=manifest["run_id"])
+        completed = self.store.get(manifest["run_id"])
+        self.assertEqual(completed["intermediate_cleanup"]["status"], "completed")
+        self.assertIn("intermediates_cleaned_at", completed)
 
 
 class RunStoreTransitionTests(unittest.TestCase):
@@ -390,6 +536,55 @@ class RunStoreTransitionTests(unittest.TestCase):
         self.assertEqual(retried.status, "completed")
         self.assertEqual(retried.existing_round["round_number"], 1)
 
+    def test_attempt_and_completed_round_persist_normalized_plan_and_change_summary(self) -> None:
+        handle = self.store.begin_attempt(self.manifest["run_id"], "audited-initial", INITIAL)
+        active = self.store.get(self.manifest["run_id"])["active_attempt"]
+        self.assertIn("generation_plan", active)
+        self.assertIn("change_summary", active)
+        self.assertEqual(active["generation_plan"], INITIAL["plan"])
+        self.assertEqual(active["change_summary"], "Initial candidate.")
+
+        completed = self.store.complete_attempt(handle, {})
+
+        self.assertEqual(completed["attempts"][0]["generation_plan"], INITIAL["plan"])
+        self.assertEqual(completed["attempts"][0]["change_summary"], "Initial candidate.")
+        self.assertEqual(completed["rounds"][0]["generation_plan"], INITIAL["plan"])
+        self.assertEqual(completed["rounds"][0]["change_summary"], "Initial candidate.")
+
+    def test_same_key_with_changed_plan_or_summary_raises_conflict(self) -> None:
+        self.complete_initial(key="audited-key")
+        changes = (
+            {**INITIAL, "plan": {"positive_prompt": "different coast"}},
+            {**INITIAL, "change_summary": "Different explanation."},
+        )
+        for changed in changes:
+            with self.subTest(changed=changed):
+                with self.assertRaisesRegex(ConflictError, "idempotency_conflict"):
+                    self.store.begin_attempt(self.manifest["run_id"], "audited-key", changed)
+
+    def test_legacy_attempt_hash_accepts_an_identical_normalized_retry(self) -> None:
+        self.complete_initial(key="legacy-key")
+        legacy_request = {name: INITIAL[name] for name in ("action", "seed", "plan")}
+        legacy_hash = request_hash(legacy_request)
+
+        def make_legacy(manifest: dict[str, object]) -> None:
+            attempt = manifest["attempts"][0]
+            round_value = manifest["rounds"][0]
+            for value in (attempt, round_value):
+                value["request_hash"] = legacy_hash
+                value.pop("generation_plan", None)
+                value.pop("change_summary", None)
+
+        self.store.update(self.manifest["run_id"], make_legacy)
+
+        try:
+            retried = self.store.begin_attempt(self.manifest["run_id"], "legacy-key", INITIAL)
+        except ConflictError as error:
+            self.fail(f"identical legacy retry conflicted: {error}")
+
+        self.assertEqual(retried.status, "completed")
+        self.assertEqual(retried.existing_round["round_number"], 1)
+
     def test_same_key_with_different_request_hash_raises_conflict(self) -> None:
         self.complete_initial()
         changed = {**INITIAL, "seed": 43}
@@ -409,7 +604,12 @@ class RunStoreTransitionTests(unittest.TestCase):
             self.store.begin_attempt(
                 self.manifest["run_id"],
                 "explore-1",
-                {"action": "explore", "seed": 42, "plan": {"positive_prompt": "new composition"}},
+                {
+                    "action": "explore",
+                    "seed": 42,
+                    "plan": {"positive_prompt": "new composition"},
+                    "change_summary": "Explore a new composition.",
+                },
             )
 
     def test_next_round_requires_review(self) -> None:
@@ -720,6 +920,43 @@ class RunStoreTransitionTests(unittest.TestCase):
         finalized = self.store.finalize(self.manifest["run_id"], 1, "User-selected draft.")
 
         self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
+
+    def test_cleanup_prunes_recovered_attempt_artifacts_without_resuming_them(self) -> None:
+        interrupted = self.store.begin_attempt(self.manifest["run_id"], "initial-interrupted", INITIAL)
+        interrupted_image = self.write_run_image(relative_path="interrupted.png", contents=b"interrupted image")
+        self.store.mark_attempt_image(interrupted, interrupted_image, {"path": "interrupted.png"})
+        with patch("local_gpu_imagegen.run_store.is_process_alive", return_value=False):
+            recovered = self.store.get(self.manifest["run_id"])
+        self.assertEqual(recovered["attempts"][-1]["status"], "interrupted")
+
+        self.complete_marked_and_reviewed_initial()
+        final_path, final_image = self.final_publication()
+
+        def publish() -> None:
+            final_path.write_bytes(b"published final contents")
+
+        self.store.finalize_published(
+            self.manifest["run_id"],
+            1,
+            "Recovered run selected.",
+            final_image,
+            publish,
+            final_path.unlink,
+        )
+        self.store.cleanup(
+            self.manifest["run_id"],
+            scope="intermediates",
+            confirmation=self.manifest["run_id"],
+        )
+
+        cleaned = self.store.get(self.manifest["run_id"])
+        recovered_attempt = next(item for item in cleaned["attempts"] if item["status"] == "interrupted")
+        self.assertNotIn("image", recovered_attempt)
+        self.assertNotIn("path", recovered_attempt["backend_result"])
+        self.assertIn("artifacts_cleaned_at", recovered_attempt)
+        self.assertTrue(final_path.is_file())
+        with self.assertRaisesRegex(StateError, "run_finalized"):
+            self.store.begin_attempt(self.manifest["run_id"], "initial-interrupted", INITIAL)
 
     def test_finalized_run_rejects_new_generation_attempt(self) -> None:
         self.complete_initial()

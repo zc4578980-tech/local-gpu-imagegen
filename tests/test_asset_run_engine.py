@@ -127,6 +127,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "action": action,
             "edit_mode": "txt2img",
             "seed": seed,
+            "change_summary": "Initial candidate." if action == "initial" else "Refine visible detail.",
             "plan": self.plan(
                 max_rounds=max_rounds,
                 parameters={"steps": 8, "guidance_scale": 6.0} if action == "refine" else None,
@@ -237,6 +238,25 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(manifest["attempts"], [])
         self.assertEqual(self.runner.calls, [])
 
+    def test_change_summary_is_required_before_state_mutation(self) -> None:
+        for invalid_summary in (None, "   "):
+            with self.subTest(change_summary=invalid_summary):
+                started = self.start()
+                arguments = self.generate_arguments(started["run_id"])
+                if invalid_summary is None:
+                    arguments.pop("change_summary")
+                else:
+                    arguments["change_summary"] = invalid_summary
+
+                with self.assertRaises(ValidationError) as raised:
+                    self.engine.generate_round(arguments)
+
+                self.assertIn(raised.exception.code, {"missing_argument", "invalid_change_summary"})
+                manifest = self.engine.get_run({"run_id": started["run_id"]})
+                self.assertEqual(manifest["state"], "created")
+                self.assertEqual(manifest["attempts"], [])
+                self.assertEqual(self.runner.calls, [])
+
     def test_one_round_uses_pending_then_atomic_final_name_and_returns_bounded_preview(self) -> None:
         started = self.start()
         data, preview = self.engine.generate_round(self.generate_arguments(started["run_id"]))
@@ -255,6 +275,14 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(data["full_image_path"], str((run_root / "round-01.png").resolve()))
         self.assertIsNotNone(preview)
         self.assertIsNotNone(preview.data_base64)
+        manifest = self.engine.get_run({"run_id": started["run_id"]})
+        expected_plan = self.plan()
+        self.assertIn("generation_plan", manifest["attempts"][0])
+        self.assertIn("change_summary", manifest["attempts"][0])
+        self.assertEqual(manifest["attempts"][0]["generation_plan"], expected_plan)
+        self.assertEqual(manifest["attempts"][0]["change_summary"], "Initial candidate.")
+        self.assertEqual(manifest["rounds"][0]["generation_plan"], expected_plan)
+        self.assertEqual(manifest["rounds"][0]["change_summary"], "Initial candidate.")
 
     def test_nested_mode_mismatch_is_rejected_before_attempt_or_backend(self) -> None:
         for nested_mode in ("img2img", "inpaint"):
@@ -349,6 +377,8 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(failed["state"], "created")
         self.assertEqual(failed["rounds"], [])
         self.assertEqual(failed["attempts"][-1]["status"], "failed")
+        self.assertEqual(failed["attempts"][-1]["generation_plan"], self.plan())
+        self.assertEqual(failed["attempts"][-1]["change_summary"], "Initial candidate.")
         self.runner.exit_code = 0
         data, _ = self.engine.generate_round(self.generate_arguments(started["run_id"], key="initial-2"))
         self.assertEqual(data["round"]["round_number"], 1)
@@ -640,6 +670,72 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(finalized["max_rounds"], 1)
         self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
 
+    def test_bundled_profile_low_critical_score_needs_user_review(self) -> None:
+        started = self.start(max_rounds=1)
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id, max_rounds=1))
+        rubric = self.engine.get_run({"run_id": run_id})["request"]["merged_profile"]["rubric"]
+        scores = {name: 5 for name in rubric}
+        scores["subject_completeness"] = 2
+        self.engine.record_review({
+            "run_id": run_id,
+            "round_number": 1,
+            "review": {
+                "scores": scores,
+                "hard_failures": [],
+                "critique": "The requested subject is incomplete.",
+                "constraint_results": {
+                    "width": {"status": "pass", "observation": "Width matches."},
+                    "height": {"status": "pass", "observation": "Height matches."},
+                },
+                "next_action": "finalize",
+            },
+        })
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Retain for user review.",
+        })
+
+        self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
+
+    def test_intermediate_cleanup_lifecycle_prunes_references_and_completed_retry(self) -> None:
+        started = self.start()
+        run_id = started["run_id"]
+        arguments = self.generate_arguments(run_id)
+        self.engine.generate_round(arguments)
+        run_root = self.output_root / "runs" / run_id
+
+        with self.assertRaises(AssetEngineError) as raised:
+            self.engine.cleanup_run({"run_id": run_id, "scope": "intermediates", "confirmation": run_id})
+        self.assertEqual(raised.exception.code, "run_not_finalized")
+        self.assertTrue((run_root / "round-01.png").is_file())
+
+        self.review(run_id, 1)
+        self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Selected final."})
+        self.engine.cleanup_run({"run_id": run_id, "scope": "intermediates", "confirmation": run_id})
+
+        cleaned = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(cleaned["state"], "finalized")
+        self.assertIn("intermediates_cleaned_at", cleaned)
+        self.assertEqual(cleaned["final"]["image"]["path"], "final.png")
+        self.assertTrue((run_root / "final.png").is_file())
+        self.assertFalse((run_root / "round-01.png").exists())
+        self.assertFalse((run_root / "round-01.preview.jpg").exists())
+        self.assertNotIn("image", cleaned["rounds"][0])
+        self.assertNotIn("preview", cleaned["rounds"][0])
+        self.assertNotIn("path", cleaned["rounds"][0]["backend_result"])
+        self.assertNotIn("image", cleaned["attempts"][0])
+        self.assertNotIn("path", cleaned["attempts"][0]["backend_result"])
+
+        calls_before_retry = len(self.runner.calls)
+        with self.assertRaises(AssetEngineError) as retry:
+            self.engine.generate_round(arguments)
+        self.assertEqual(retry.exception.code, "run_artifacts_cleaned")
+        self.assertEqual(len(self.runner.calls), calls_before_retry)
+        self.assertEqual(self.engine.get_run({"run_id": run_id})["final"]["path"], "final.png")
+
     def test_ineligible_nominated_round_finalizes_for_user_review_before_budget_is_exhausted(self) -> None:
         started = self.start()
         run_id = started["run_id"]
@@ -720,6 +816,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "action": "refine",
             "seed": 42,
             "plan": {"positive_prompt": "active refinement"},
+            "change_summary": "Hold finalization while refining.",
         })
         run_root = self.output_root / "runs" / run_id
         try:
@@ -758,6 +855,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 "action": "refine",
                 "seed": 42,
                 "plan": {"positive_prompt": "completed before final lock"},
+                "change_summary": "Complete refinement before finalization.",
             })
             self.engine.store.complete_attempt(refine, {"image": {"path": "round-02.png"}})
             return original_finalize(*args, **kwargs)

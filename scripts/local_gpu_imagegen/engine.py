@@ -91,6 +91,12 @@ class AssetRunEngine:
         edit_mode = _required(arguments, "edit_mode", str)
         seed = _required(arguments, "seed", int, reject_bool=True)
         plan_value = _required(arguments, "plan", dict)
+        change_summary = _required(arguments, "change_summary", str)
+        if not change_summary.strip() or len(change_summary.strip()) > 2000:
+            raise ValidationError(
+                "invalid_change_summary",
+                "change_summary must be non-empty and concise.",
+            )
 
         # The entire confirmed boundary is checked before begin_attempt changes the manifest.
         manifest = self.store.get(run_id)
@@ -104,7 +110,12 @@ class AssetRunEngine:
         round_number = _next_round_number(manifest)
         final_path = ensure_within(run_root, run_root / f"round-{round_number:02d}.png")
         pending_path = ensure_within(run_root, run_root / f"round-{round_number:02d}.pending.png")
-        attempt_request = {"action": action, "seed": seed, "plan": plan}
+        attempt_request = {
+            "action": action,
+            "seed": seed,
+            "plan": plan,
+            "change_summary": change_summary.strip(),
+        }
         handle = self.store.begin_attempt(run_id, idempotency_key, attempt_request)
         if handle.status == "busy":
             raise ConflictError("run_busy", "The idempotent generation attempt is still running.", {"run_id": run_id})

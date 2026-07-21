@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -32,6 +33,45 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertEqual(merged["constraints"]["aspect_ratio"], "16:9")
         self.assertEqual(merged["constraints"]["max_rounds"], 2)
 
+    def test_bundled_profile_declares_all_designated_critical_dimensions(self) -> None:
+        merged = self.registry.merge("standalone-illustration", None, {})
+        critical = {
+            name
+            for name, specification in merged["rubric"].items()
+            if specification.get("critical") is True
+        }
+
+        self.assertEqual(
+            critical,
+            {
+                "intent_adherence",
+                "composition",
+                "artifact_control",
+                "subject_completeness",
+                "face_quality",
+                "hand_quality",
+                "style_consistency",
+                "detail_quality",
+            },
+        )
+
+    def test_released_profile_validation_rejects_missing_critical_markers(self) -> None:
+        cases = (
+            ("base.json", "intent_adherence"),
+            ("use-cases/standalone-illustration.json", "subject_completeness"),
+        )
+        for relative_path, dimension in cases:
+            with self.subTest(dimension=dimension), tempfile.TemporaryDirectory() as directory:
+                profiles = Path(directory) / "profiles"
+                shutil.copytree(ROOT / "profiles", profiles)
+                path = profiles / relative_path
+                document = json.loads(path.read_text(encoding="utf-8"))
+                document["rubric"][dimension].pop("critical", None)
+                path.write_text(json.dumps(document), encoding="utf-8")
+
+                with self.assertRaisesRegex(ValidationError, "missing_critical_rubric_dimension"):
+                    ProfileRegistry(profiles).list_catalog()
+
     def test_rejects_unknown_profile(self) -> None:
         with self.assertRaisesRegex(ValidationError, "unknown_profile"):
             self.registry.merge("missing", None, {})
@@ -56,7 +96,7 @@ class ProfileRegistryTests(unittest.TestCase):
             with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
                 profiles = Path(directory)
                 (profiles / "use-cases").mkdir()
-                (profiles / "base.json").write_text("{}", encoding="utf-8")
+                shutil.copyfile(ROOT / "profiles" / "base.json", profiles / "base.json")
                 document = {**source, field: value}
                 (profiles / "use-cases" / "candidate.json").write_text(json.dumps(document), encoding="utf-8")
                 with self.assertRaisesRegex(ValidationError, error_code):

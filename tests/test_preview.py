@@ -46,7 +46,26 @@ def make_png(
         filter_method,
         interlace,
     )
-    scanlines = b"".join(b"\x00" + b"\x20\x40\x60" * width for _ in range(height))
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color_type, 1)
+    bits_per_pixel = channels * bit_depth
+
+    def pass_data(pass_width: int, pass_height: int) -> bytes:
+        if pass_width <= 0 or pass_height <= 0:
+            return b""
+        row_bytes = (pass_width * bits_per_pixel + 7) // 8
+        return b"".join(b"\x00" + b"\x00" * row_bytes for _ in range(pass_height))
+
+    if interlace == 0:
+        scanlines = pass_data(width, height)
+    else:
+        scanlines = b""
+        for start_x, start_y, step_x, step_y in (
+            (0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4),
+            (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2),
+        ):
+            pass_width = 0 if width <= start_x else (width - start_x + step_x - 1) // step_x
+            pass_height = 0 if height <= start_y else (height - start_y + step_y - 1) // step_y
+            scanlines += pass_data(pass_width, pass_height)
     return (
         PNG_SIGNATURE
         + png_chunk(b"IHDR", ihdr)
@@ -135,6 +154,48 @@ class PngValidationTests(unittest.TestCase):
             + png_chunk(b"IEND", b"")
         )
         self.assert_invalid(contents)
+
+    def test_rejects_idat_expansion_beyond_ihdr_scanline_bound(self) -> None:
+        ihdr = struct.pack(">IIBBBBB", 2, 1, 8, 2, 0, 0, 0)
+        contents = (
+            PNG_SIGNATURE
+            + png_chunk(b"IHDR", ihdr)
+            + png_chunk(b"IDAT", zlib.compress(b"\x00" * 16_384))
+            + png_chunk(b"IEND", b"")
+        )
+        self.path.write_bytes(contents)
+        from local_gpu_imagegen.errors import ArtifactError
+
+        with self.assertRaises(ArtifactError) as raised:
+            self.validate_png()
+
+        self.assertEqual(raised.exception.code, "invalid_generated_image")
+        self.assertEqual(raised.exception.details["reason"], "png_decompression_limit_exceeded")
+
+    def test_validation_streams_input_instead_of_reading_the_whole_file(self) -> None:
+        self.path.write_bytes(make_png())
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("whole-file read")):
+            metadata = self.validate_png()
+        self.assertEqual((metadata["width"], metadata["height"]), (2, 1))
+
+    def test_rejects_input_larger_than_configured_file_limit(self) -> None:
+        contents = make_png()
+        self.path.write_bytes(contents)
+        with patch("local_gpu_imagegen.artifacts.MAX_PNG_FILE_BYTES", len(contents) - 1, create=True):
+            from local_gpu_imagegen.errors import ArtifactError
+
+            with self.assertRaises(ArtifactError) as raised:
+                self.validate_png()
+        self.assertEqual(raised.exception.details["reason"], "png_file_too_large")
+
+    def test_rejects_chunk_larger_than_configured_chunk_limit(self) -> None:
+        self.path.write_bytes(make_png())
+        with patch("local_gpu_imagegen.artifacts.MAX_PNG_CHUNK_BYTES", 12):
+            from local_gpu_imagegen.errors import ArtifactError
+
+            with self.assertRaises(ArtifactError) as raised:
+                self.validate_png()
+        self.assertEqual(raised.exception.details["reason"], "png_chunk_too_large")
 
     def test_rejects_bytes_after_iend(self) -> None:
         self.assert_invalid(make_png() + b"trailing")

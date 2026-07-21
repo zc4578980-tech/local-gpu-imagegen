@@ -16,6 +16,16 @@ STYLE_REQUIRED = {
     "schema_version", "id", "kind", "description", "aliases", "prompt_guidance",
     "negative_guidance", "rubric", "hard_failures", "known_failure_patterns", "model_hints",
 }
+BASE_CRITICAL_RUBRIC = frozenset({"intent_adherence", "composition", "artifact_control"})
+PROFILE_CRITICAL_RUBRIC = {
+    "standalone-illustration": frozenset({
+        "subject_completeness",
+        "face_quality",
+        "hand_quality",
+        "style_consistency",
+        "detail_quality",
+    }),
+}
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -43,6 +53,7 @@ class ProfileRegistry:
         self.root = root
 
     def list_catalog(self) -> dict[str, dict[str, dict[str, object]]]:
+        self._validated_base()
         profiles = self._documents(self.root / "use-cases", PROFILE_REQUIRED, "use_case")
         styles = self._documents(self.root / "styles", STYLE_REQUIRED, "style")
         return {
@@ -54,7 +65,7 @@ class ProfileRegistry:
         if not isinstance(constraints, dict):
             raise ValidationError("invalid_constraints", "Constraints must be an object.")
 
-        base = _load_json(self.root / "base.json")
+        base = self._validated_base()
         profile = self._documents(self.root / "use-cases", PROFILE_REQUIRED, "use_case").get(profile_id)
         if profile is None:
             raise ValidationError("unknown_profile", f"Unknown profile: {profile_id}", {"profile": profile_id})
@@ -80,6 +91,11 @@ class ProfileRegistry:
         if style is not None:
             rubric.update(self._object(style, "rubric"))
         rubric.update(self._object(profile, "rubric"))
+        self._require_critical_dimensions(
+            rubric,
+            BASE_CRITICAL_RUBRIC | PROFILE_CRITICAL_RUBRIC.get(profile_id, frozenset()),
+            profile_id,
+        )
         return {
             "profile": copy.deepcopy(profile),
             "style": copy.deepcopy(style),
@@ -101,6 +117,29 @@ class ProfileRegistry:
             raise ValidationError("invalid_profile_document", f"{field} must be an object.")
         return value
 
+    def _validated_base(self) -> dict[str, object]:
+        base = _load_json(self.root / "base.json")
+        self._require_critical_dimensions(self._object(base, "rubric"), BASE_CRITICAL_RUBRIC, "base")
+        return base
+
+    @staticmethod
+    def _require_critical_dimensions(
+        rubric: dict[str, object],
+        dimensions: frozenset[str],
+        profile_id: str,
+    ) -> None:
+        missing = sorted(
+            name
+            for name in dimensions
+            if not isinstance(rubric.get(name), dict) or rubric[name].get("critical") is not True
+        )
+        if missing:
+            raise ValidationError(
+                "missing_critical_rubric_dimension",
+                f"Required critical rubric dimensions are missing: {', '.join(missing)}.",
+                {"profile": profile_id, "dimensions": missing},
+            )
+
     @staticmethod
     def _documents(directory: Path, required: set[str], kind: str) -> dict[str, dict[str, object]]:
         if not directory.exists():
@@ -112,6 +151,13 @@ class ProfileRegistry:
             identifier = document["id"]
             if not isinstance(identifier, str) or not identifier:
                 raise ValidationError("invalid_profile_document", f"Profile id must be a non-empty string: {path.name}")
+            required_critical = PROFILE_CRITICAL_RUBRIC.get(identifier)
+            if required_critical is not None:
+                ProfileRegistry._require_critical_dimensions(
+                    ProfileRegistry._object(document, "rubric"),
+                    required_critical,
+                    identifier,
+                )
             if identifier in documents:
                 raise ValidationError("duplicate_profile_id", f"Duplicate profile id: {identifier}")
             documents[identifier] = document
