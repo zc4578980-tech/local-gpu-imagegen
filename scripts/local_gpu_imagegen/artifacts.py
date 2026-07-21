@@ -89,6 +89,34 @@ def validate_png(path: Path, expected_width: int, expected_height: int) -> dict[
     }
 
 
+def validate_mask_png(path: Path, expected_width: int, expected_height: int) -> dict[str, object]:
+    """Validate an 8-bit grayscale PNG used as a deterministic inpaint mask."""
+    metadata = validate_png(path, expected_width, expected_height)
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(26)
+    except OSError as error:
+        raise ArtifactError(
+            "invalid_mask_image",
+            "Mask image cannot be read.",
+            {"path": str(path)},
+        ) from error
+    if (
+        len(header) != 26
+        or header[:8] != PNG_SIGNATURE
+        or struct.unpack(">I", header[8:12])[0] != 13
+        or header[12:16] != b"IHDR"
+        or header[24] != 8
+        or header[25] != 0
+    ):
+        raise ArtifactError(
+            "invalid_mask_image",
+            "Mask image must be an 8-bit grayscale PNG.",
+            {"path": str(path)},
+        )
+    return metadata
+
+
 def _parse_png(
     stream: BinaryIO,
     digest: "hashlib._Hash",
