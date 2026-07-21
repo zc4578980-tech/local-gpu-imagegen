@@ -35,6 +35,29 @@ TEST_ENDPOINT = "endpoint:test"
 TEST_IDENTITY = "model:" + "a" * 64
 
 
+def visual_checks(*, limb_status: str = "pass") -> dict[str, object]:
+    return {
+        "full_resolution_inspected": True,
+        "prominent_human": True,
+        "limb_separation": {
+            "status": limb_status,
+            "observation": "Both leg silhouettes were inspected at full resolution.",
+        },
+        "feet_and_contact": {
+            "status": "pass",
+            "observation": "Both feet and contact points are distinct.",
+        },
+        "hands_and_held_objects": {
+            "status": "pass",
+            "observation": "Both hands are distinct from held objects.",
+        },
+        "text_and_watermarks": {
+            "status": "pass",
+            "observation": "No text or watermark is visible.",
+        },
+    }
+
+
 def _chunk(kind: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(data, zlib.crc32(kind)) & 0xFFFFFFFF)
 
@@ -433,7 +456,16 @@ class AssetRunEngineTests(unittest.TestCase):
             upscale_policy=upscale_policy,
         ))
 
-    def review(self, run_id: str, round_number: int, score: int = 4, hard_failures: list[str] | None = None) -> dict[str, object]:
+    def review(
+        self,
+        run_id: str,
+        round_number: int,
+        score: int = 4,
+        hard_failures: list[str] | None = None,
+        *,
+        next_action: str = "finalize",
+        limb_status: str = "pass",
+    ) -> dict[str, object]:
         rubric = self.engine.get_run({"run_id": run_id})["request"]["merged_profile"]["rubric"]
         return self.engine.record_review({
             "run_id": run_id,
@@ -446,9 +478,31 @@ class AssetRunEngineTests(unittest.TestCase):
                     "width": {"status": "pass", "observation": "Width matches."},
                     "height": {"status": "pass", "observation": "Height matches."},
                 },
-                "next_action": "finalize",
+                "visual_checks": visual_checks(limb_status=limb_status),
+                "next_action": next_action,
             },
         })
+
+    def restarted_engine(self) -> AssetRunEngine:
+        return AssetRunEngine(
+            self.registry,
+            RunStore(self.output_root),
+            self.runner,
+            lambda: self.capabilities,
+            self.postprocessor,
+            catalog=self.catalog,
+            router=self.router,
+            compilers=self.compilers,
+        )
+
+    def finalization_confirmation(self, run_id: str) -> str:
+        run = self.engine.get_run({"run_id": run_id})
+        candidate = run.get("finalization_candidate")
+        self.assertIsInstance(candidate, dict)
+        assert isinstance(candidate, dict)
+        confirmation = candidate.get("confirmation")
+        self.assertIsInstance(confirmation, str)
+        return str(confirmation)
 
     def test_list_profiles_injects_capabilities_without_mutating_registry(self) -> None:
         catalog_before = self.engine.registry.list_catalog()
@@ -1262,6 +1316,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Keep the reviewed original.",
+            "confirmation": self.finalization_confirmation(run_id),
         })
 
         self.assertEqual(self.postprocessor.available_calls, 0)
@@ -1286,6 +1341,7 @@ class AssetRunEngineTests(unittest.TestCase):
                         "run_id": run_id,
                         "round_number": 1,
                         "summary": f"Invalid request {index}.",
+                        "confirmation": self.finalization_confirmation(run_id),
                         "postprocess": postprocess,
                     })
                 self.assertEqual(raised.exception.code, "invalid_postprocess")
@@ -1301,6 +1357,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 "run_id": run_id,
                 "round_number": 1,
                 "summary": "Upscale is disabled.",
+                "confirmation": self.finalization_confirmation(run_id),
                 "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
             })
 
@@ -1319,6 +1376,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 "run_id": run_id,
                 "round_number": 1,
                 "summary": "Style is not anime.",
+                "confirmation": self.finalization_confirmation(run_id),
                 "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
             })
 
@@ -1335,6 +1393,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Publish the faithful 4x result.",
+            "confirmation": self.finalization_confirmation(run_id),
             "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
         })
 
@@ -1364,6 +1423,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Retain the original when unavailable.",
+            "confirmation": self.finalization_confirmation(run_id),
             "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
         })
 
@@ -1391,6 +1451,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Retain the original after failure.",
+            "confirmation": self.finalization_confirmation(run_id),
             "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
         })
 
@@ -1422,6 +1483,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Fall back from directory residue.",
+            "confirmation": self.finalization_confirmation(run_id),
             "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
         })
 
@@ -1461,6 +1523,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Fall back without traversing junctions.",
+            "confirmation": self.finalization_confirmation(run_id),
             "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
         })
 
@@ -1502,6 +1565,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 "run_id": run_id,
                 "round_number": 1,
                 "summary": "Persist a sanitized cleanup warning.",
+                "confirmation": self.finalization_confirmation(run_id),
                 "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
             })
 
@@ -1527,6 +1591,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Retain the original after capability failure.",
+            "confirmation": self.finalization_confirmation(run_id),
             "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
         })
 
@@ -1553,6 +1618,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Restore the immutable original.",
+            "confirmation": self.finalization_confirmation(run_id),
             "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
         })
 
@@ -1582,6 +1648,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Restore the original after a source directory replacement.",
+            "confirmation": self.finalization_confirmation(run_id),
             "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
         })
 
@@ -1622,6 +1689,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Restore the original without traversing a source junction.",
+            "confirmation": self.finalization_confirmation(run_id),
             "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
         })
 
@@ -1669,6 +1737,7 @@ class AssetRunEngineTests(unittest.TestCase):
                     "run_id": run_id,
                     "round_number": 1,
                     "summary": "Keep diagnostic truth when source recovery is blocked.",
+                    "confirmation": self.finalization_confirmation(run_id),
                     "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
                 })
 
@@ -1704,6 +1773,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 "run_id": run_id,
                 "round_number": 1,
                 "summary": "Keep exact final artifact names.",
+                "confirmation": self.finalization_confirmation(run_id),
                 "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
             })
 
@@ -1719,6 +1789,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 1,
             "summary": "Publish and clean intermediates.",
+            "confirmation": self.finalization_confirmation(run_id),
             "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
         })
 
@@ -1732,17 +1803,109 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(cleaned["final"]["postprocess"]["source"]["path"], "final.png")
         self.assertEqual(cleaned["final"]["postprocess"]["output"]["path"], "final-upscaled.png")
 
+    def test_eligible_review_returns_candidate_not_acceptance(self) -> None:
+        started = self.start(max_rounds=2)
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id, max_rounds=2))
+
+        reviewed = self.review(run_id, 1)
+
+        candidate = reviewed["finalization_candidate"]
+        self.assertEqual(candidate["quality_status"], "candidate")
+        self.assertEqual(candidate["image_sha256"], reviewed["rounds"][0]["image"]["sha256"])
+        self.assertNotIn("accepted", json.dumps(candidate))
+
+    def test_get_run_recovers_the_same_candidate_after_restart(self) -> None:
+        started = self.start(max_rounds=2)
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id, max_rounds=2))
+        reviewed = self.review(run_id, 1)
+
+        recovered = self.restarted_engine().get_run({"run_id": run_id})
+
+        self.assertEqual(recovered["finalization_candidate"], reviewed["finalization_candidate"])
+
+    def test_fused_anatomy_rejection_keeps_same_run_budget_and_has_no_candidate(self) -> None:
+        started = self.start(max_rounds=2)
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id, max_rounds=2))
+
+        reviewed = self.review(
+            run_id,
+            1,
+            score=2,
+            hard_failures=["severe_anatomy"],
+            next_action="refine",
+            limb_status="fail",
+        )
+
+        self.assertNotIn("finalization_candidate", reviewed)
+        self.assertEqual(
+            reviewed["recoverable_next_actions"],
+            ["generate_round:refine", "generate_round:explore"],
+        )
+        self.assertEqual(reviewed["request"]["max_rounds"], 2)
+        self.assertEqual(len(reviewed["rounds"]), 1)
+
+    def test_finalize_requires_exact_candidate_confirmation_before_copy(self) -> None:
+        started = self.start(max_rounds=2)
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id, max_rounds=2))
+        reviewed = self.review(run_id, 1)
+        run_root = self.output_root / "runs" / run_id
+        manifest_path = run_root / "manifest.json"
+        before = manifest_path.read_bytes()
+        exact = reviewed["finalization_candidate"]["confirmation"]
+
+        for confirmation in (None, "wrong", exact.replace(":1:", ":2:")):
+            arguments: dict[str, object] = {
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "Selected candidate.",
+            }
+            if confirmation is not None:
+                arguments["confirmation"] = confirmation
+
+            with self.subTest(confirmation=confirmation), self.assertRaisesRegex(
+                ValidationError,
+                "missing_argument|finalization_confirmation_mismatch",
+            ):
+                self.engine.finalize_run(arguments)
+
+            self.assertEqual(manifest_path.read_bytes(), before)
+            self.assertFalse((run_root / "final.png").exists())
+
+    def test_exact_candidate_confirmation_publishes_selected_bytes(self) -> None:
+        started = self.start(max_rounds=2)
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id, max_rounds=2))
+        reviewed = self.review(run_id, 1)
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Selected candidate.",
+            "confirmation": reviewed["finalization_candidate"]["confirmation"],
+        })
+
+        self.assertEqual(finalized["final"]["quality_status"], "accepted")
+        self.assertEqual(
+            finalized["final"]["image"]["sha256"],
+            reviewed["finalization_candidate"]["image_sha256"],
+        )
+
     def test_nominated_eligible_round_is_published_even_when_later_round_scores_higher(self) -> None:
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
-        self.review(run_id, 1, score=3)
+        first_review = self.review(run_id, 1, score=3)
         self.engine.generate_round(self.generate_arguments(run_id, key="refine-1", action="refine"))
         self.review(run_id, 2, score=5)
         finalized = self.engine.finalize_run({
             "run_id": run_id,
             "round_number": 1,
             "summary": "Nominated reviewed result.",
+            "confirmation": first_review["finalization_candidate"]["confirmation"],
         })
         run_root = self.output_root / "runs" / run_id
         self.assertEqual(finalized["final"]["round_number"], 1)
@@ -1751,39 +1914,53 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertTrue((run_root / "final.png").is_file())
         self.assertFalse((run_root / "final.pending.png").exists())
 
-    def test_nominated_ineligible_round_is_not_replaced_by_accepted_round(self) -> None:
+    def test_nominated_ineligible_round_cannot_use_an_accepted_round_confirmation(self) -> None:
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
         self.review(run_id, 1, score=5, hard_failures=["missing_subject"])
         self.engine.generate_round(self.generate_arguments(run_id, key="refine-1", action="refine"))
-        self.review(run_id, 2, score=5)
+        second_review = self.review(run_id, 2, score=5)
 
-        finalized = self.engine.finalize_run({
-            "run_id": run_id,
-            "round_number": 1,
-            "summary": "User nominated the first reviewed round.",
-        })
+        with self.assertRaisesRegex(ValidationError, "finalization_confirmation_mismatch"):
+            self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "User nominated the first reviewed round.",
+                "confirmation": second_review["finalization_candidate"]["confirmation"],
+            })
 
-        self.assertEqual(finalized["final"]["round_number"], 1)
-        self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
+        self.assertFalse((self.output_root / "runs" / run_id / "final.png").exists())
+        self.assertEqual(self.engine.get_run({"run_id": run_id})["state"], "reviewed")
 
     def test_early_finalize_accepts_eligible_round(self) -> None:
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
-        self.review(run_id, 1)
-        finalized = self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Accepted early."})
+        reviewed = self.review(run_id, 1)
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Accepted early.",
+            "confirmation": reviewed["finalization_candidate"]["confirmation"],
+        })
         self.assertEqual(finalized["final"]["quality_status"], "accepted")
 
-    def test_exhausted_custom_budget_marks_nominated_ineligible_round_for_user_review(self) -> None:
+    def test_exhausted_custom_budget_does_not_publish_an_ineligible_round(self) -> None:
         started = self.start(max_rounds=1)
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id, max_rounds=1))
         self.review(run_id, 1, score=5, hard_failures=["missing_subject"])
-        finalized = self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Budget exhausted."})
-        self.assertEqual(finalized["max_rounds"], 1)
-        self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
+        with self.assertRaisesRegex(ValidationError, "finalization_confirmation_mismatch"):
+            self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "Budget exhausted.",
+                "confirmation": f"finalize:{run_id}:1:{'a' * 64}",
+            })
+        recovered = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(recovered["request"]["max_rounds"], 1)
+        self.assertEqual(recovered["recoverable_next_actions"], ["get_run"])
 
     def test_bundled_profile_low_critical_score_needs_user_review(self) -> None:
         started = self.start(max_rounds=1)
@@ -1803,17 +1980,20 @@ class AssetRunEngineTests(unittest.TestCase):
                     "width": {"status": "pass", "observation": "Width matches."},
                     "height": {"status": "pass", "observation": "Height matches."},
                 },
+                "visual_checks": visual_checks(),
                 "next_action": "finalize",
             },
         })
 
-        finalized = self.engine.finalize_run({
-            "run_id": run_id,
-            "round_number": 1,
-            "summary": "Retain for user review.",
-        })
+        with self.assertRaisesRegex(ValidationError, "finalization_confirmation_mismatch"):
+            self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "Retain for user review.",
+                "confirmation": f"finalize:{run_id}:1:{'a' * 64}",
+            })
 
-        self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
+        self.assertFalse((self.output_root / "runs" / run_id / "final.png").exists())
 
     def test_intermediate_cleanup_lifecycle_prunes_references_and_completed_retry(self) -> None:
         started = self.start()
@@ -1827,8 +2007,13 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "run_not_finalized")
         self.assertTrue((run_root / "round-01.png").is_file())
 
-        self.review(run_id, 1)
-        self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Selected final."})
+        reviewed = self.review(run_id, 1)
+        self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Selected final.",
+            "confirmation": reviewed["finalization_candidate"]["confirmation"],
+        })
         self.engine.cleanup_run({"run_id": run_id, "scope": "intermediates", "confirmation": run_id})
 
         cleaned = self.engine.get_run({"run_id": run_id})
@@ -1851,20 +2036,26 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(len(self.runner.calls), calls_before_retry)
         self.assertEqual(self.engine.get_run({"run_id": run_id})["final"]["path"], "final.png")
 
-    def test_ineligible_nominated_round_finalizes_for_user_review_before_budget_is_exhausted(self) -> None:
+    def test_ineligible_nominated_round_stays_reviewed_before_budget_is_exhausted(self) -> None:
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
         self.review(run_id, 1, hard_failures=["missing_subject"])
 
-        finalized = self.engine.finalize_run({
-            "run_id": run_id,
-            "round_number": 1,
-            "summary": "User nominated an ineligible draft.",
-        })
+        with self.assertRaisesRegex(ValidationError, "finalization_confirmation_mismatch"):
+            self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "User nominated an ineligible draft.",
+                "confirmation": f"finalize:{run_id}:1:{'a' * 64}",
+            })
 
-        self.assertEqual(finalized["final"]["round_number"], 1)
-        self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
+        recovered = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(recovered["state"], "reviewed")
+        self.assertEqual(
+            recovered["recoverable_next_actions"],
+            ["generate_round:refine", "generate_round:explore"],
+        )
 
     def test_finalize_requires_strict_round_number_before_publication(self) -> None:
         cases = (
@@ -1890,7 +2081,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 self.assertFalse((self.output_root / "runs" / run_id / "final.png").exists())
 
     def test_unreviewed_or_nonexistent_nominated_round_is_rejected_before_publication(self) -> None:
-        for case, expected_code in (("unreviewed", "round_requires_review"), ("nonexistent", "round_not_found")):
+        for case in ("unreviewed", "nonexistent"):
             with self.subTest(case=case):
                 started = self.start()
                 run_id = started["run_id"]
@@ -1904,9 +2095,10 @@ class AssetRunEngineTests(unittest.TestCase):
                         "run_id": run_id,
                         "round_number": nominated_round,
                         "summary": "Invalid nominated round.",
+                        "confirmation": f"finalize:{run_id}:{nominated_round}:{'a' * 64}",
                     })
 
-                self.assertEqual(raised.exception.code, expected_code)
+                self.assertEqual(raised.exception.code, "finalization_confirmation_mismatch")
                 run_root = self.output_root / "runs" / run_id
                 self.assertFalse((run_root / "final.png").exists())
                 self.assertFalse((run_root / "final.pending.png").exists())
@@ -1915,7 +2107,8 @@ class AssetRunEngineTests(unittest.TestCase):
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
-        self.review(run_id, 1)
+        reviewed = self.review(run_id, 1)
+        confirmation = reviewed["finalization_candidate"]["confirmation"]
         with self.assertRaises(ValidationError) as raised:
             self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": " "})
         self.assertEqual(raised.exception.code, "invalid_final_summary")
@@ -1926,7 +2119,8 @@ class AssetRunEngineTests(unittest.TestCase):
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
-        self.review(run_id, 1)
+        reviewed = self.review(run_id, 1)
+        confirmation = reviewed["finalization_candidate"]["confirmation"]
         active = self.engine.store.begin_attempt(run_id, "refine-live-finalize", {
             "action": "refine",
             "seed": 42,
@@ -1936,7 +2130,12 @@ class AssetRunEngineTests(unittest.TestCase):
         run_root = self.output_root / "runs" / run_id
         try:
             with self.assertRaises(AssetEngineError) as raised:
-                self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Must wait."})
+                self.engine.finalize_run({
+                    "run_id": run_id,
+                    "round_number": 1,
+                    "summary": "Must wait.",
+                    "confirmation": confirmation,
+                })
             self.assertEqual(raised.exception.code, "run_busy")
             self.assertFalse((run_root / "final.png").exists())
             self.assertFalse((run_root / "final.pending.png").exists())
@@ -1947,12 +2146,18 @@ class AssetRunEngineTests(unittest.TestCase):
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
-        self.review(run_id, 1)
+        reviewed = self.review(run_id, 1)
+        confirmation = reviewed["finalization_candidate"]["confirmation"]
         self.engine.generate_round(self.generate_arguments(run_id, key="refine-unreviewed", action="refine"))
         run_root = self.output_root / "runs" / run_id
 
         with self.assertRaises(AssetEngineError) as raised:
-            self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Round one only."})
+            self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "Round one only.",
+                "confirmation": confirmation,
+            })
         self.assertEqual(raised.exception.code, "round_requires_review")
         self.assertFalse((run_root / "final.png").exists())
         self.assertFalse((run_root / "final.pending.png").exists())
@@ -1961,7 +2166,8 @@ class AssetRunEngineTests(unittest.TestCase):
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
-        self.review(run_id, 1)
+        reviewed = self.review(run_id, 1)
+        confirmation = reviewed["finalization_candidate"]["confirmation"]
         run_root = self.output_root / "runs" / run_id
         original_finalize = getattr(self.engine.store, "finalize_round_published", None)
 
@@ -1982,7 +2188,12 @@ class AssetRunEngineTests(unittest.TestCase):
             side_effect=complete_generation_then_finalize,
         ) as finalize_call:
             with self.assertRaises(AssetEngineError) as raised:
-                self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Raced selection."})
+                self.engine.finalize_run({
+                    "run_id": run_id,
+                    "round_number": 1,
+                    "summary": "Raced selection.",
+                    "confirmation": confirmation,
+                })
         self.assertEqual(finalize_call.call_count, 1)
         self.assertEqual(raised.exception.code, "round_requires_review")
         self.assertFalse((run_root / "final.png").exists())
@@ -2006,7 +2217,7 @@ class AssetRunEngineTests(unittest.TestCase):
                     run_id = started["run_id"]
                     engine.generate_round(self.generate_arguments(run_id))
                     rubric = engine.get_run({"run_id": run_id})["request"]["merged_profile"]["rubric"]
-                    engine.record_review({
+                    reviewed = engine.record_review({
                         "run_id": run_id,
                         "round_number": 1,
                         "review": {
@@ -2017,9 +2228,11 @@ class AssetRunEngineTests(unittest.TestCase):
                                 "width": {"status": "pass", "observation": "Width matches."},
                                 "height": {"status": "pass", "observation": "Height matches."},
                             },
+                            "visual_checks": visual_checks(),
                             "next_action": "finalize",
                         },
                     })
+                    confirmation = reviewed["finalization_candidate"]["confirmation"]
                     run_root = output_root / "runs" / run_id
                     if failure == "publisher":
                         (run_root / "final.png").write_bytes(b"prior-untracked-final")
@@ -2028,7 +2241,12 @@ class AssetRunEngineTests(unittest.TestCase):
                         context = patch("local_gpu_imagegen.run_store.atomic_write_json", side_effect=OSError("manifest failed"))
                     with context:
                         with self.assertRaises(OSError):
-                            engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Transactional final."})
+                            engine.finalize_run({
+                                "run_id": run_id,
+                                "round_number": 1,
+                                "summary": "Transactional final.",
+                                "confirmation": confirmation,
+                            })
                     if failure == "publisher":
                         self.assertEqual((run_root / "final.png").read_bytes(), b"prior-untracked-final")
                     else:
@@ -2040,7 +2258,8 @@ class AssetRunEngineTests(unittest.TestCase):
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
-        self.review(run_id, 1)
+        reviewed = self.review(run_id, 1)
+        confirmation = reviewed["finalization_candidate"]["confirmation"]
         copied = threading.Event()
         continue_winner = threading.Event()
         winner_results: list[dict[str, object]] = []
@@ -2059,6 +2278,7 @@ class AssetRunEngineTests(unittest.TestCase):
                     "run_id": run_id,
                     "round_number": 1,
                     "summary": "Winner.",
+                    "confirmation": confirmation,
                 }))
             except BaseException as error:
                 winner_errors.append(error)
@@ -2069,7 +2289,12 @@ class AssetRunEngineTests(unittest.TestCase):
             self.assertTrue(copied.wait(timeout=5))
             try:
                 with self.assertRaises(AssetEngineError) as raised:
-                    self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Loser."})
+                    self.engine.finalize_run({
+                        "run_id": run_id,
+                        "round_number": 1,
+                        "summary": "Loser.",
+                        "confirmation": confirmation,
+                    })
                 self.assertEqual(raised.exception.code, "run_busy")
             finally:
                 continue_winner.set()
@@ -2085,7 +2310,7 @@ class AssetRunEngineTests(unittest.TestCase):
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
-        self.review(run_id, 1)
+        reviewed = self.review(run_id, 1)
         run_root = self.output_root / "runs" / run_id
         (run_root / "final.png").write_bytes(b"prior-final-for-diagnosis")
         original_unlink = Path.unlink
@@ -2100,6 +2325,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 "run_id": run_id,
                 "round_number": 1,
                 "summary": "Committed despite cleanup.",
+                "confirmation": reviewed["finalization_candidate"]["confirmation"],
             })
 
         self.assertEqual(finalized["state"], "finalized")

@@ -380,6 +380,26 @@ class AnimeVerticalSliceTests(unittest.TestCase):
                         "observation": "The retained image matches the confirmed height.",
                     },
                 },
+                "visual_checks": {
+                    "full_resolution_inspected": True,
+                    "prominent_human": True,
+                    "limb_separation": {
+                        "status": "pass",
+                        "observation": "Both leg silhouettes are independently readable.",
+                    },
+                    "feet_and_contact": {
+                        "status": "pass",
+                        "observation": "Both feet and their contact points are readable.",
+                    },
+                    "hands_and_held_objects": {
+                        "status": "pass",
+                        "observation": "Hands remain distinct from held objects.",
+                    },
+                    "text_and_watermarks": {
+                        "status": "pass",
+                        "observation": "No text or watermark is visible.",
+                    },
+                },
                 "next_action": next_action,
             },
         })
@@ -485,6 +505,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
             "run_id": run_id,
             "round_number": 2,
             "summary": "Round 2 nominated: detail issue resolved while preserving the approved composition.",
+            "confirmation": second_review["finalization_candidate"]["confirmation"],
             "postprocess": {"type": "anime_upscale", "model": UPSCALE_MODEL},
         })
         manifest = engine.get_run({"run_id": run_id})
@@ -629,13 +650,14 @@ class AnimeVerticalSliceTests(unittest.TestCase):
                     summary="Preserve: confirmed brief. Change: create one candidate.",
                 )
                 self._assert_preview_evidence(engine, run_id, 1, warning_preview)
-                self._review(engine, run_id, 1, detail_quality=4, next_action="finalize")
+                reviewed = self._review(engine, run_id, 1, detail_quality=4, next_action="finalize")
                 backend_calls_before_finalize = len(runner.calls)
 
                 finalized = engine.finalize_run({
                     "run_id": run_id,
                     "round_number": 1,
                     "summary": "Retain the reviewed original if optional upscaling cannot complete.",
+                    "confirmation": reviewed["finalization_candidate"]["confirmation"],
                     "postprocess": {"type": "anime_upscale", "model": UPSCALE_MODEL},
                 })
                 run_root = Path(engine.store.output_root) / "runs" / run_id

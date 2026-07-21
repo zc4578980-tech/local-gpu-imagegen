@@ -166,6 +166,14 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
                 name: {"status": "pass", "observation": f"Fixture retained {name}."}
                 for name in manifest["request"]["constraints"]
             },
+            "visual_checks": {
+                "full_resolution_inspected": True,
+                "prominent_human": False,
+                "limb_separation": {"status": "not_applicable", "observation": "Fixture pixels contain no human."},
+                "feet_and_contact": {"status": "not_applicable", "observation": "Fixture pixels contain no human."},
+                "hands_and_held_objects": {"status": "not_applicable", "observation": "Fixture pixels contain no human."},
+                "text_and_watermarks": {"status": "pass", "observation": "Fixture pixels contain no text."},
+            },
             "next_action": "finalize",
         }
         if preservation_targets is not None:
@@ -219,11 +227,12 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
                 parent_id = self._start(engine, brief, max_rounds=2)
                 _, preview = self._generate(engine, brief, parent_id, edit_mode="txt2img")
                 self.assertIsNotNone(preview)
-                self._review(engine, parent_id)
+                parent_review = self._review(engine, parent_id)
                 finalized = engine.finalize_run({
                     "run_id": parent_id,
                     "round_number": 1,
                     "summary": "Publish the reviewed model-free fixture candidate.",
+                    "confirmation": parent_review["finalization_candidate"]["confirmation"],
                 })
                 parent = self._assert_round_evidence(engine, parent_id, preview)
                 self.assertEqual(parent["request"]["profile"], brief["profile"])
@@ -285,11 +294,12 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
                     edit_mode=edit_mode,
                     mask_id=mask_id,
                 )
-                self._review(engine, child_id, preservation_targets=preserve_targets)
+                child_review = self._review(engine, child_id, preservation_targets=preserve_targets)
                 child_finalized = engine.finalize_run({
                     "run_id": child_id,
                     "round_number": 1,
                     "summary": "Publish the preserved model-free revision fixture.",
+                    "confirmation": child_review["finalization_candidate"]["confirmation"],
                 })
                 self._assert_round_evidence(engine, child_id, child_preview)
                 self.assertEqual(child_finalized["final"]["quality_status"], "accepted")

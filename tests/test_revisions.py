@@ -151,6 +151,14 @@ class RevisionServiceTests(unittest.TestCase):
                 "constraint_results": {
                     "aspect_ratio": {"status": "pass", "observation": "Wide ratio retained."},
                 },
+                "visual_checks": {
+                    "full_resolution_inspected": True,
+                    "prominent_human": False,
+                    "limb_separation": {"status": "not_applicable", "observation": "No human is present."},
+                    "feet_and_contact": {"status": "not_applicable", "observation": "No human is present."},
+                    "hands_and_held_objects": {"status": "not_applicable", "observation": "No human is present."},
+                    "text_and_watermarks": {"status": "pass", "observation": "No text is visible."},
+                },
                 "next_action": "finalize",
             })
             manifest["state"] = "reviewed"
@@ -259,6 +267,14 @@ class RevisionServiceTests(unittest.TestCase):
             "critique": "Revision inspected against the confirmed preserve/change contract.",
             "constraint_results": {
                 "aspect_ratio": {"status": "pass", "observation": "Wide ratio retained."},
+            },
+            "visual_checks": {
+                "full_resolution_inspected": True,
+                "prominent_human": False,
+                "limb_separation": {"status": "not_applicable", "observation": "No human is present."},
+                "feet_and_contact": {"status": "not_applicable", "observation": "No human is present."},
+                "hands_and_held_objects": {"status": "not_applicable", "observation": "No human is present."},
+                "text_and_watermarks": {"status": "pass", "observation": "No text is visible."},
             },
             "next_action": "finalize",
             "preservation_results": preservation_results,

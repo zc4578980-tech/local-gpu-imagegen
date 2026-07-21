@@ -17,7 +17,12 @@ from pathlib import Path
 
 from .artifacts import atomic_write_json, ensure_within, sha256_file, validate_json_serializable
 from .errors import ArtifactError, AssetEngineError, ConflictError, StateError, ValidationError
-from .visual_review import review_is_eligible, validate_visual_checks, visual_checks_pass
+from .visual_review import (
+    require_finalization_confirmation,
+    review_is_eligible,
+    validate_visual_checks,
+    visual_checks_pass,
+)
 
 
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$")
@@ -488,6 +493,7 @@ class RunStore:
         run_id: str,
         round_number: int,
         summary: str,
+        confirmation: str,
         publish: Callable[[dict[str, object]], dict[str, object]],
         rollback: Callable[[], object],
         commit: Callable[[], object] | None = None,
@@ -508,6 +514,7 @@ class RunStore:
         published = False
         try:
             manifest = self._read_manifest(run_id)
+            require_finalization_confirmation(manifest, round_number, confirmation)
             self._select_final_round(manifest, round_number, summary)
             selected = self._round_by_number(manifest, round_number)
             if selected is None:

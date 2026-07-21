@@ -25,6 +25,11 @@ from .postprocess import (
 from .profile_registry import ProfileRegistry
 from .revisions import RevisionService
 from .run_store import AttemptHandle, RunStore
+from .visual_review import (
+    finalization_candidate,
+    require_finalization_confirmation,
+    review_is_eligible,
+)
 
 
 BackendRunner = Callable[[dict[str, object]], dict[str, object]]
@@ -131,7 +136,7 @@ class AssetRunEngine:
         arguments = _arguments(arguments)
         run_id = _required(arguments, "run_id", str)
         manifest = self.store.get(run_id)
-        return {**manifest, "recoverable_next_actions": recoverable_next_actions(manifest)}
+        return _review_response(manifest)
 
     def branch_run(self, arguments: dict[str, object]) -> dict[str, object]:
         return self.revisions.branch(arguments)
@@ -375,7 +380,7 @@ class AssetRunEngine:
         round_number = _required(arguments, "round_number", int, reject_bool=True)
         review = _required(arguments, "review", dict)
         manifest = self.store.record_review(run_id, round_number, review)
-        return {**manifest, "recoverable_next_actions": recoverable_next_actions(manifest)}
+        return _review_response(manifest)
 
     def finalize_run(self, arguments: dict[str, object]) -> dict[str, object]:
         arguments = _arguments(arguments)
@@ -386,9 +391,11 @@ class AssetRunEngine:
         summary = _required(arguments, "summary", str)
         if not summary.strip() or len(summary.strip()) > 2000:
             raise ValidationError("invalid_final_summary", "Final summary must be non-empty and concise.")
+        confirmation = _required(arguments, "confirmation", str)
+        manifest = self.store.get(run_id)
+        require_finalization_confirmation(manifest, round_number, confirmation)
         postprocess = _postprocess_request(arguments.get("postprocess")) if "postprocess" in arguments else None
         if postprocess is not None:
-            manifest = self.store.get(run_id)
             request = manifest.get("request")
             if not isinstance(request, dict):
                 raise ArtifactError("corrupt_manifest", "Manifest request must be an object.")
@@ -571,6 +578,7 @@ class AssetRunEngine:
             run_id,
             round_number,
             summary,
+            confirmation,
             publish,
             rollback,
             commit,
@@ -711,9 +719,7 @@ def recoverable_next_actions(manifest: dict[str, object]) -> list[str]:
     max_rounds = request.get("max_rounds") if isinstance(request, dict) else None
     if isinstance(rounds, list) and _exact_int(max_rounds) and len(rounds) < max_rounds:
         actions.extend(("generate_round:refine", "generate_round:explore"))
-    elif not actions and isinstance(rounds, list) and rounds:
-        actions.append("finalize_run")
-    return actions
+    return actions or ["get_run"]
 
 
 def _arguments(value: object) -> dict[str, object]:
@@ -1296,15 +1302,7 @@ def _reviews_by_round(manifest: dict[str, object]) -> dict[int, dict[str, object
 
 
 def _is_eligible(manifest: dict[str, object], review: dict[str, object]) -> bool:
-    failures = review.get("hard_failures")
-    scores = review.get("scores")
-    request = manifest.get("request")
-    merged = request.get("merged_profile") if isinstance(request, dict) else None
-    rubric = merged.get("rubric") if isinstance(merged, dict) else None
-    if not isinstance(failures, list) or not isinstance(scores, dict) or not isinstance(rubric, dict):
-        raise ArtifactError("corrupt_manifest", "Stored review eligibility data is invalid.")
-    critical = [name for name, specification in rubric.items() if isinstance(specification, dict) and specification.get("critical") is True]
-    return not failures and all(_exact_int(scores.get(name)) and scores[name] >= 3 for name in critical)
+    return review_is_eligible(manifest, review)
 
 
 def _eligible_candidates(manifest: dict[str, object]) -> list[dict[str, object]]:
@@ -1319,3 +1317,18 @@ def _eligible_candidates(manifest: dict[str, object]) -> list[dict[str, object]]
         and round_value["round_number"] in reviews
         and _is_eligible(manifest, reviews[int(round_value["round_number"])])
     ]
+
+
+def _review_response(manifest: dict[str, object]) -> dict[str, object]:
+    response = {
+        **manifest,
+        "recoverable_next_actions": recoverable_next_actions(manifest),
+    }
+    candidates = _eligible_candidates(manifest)
+    if candidates:
+        round_number = candidates[-1].get("round_number")
+        if isinstance(round_number, int) and not isinstance(round_number, bool):
+            candidate = finalization_candidate(manifest, round_number)
+            if candidate is not None:
+                response["finalization_candidate"] = candidate
+    return response
