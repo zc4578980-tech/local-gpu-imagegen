@@ -13,7 +13,7 @@
   "use_cases": ["standalone-illustration"],
   "styles": ["anime"],
   "recommended": {
-    "resolution": {"width": 256, "height": 256},
+    "resolution": {"width": 512, "height": 288},
     "steps": 12,
     "guidance": 6.5,
     "sampler": "euler",

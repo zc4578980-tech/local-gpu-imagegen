@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
+import io
 import json
+import math
 import shutil
 import struct
 import sys
@@ -25,11 +28,11 @@ from local_gpu_imagegen.run_store import RunStore  # noqa: E402
 
 MODEL_ID = "test/approved-anime"
 UPSCALE_MODEL = "realesrgan-x4plus-anime"
-ROUND_HASHES = (
-    "43c5bea8871e178dcce3742fbde7c234025091fb5d09e779399fc68bc3f42a55",
-    "57ea58cd59c96e9900dfe281a72a5528ed2e814c1ad31216c54b9bd74c4c6ff3",
-)
-UPSCALED_HASH = "5428a45356c97dbbffc7c823e5eae898e1dac315e16e7754769bf0fe729dd5d9"
+IMAGE_WIDTH = 512
+IMAGE_HEIGHT = 288
+UPSCALE_FACTOR = 4
+ROUND_PIXELS = (b"\x24\x48\x90", b"\x30\x80\xc0")
+UPSCALED_PIXEL = b"\x50\xa0\xe0"
 BRIEF_PATH = ROOT / "tests" / "fixtures" / "briefs" / "standalone-anime-character.json"
 MODEL_PATH = ROOT / "tests" / "fixtures" / "models" / "approved-test-anime.json"
 
@@ -62,6 +65,10 @@ def _png_bytes(width: int, height: int, pixel: bytes) -> bytes:
     )
 
 
+def _png_hash(width: int, height: int, pixel: bytes) -> str:
+    return hashlib.sha256(_png_bytes(width, height, pixel)).hexdigest()
+
+
 class FakeBackendRunner:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
@@ -72,16 +79,17 @@ class FakeBackendRunner:
             Path(arguments[arguments.index("--output-dir") + 1])
             / arguments[arguments.index("--filename") + 1]
         )
-        pixels = (b"\x24\x48\x90", b"\x30\x80\xc0")
-        output.write_bytes(_png_bytes(256, 256, pixels[len(self.calls) - 1]))
+        width = int(arguments[arguments.index("--width") + 1])
+        height = int(arguments[arguments.index("--height") + 1])
+        output.write_bytes(_png_bytes(width, height, ROUND_PIXELS[len(self.calls) - 1]))
         result = {
             "ok": True,
             "path": str(output),
             "backend": arguments[arguments.index("--backend") + 1],
             "mode": arguments[arguments.index("--mode") + 1],
             "seed": int(arguments[arguments.index("--seed") + 1]),
-            "width": int(arguments[arguments.index("--width") + 1]),
-            "height": int(arguments[arguments.index("--height") + 1]),
+            "width": width,
+            "height": height,
             "model": arguments[arguments.index("--model") + 1],
         }
         return 0, json.dumps(result), ""
@@ -102,9 +110,15 @@ class FakePostprocessor:
         self.upscale_calls.append((source, destination, model))
         if self.fail:
             raise AssetEngineError("postprocess_failed", "Synthetic adapter failure.", "postprocess")
-        destination.write_bytes(_png_bytes(1024, 1024, b"\x50\xa0\xe0"))
-        source_metadata = validate_png(source, 256, 256)
-        output_metadata = validate_png(destination, 1024, 1024)
+        from PIL import Image
+
+        with Image.open(source) as image:
+            source_dimensions = image.size
+            image.verify()
+        source_metadata = validate_png(source, *source_dimensions)
+        output_dimensions = tuple(dimension * UPSCALE_FACTOR for dimension in source_dimensions)
+        destination.write_bytes(_png_bytes(*output_dimensions, UPSCALED_PIXEL))
+        output_metadata = validate_png(destination, *output_dimensions)
         source_metadata["path"] = str(source)
         output_metadata["path"] = str(destination)
         return {
@@ -165,16 +179,31 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         self.assertEqual(started["max_rounds"], max_rounds)
         return str(started["run_id"])
 
-    def _plan(self, *, max_rounds: int, parameters: dict[str, object]) -> dict[str, object]:
+    def _plan(
+        self,
+        *,
+        action: str,
+        max_rounds: int,
+        parameters: dict[str, object],
+    ) -> dict[str, object]:
+        refining = action == "refine"
         return {
             "profile": self.brief["profile"],
             "style": self.brief["style"],
             "intent": self.brief["user_request"],
             "positive_prompt": (
-                "lone engineer overlooking a neon coastal city at dawn, anime key visual"
+                "lone engineer overlooking a neon coastal city at dawn, anime key visual, "
+                + ("crisp engineering details" if refining else "strong establishing composition")
             ),
-            "negative_prompt": "generated text, watermark, extra limbs, broken hands",
-            "constraints": {**self.brief["constraints"], "width": 256, "height": 256},
+            "negative_prompt": (
+                "generated text, watermark, extra limbs, broken hands"
+                + (", indistinct engineering details" if refining else "")
+            ),
+            "constraints": {
+                **self.brief["constraints"],
+                "width": IMAGE_WIDTH,
+                "height": IMAGE_HEIGHT,
+            },
             "model_choice": MODEL_ID,
             "backend": "webui",
             "parameters": parameters,
@@ -191,21 +220,81 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         key: str,
         max_rounds: int,
         summary: str,
-    ) -> tuple[dict[str, object], object]:
+    ) -> tuple[dict[str, object], object, dict[str, object]]:
         parameters = (
             {"mode": "txt2img", "scheduler": "euler"}
             if action == "initial"
             else {"steps": 12, "guidance_scale": 6.5}
         )
-        return engine.generate_round({
+        arguments: dict[str, object] = {
             "run_id": run_id,
             "idempotency_key": key,
             "action": action,
             "edit_mode": "txt2img",
             "seed": 42,
             "change_summary": summary,
-            "plan": self._plan(max_rounds=max_rounds, parameters=parameters),
+            "plan": self._plan(action=action, max_rounds=max_rounds, parameters=parameters),
+        }
+        expected_plan = copy.deepcopy(arguments["plan"])
+        result, preview = engine.generate_round(arguments)
+
+        plan = arguments["plan"]
+        assert isinstance(plan, dict)
+        constraints = plan["constraints"]
+        parameters_value = plan["parameters"]
+        assert isinstance(constraints, dict) and isinstance(parameters_value, dict)
+        plan.update({
+            "profile": "mutated-profile",
+            "style": None,
+            "intent": "mutated intent",
+            "positive_prompt": "mutated prompt",
+            "negative_prompt": "mutated negative prompt",
+            "model_choice": "mutated/model",
+            "backend": "diffusers",
+            "max_rounds": 1,
+            "upscale_policy": "off",
         })
+        constraints.clear()
+        constraints.update({"aspect_ratio": "1:1", "generated_text": True})
+        parameters_value.clear()
+        parameters_value["steps"] = 99
+        arguments.update({
+            "action": "explore",
+            "seed": 999,
+            "change_summary": "Mutated after submission.",
+        })
+        return result, preview, expected_plan
+
+    def _assert_preview_evidence(
+        self,
+        engine: AssetRunEngine,
+        run_id: str,
+        round_number: int,
+        preview: object,
+    ) -> None:
+        manifest = engine.get_run({"run_id": run_id})
+        stored = manifest["rounds"][round_number - 1]["preview"]
+        run_root = Path(engine.store.output_root) / "runs" / run_id
+        preview_path = run_root / stored["path"]
+        payload = base64.b64decode(preview.data_base64, validate=True)
+
+        self.assertEqual(preview.mime_type, "image/jpeg")
+        self.assertEqual(stored["mime_type"], "image/jpeg")
+        self.assertEqual(preview.path.resolve(), preview_path.resolve())
+        self.assertEqual(payload, preview_path.read_bytes())
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), stored["sha256"])
+        self.assertLessEqual(len(payload), MAX_PREVIEW_BYTES)
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(payload)) as image:
+            self.assertEqual(image.format, "JPEG")
+            dimensions = image.size
+            image.verify()
+        self.assertEqual(dimensions, (preview.width, preview.height))
+        self.assertEqual(dimensions, (stored["width"], stored["height"]))
+        self.assertEqual(dimensions, (IMAGE_WIDTH, IMAGE_HEIGHT))
+        self.assertLessEqual(max(dimensions), 768)
 
     def _review(
         self,
@@ -218,6 +307,15 @@ class AnimeVerticalSliceTests(unittest.TestCase):
     ) -> dict[str, object]:
         manifest = engine.get_run({"run_id": run_id})
         rubric = manifest["request"]["merged_profile"]["rubric"]
+        image = manifest["rounds"][round_number - 1]["image"]
+        run_root = Path(engine.store.output_root) / "runs" / run_id
+        validated = validate_png(run_root / image["path"], image["width"], image["height"])
+        divisor = math.gcd(validated["width"], validated["height"])
+        self.assertEqual(
+            (validated["width"] // divisor, validated["height"] // divisor),
+            (16, 9),
+            "aspect_ratio cannot pass unless the retained PNG is exactly 16:9",
+        )
         scores = {name: 4 for name in rubric}
         scores["detail_quality"] = detail_quality
         return engine.record_review({
@@ -266,7 +364,13 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         production_catalog = ProfileRegistry(ROOT / "profiles").list_catalog()
         self.assertNotIn(MODEL_ID, production_catalog["models"])
         self.assertIn(MODEL_ID, ProfileRegistry(self.registry_root).list_catalog()["models"])
-        publishable_roots = (ROOT / "profiles", ROOT / "scripts", ROOT / "skills")
+        publishable_roots = (
+            ROOT / "profiles",
+            ROOT / "scripts",
+            ROOT / "skills",
+            ROOT / "docs",
+            ROOT / "references",
+        )
         publishable_files = [
             path
             for directory in publishable_roots
@@ -289,7 +393,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         self.assertEqual(engine.get_run({"run_id": run_id})["recoverable_next_actions"], ["generate_round"])
 
         initial_summary = "Preserve: confirmed brief. Change: create the initial candidate."
-        initial, initial_preview = self._generate(
+        initial, initial_preview, expected_initial_plan = self._generate(
             engine,
             run_id,
             action="initial",
@@ -300,7 +404,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         self.assertEqual(initial["state"], "generated")
         self.assertEqual(initial["recoverable_next_actions"], ["record_review"])
         self.assertIsNotNone(initial_preview.path)
-        self.assertLessEqual(len(base64.b64decode(initial_preview.data_base64)), MAX_PREVIEW_BYTES)
+        self._assert_preview_evidence(engine, run_id, 1, initial_preview)
         first_review = self._review(
             engine,
             run_id,
@@ -317,7 +421,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         refine_summary = (
             "Preserve: composition, subject, and seed. Change: improve small engineering details."
         )
-        refined, refined_preview = self._generate(
+        refined, refined_preview, expected_refine_plan = self._generate(
             engine,
             run_id,
             action="refine",
@@ -328,7 +432,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         self.assertEqual(refined["state"], "generated")
         self.assertEqual(refined["recoverable_next_actions"], ["record_review"])
         self.assertIsNotNone(refined_preview.path)
-        self.assertLessEqual(len(base64.b64decode(refined_preview.data_base64)), MAX_PREVIEW_BYTES)
+        self._assert_preview_evidence(engine, run_id, 2, refined_preview)
         second_review = self._review(
             engine,
             run_id,
@@ -347,6 +451,13 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         })
         manifest = engine.get_run({"run_id": run_id})
         run_root = Path(engine.store.output_root) / "runs" / run_id
+        round_hashes = tuple(
+            _png_hash(IMAGE_WIDTH, IMAGE_HEIGHT, pixel)
+            for pixel in ROUND_PIXELS
+        )
+        upscaled_width = IMAGE_WIDTH * UPSCALE_FACTOR
+        upscaled_height = IMAGE_HEIGHT * UPSCALE_FACTOR
+        upscaled_hash = _png_hash(upscaled_width, upscaled_height, UPSCALED_PIXEL)
 
         self.assertEqual(finalized["state"], "finalized")
         self.assertEqual(finalized["recoverable_next_actions"], ["get_run", "cleanup_run"])
@@ -387,22 +498,34 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         self.assertEqual([value["registry_metadata"] for value in manifest["rounds"]], [registry_metadata] * 2)
         self.assertEqual(manifest["request"]["model_record"], self.model_fixture)
         self.assertEqual(
-            [value["generation_plan"]["parameters"] for value in manifest["rounds"]],
-            [{"mode": "txt2img", "scheduler": "euler"}, {"steps": 12, "guidance_scale": 6.5}],
+            [value["generation_plan"] for value in manifest["rounds"]],
+            [expected_initial_plan, expected_refine_plan],
+        )
+        self.assertEqual(
+            [value["generation_plan"] for value in manifest["attempts"]],
+            [expected_initial_plan, expected_refine_plan],
+        )
+        self.assertEqual(
+            {
+                field
+                for field in expected_initial_plan
+                if expected_initial_plan[field] != expected_refine_plan[field]
+            },
+            {"positive_prompt", "negative_prompt", "parameters"},
         )
 
         for index, round_value in enumerate(manifest["rounds"], start=1):
             expected_image = f"round-{index:02d}.png"
             expected_preview = f"round-{index:02d}-preview.jpg"
             self.assertEqual(round_value["image"]["path"], expected_image)
-            self.assertEqual(round_value["image"]["sha256"], ROUND_HASHES[index - 1])
+            self.assertEqual(round_value["image"]["sha256"], round_hashes[index - 1])
             self.assertEqual(round_value["preview"]["path"], expected_preview)
             self.assertEqual(
                 round_value["preview"]["sha256"],
                 hashlib.sha256((run_root / expected_preview).read_bytes()).hexdigest(),
             )
             self.assertLessEqual((run_root / expected_preview).stat().st_size, MAX_PREVIEW_BYTES)
-            validate_png(run_root / expected_image, 256, 256)
+            validate_png(run_root / expected_image, IMAGE_WIDTH, IMAGE_HEIGHT)
 
         self.assertEqual(len(runner.calls), 2)
         self.assertEqual([call[call.index("--seed") + 1] for call in runner.calls], ["42", "42"])
@@ -411,7 +534,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         self.assertEqual(manifest["final"]["round_number"], 2)
         self.assertEqual(manifest["final"]["quality_status"], "accepted")
         self.assertEqual(manifest["final"]["image"]["path"], "final.png")
-        self.assertEqual(manifest["final"]["image"]["sha256"], ROUND_HASHES[1])
+        self.assertEqual(manifest["final"]["image"]["sha256"], round_hashes[1])
         self.assertEqual(manifest["final"]["path"], "final-upscaled.png")
         self.assertEqual(manifest["final"]["postprocess"], {
             "type": "anime_upscale",
@@ -420,23 +543,26 @@ class AnimeVerticalSliceTests(unittest.TestCase):
             "scale": 4,
             "source": {
                 "path": "final.png",
-                "width": 256,
-                "height": 256,
+                "width": IMAGE_WIDTH,
+                "height": IMAGE_HEIGHT,
                 "mime_type": "image/png",
-                "sha256": ROUND_HASHES[1],
+                "sha256": round_hashes[1],
             },
             "output": {
                 "path": "final-upscaled.png",
-                "width": 1024,
-                "height": 1024,
+                "width": upscaled_width,
+                "height": upscaled_height,
                 "mime_type": "image/png",
-                "sha256": UPSCALED_HASH,
+                "sha256": upscaled_hash,
             },
         })
-        self.assertEqual(hashlib.sha256((run_root / "final.png").read_bytes()).hexdigest(), ROUND_HASHES[1])
+        self.assertEqual(
+            hashlib.sha256((run_root / "final.png").read_bytes()).hexdigest(),
+            round_hashes[1],
+        )
         self.assertEqual(
             hashlib.sha256((run_root / "final-upscaled.png").read_bytes()).hexdigest(),
-            UPSCALED_HASH,
+            upscaled_hash,
         )
         self.assertEqual(finalized["full_image_path"], str((run_root / "final-upscaled.png").resolve()))
 
@@ -447,7 +573,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
                 adapter = FakePostprocessor(available=available, fail=fail)
                 engine, runner, _ = self._engine(f"warning-{expected_status}", postprocessor=adapter)
                 run_id = self._start(engine, max_rounds=1)
-                self._generate(
+                _, warning_preview, _ = self._generate(
                     engine,
                     run_id,
                     action="initial",
@@ -455,6 +581,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
                     max_rounds=1,
                     summary="Preserve: confirmed brief. Change: create one candidate.",
                 )
+                self._assert_preview_evidence(engine, run_id, 1, warning_preview)
                 self._review(engine, run_id, 1, detail_quality=4, next_action="finalize")
                 backend_calls_before_finalize = len(runner.calls)
 
@@ -470,12 +597,13 @@ class AnimeVerticalSliceTests(unittest.TestCase):
                 self.assertEqual(len(runner.calls), 1)
                 self.assertEqual(finalized["final"]["quality_status"], "accepted")
                 self.assertEqual(finalized["final"]["path"], "final.png")
-                self.assertEqual(finalized["final"]["image"]["sha256"], ROUND_HASHES[0])
+                expected_hash = _png_hash(IMAGE_WIDTH, IMAGE_HEIGHT, ROUND_PIXELS[0])
+                self.assertEqual(finalized["final"]["image"]["sha256"], expected_hash)
                 self.assertEqual(finalized["final"]["postprocess"]["status"], expected_status)
                 self.assertIn(f"postprocess_{expected_status}", finalized["warnings"])
                 self.assertEqual(
                     hashlib.sha256((run_root / "final.png").read_bytes()).hexdigest(),
-                    ROUND_HASHES[0],
+                    expected_hash,
                 )
                 self.assertFalse((run_root / "final-upscaled.png").exists())
                 self.assertFalse((run_root / "final-upscaled.pending.png").exists())
