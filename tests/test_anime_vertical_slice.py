@@ -38,6 +38,12 @@ MODEL_PATH = ROOT / "tests" / "fixtures" / "models" / "approved-test-anime.json"
 LOCAL_PLANNING_ROOT = ROOT / "docs" / "superpowers"
 
 
+def install_fixture_registry(destination: Path) -> None:
+    shutil.copytree(ROOT / "profiles", destination)
+    model_fixture = json.loads(MODEL_PATH.read_text(encoding="utf-8"))
+    (destination / "models" / MODEL_PATH.name).write_text(json.dumps(model_fixture), encoding="utf-8")
+
+
 def _chunk(kind: bytes, data: bytes) -> bytes:
     checksum = zlib.crc32(data, zlib.crc32(kind)) & 0xFFFFFFFF
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
@@ -140,9 +146,7 @@ class AnimeVerticalSliceTests(unittest.TestCase):
         self.brief = json.loads(BRIEF_PATH.read_text(encoding="utf-8"))
         self.model_fixture = json.loads(MODEL_PATH.read_text(encoding="utf-8"))
         self.registry_root = self.temporary_root / "registry"
-        shutil.copytree(ROOT / "profiles", self.registry_root)
-        overlay_model = self.registry_root / "models" / MODEL_PATH.name
-        overlay_model.write_text(json.dumps(self.model_fixture), encoding="utf-8")
+        install_fixture_registry(self.registry_root)
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()

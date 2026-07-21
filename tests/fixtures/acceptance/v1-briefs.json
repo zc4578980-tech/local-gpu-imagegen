@@ -1,0 +1,86 @@
+[
+  {
+    "id": "illustration-character",
+    "profile": "standalone-illustration",
+    "style": "anime",
+    "subtype": "character",
+    "brief": "Anime character key visual of a lone engineer on a coastal observatory at dawn; no text.",
+    "aspect_ratio": "16:9",
+    "revision": {
+      "preserve": ["subject identity", "composition"],
+      "change": "soften the neon background"
+    }
+  },
+  {
+    "id": "illustration-environment",
+    "profile": "standalone-illustration",
+    "style": "anime",
+    "subtype": "environment",
+    "brief": "Anime environment concept of a quiet solar-powered fishing harbor after rain; no people or text.",
+    "aspect_ratio": "16:9"
+  },
+  {
+    "id": "illustration-wallpaper",
+    "profile": "standalone-illustration",
+    "style": "anime",
+    "subtype": "wallpaper",
+    "brief": "Wide anime wallpaper of a moonlit train following a rugged coastline, with clean negative space in the upper left.",
+    "aspect_ratio": "16:9"
+  },
+  {
+    "id": "presentation-cover",
+    "profile": "presentation-visual",
+    "style": "anime",
+    "subtype": "cover",
+    "brief": "Launch presentation cover visual: future coastal city at sunrise, quiet right side for a title, no baked text.",
+    "aspect_ratio": "16:9",
+    "revision": {
+      "preserve": ["city silhouette", "right-side safe area"],
+      "change": "reduce neon intensity"
+    }
+  },
+  {
+    "id": "presentation-section",
+    "profile": "presentation-visual",
+    "style": null,
+    "subtype": "section",
+    "brief": "Clean section-divider visual about local AI infrastructure, centered focal object and dark left-side text-safe area.",
+    "aspect_ratio": "16:9"
+  },
+  {
+    "id": "presentation-background",
+    "profile": "presentation-visual",
+    "style": null,
+    "subtype": "content-background",
+    "brief": "Restrained technology presentation background with subtle depth, broad central content-safe area, and no generated text.",
+    "aspect_ratio": "16:9"
+  },
+  {
+    "id": "ui-hero",
+    "profile": "ui-visual-asset",
+    "style": "anime",
+    "subtype": "hero",
+    "brief": "Website hero visual for a local creative AI tool, subject on the right and clean copy-safe space on the left; no controls or text.",
+    "aspect_ratio": "16:9",
+    "revision": {
+      "preserve": ["subject placement", "left copy-safe area"],
+      "change": "make the lighting calmer"
+    }
+  },
+  {
+    "id": "ui-section",
+    "profile": "ui-visual-asset",
+    "style": "anime",
+    "subtype": "section-illustration",
+    "brief": "Compact section illustration of an artist and local GPU workstation, crop-safe with no interface labels.",
+    "aspect_ratio": "4:3"
+  },
+  {
+    "id": "ui-background",
+    "profile": "ui-visual-asset",
+    "style": null,
+    "subtype": "rectangular-background",
+    "brief": "Rectangular green-and-charcoal abstract background for a desktop app header, edge-safe and without controls, icons, or text.",
+    "aspect_ratio": "3:1"
+  }
+]
