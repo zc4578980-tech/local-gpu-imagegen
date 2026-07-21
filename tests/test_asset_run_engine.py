@@ -1158,6 +1158,128 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256((run_root / "final.png").read_bytes()).hexdigest(), original_hash)
         self.assertEqual(finalized["final"]["image"]["sha256"], original_hash)
 
+    def test_failed_postprocess_restores_original_after_source_becomes_directory(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        self.postprocessor.failure = AssetEngineError(
+            "postprocess_failed",
+            "Synthetic source directory replacement.",
+            "postprocess",
+        )
+
+        def replace_source_with_directory(source: Path, destination: Path) -> None:
+            source.unlink()
+            source.mkdir()
+
+        self.postprocessor.failure_artifact_writer = replace_source_with_directory
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+        original_hash = hashlib.sha256((run_root / "round-01.png").read_bytes()).hexdigest()
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Restore the original after a source directory replacement.",
+            "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+        })
+
+        serialized = json.dumps(finalized)
+        restored = run_root / "final.png"
+        self.assertEqual(finalized["state"], "finalized")
+        self.assertIn("postprocess_failed", finalized["warnings"])
+        self.assertEqual(finalized["final"]["path"], "final.png")
+        self.assertTrue(restored.is_file())
+        self.assertEqual(hashlib.sha256(restored.read_bytes()).hexdigest(), original_hash)
+        self.assertEqual(finalized["final"]["image"]["sha256"], original_hash)
+        restored_metadata = validate_png(restored, 256, 256)
+        self.assertEqual((restored_metadata["width"], restored_metadata["height"]), (256, 256))
+        self.assertNotIn("PermissionError", serialized)
+
+    def test_failed_postprocess_restores_original_after_source_becomes_junction(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        self.postprocessor.failure = AssetEngineError(
+            "postprocess_failed",
+            "Synthetic source junction replacement.",
+            "postprocess",
+        )
+        target = Path(self.temporary_directory.name) / "source-junction-target"
+        target.mkdir()
+        sentinel = target / "keep.txt"
+        sentinel.write_text("external target", encoding="utf-8")
+
+        def replace_source_with_junction(source: Path, destination: Path) -> None:
+            source.unlink()
+            create_directory_alias(source, target)
+
+        self.postprocessor.failure_artifact_writer = replace_source_with_junction
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+        original_hash = hashlib.sha256((run_root / "round-01.png").read_bytes()).hexdigest()
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Restore the original without traversing a source junction.",
+            "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+        })
+
+        serialized = json.dumps(finalized)
+        restored = run_root / "final.png"
+        self.assertEqual(finalized["state"], "finalized")
+        self.assertIn("postprocess_failed", finalized["warnings"])
+        self.assertEqual(finalized["final"]["path"], "final.png")
+        self.assertTrue(restored.is_file())
+        self.assertEqual(hashlib.sha256(restored.read_bytes()).hexdigest(), original_hash)
+        self.assertEqual(finalized["final"]["image"]["sha256"], original_hash)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "external target")
+        self.assertNotIn("PermissionError", serialized)
+
+    def test_nonremovable_source_junction_returns_sanitized_failure(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        self.postprocessor.failure = AssetEngineError(
+            "postprocess_failed",
+            "Synthetic nonremovable source junction.",
+            "postprocess",
+        )
+        target = Path(self.temporary_directory.name) / "nonremovable-source-target"
+        target.mkdir()
+        sentinel = target / "keep.txt"
+        sentinel.write_text("external target", encoding="utf-8")
+
+        def replace_source_with_junction(source: Path, destination: Path) -> None:
+            source.unlink()
+            create_directory_alias(source, target)
+
+        self.postprocessor.failure_artifact_writer = replace_source_with_junction
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+        manifest_before = self.engine.get_run({"run_id": run_id})
+        original_rmdir = os.rmdir
+
+        def deny_source_cleanup(path: object, *args: object, **kwargs: object) -> None:
+            if Path(path).name == "final.png":
+                raise PermissionError("private source cleanup location")
+            original_rmdir(path, *args, **kwargs)
+
+        with patch("local_gpu_imagegen.postprocess.os.rmdir", side_effect=deny_source_cleanup):
+            with self.assertRaises(AssetEngineError) as raised:
+                self.engine.finalize_run({
+                    "run_id": run_id,
+                    "round_number": 1,
+                    "summary": "Keep diagnostic truth when source recovery is blocked.",
+                    "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+                })
+
+        serialized = json.dumps({"code": raised.exception.code, "details": raised.exception.details})
+        manifest_after = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(raised.exception.code, "postprocess_failed")
+        self.assertEqual(raised.exception.details.get("cleanup_warning"), "postprocess_cleanup_failed")
+        self.assertNotIn("PermissionError", serialized)
+        self.assertNotIn("private source cleanup location", serialized)
+        self.assertEqual(manifest_after["manifest_revision"], manifest_before["manifest_revision"])
+        self.assertEqual(manifest_after.get("final"), manifest_before.get("final"))
+        self.assertTrue(os.path.lexists(run_root / "final.png"))
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "external target")
+
     def test_postprocess_pending_alias_resolution_cannot_delete_original_final(self) -> None:
         self.postprocessor.models = ["realesrgan-x4plus-anime"]
         self.postprocessor.failure = AssetEngineError(

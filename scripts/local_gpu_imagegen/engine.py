@@ -263,11 +263,27 @@ class AssetRunEngine:
                 model = str(postprocess["model"])
                 cleanup_warnings: list[str] = []
 
+                def note_cleanup_failure() -> None:
+                    if POSTPROCESS_CLEANUP_WARNING not in cleanup_warnings:
+                        cleanup_warnings.append(POSTPROCESS_CLEANUP_WARNING)
+
                 def clean_postprocess_artifact(path: Path) -> bool:
                     removed = remove_postprocess_artifact(path)
-                    if not removed and POSTPROCESS_CLEANUP_WARNING not in cleanup_warnings:
-                        cleanup_warnings.append(POSTPROCESS_CLEANUP_WARNING)
+                    if not removed:
+                        note_cleanup_failure()
                     return removed
+
+                def raise_sanitized_restore_failure(error: Exception) -> None:
+                    note_cleanup_failure()
+                    if isinstance(error, AssetEngineError):
+                        error.details = {**error.details, "cleanup_warning": POSTPROCESS_CLEANUP_WARNING}
+                        raise error
+                    raise AssetEngineError(
+                        "postprocess_failed",
+                        "Anime postprocessor source recovery failed.",
+                        "postprocess",
+                        {"reason": "source_restore_failed", "cleanup_warning": POSTPROCESS_CLEANUP_WARNING},
+                    ) from error
 
                 try:
                     cleanup_results = [
@@ -316,10 +332,24 @@ class AssetRunEngine:
                         and POSTPROCESS_CLEANUP_WARNING not in cleanup_warnings
                     ):
                         cleanup_warnings.append(POSTPROCESS_CLEANUP_WARNING)
-                    pending_path.unlink(missing_ok=True)
-                    shutil.copyfile(source_path, pending_path)
-                    validate_png(pending_path, width, height)
-                    os.replace(pending_path, final_path)
+                    if not clean_postprocess_artifact(pending_path):
+                        raise_sanitized_restore_failure(error)
+                    try:
+                        shutil.copyfile(source_path, pending_path)
+                        restored = validate_png(pending_path, width, height)
+                    except (AssetEngineError, OSError):
+                        raise_sanitized_restore_failure(error)
+                    if restored.get("sha256") != source.get("sha256"):
+                        raise_sanitized_restore_failure(error)
+                    if not clean_postprocess_artifact(final_path):
+                        raise_sanitized_restore_failure(error)
+                    try:
+                        os.replace(pending_path, final_path)
+                        restored = validate_png(final_path, width, height)
+                    except (AssetEngineError, OSError):
+                        raise_sanitized_restore_failure(error)
+                    if restored.get("sha256") != source.get("sha256"):
+                        raise_sanitized_restore_failure(error)
                     code = error.code if isinstance(error, AssetEngineError) else "postprocess_failed"
                     unavailable = code == "postprocess_unavailable"
                     primary_warning = "postprocess_unavailable" if unavailable else "postprocess_failed"
@@ -335,11 +365,15 @@ class AssetRunEngine:
             remove_postprocess_artifact(upscaled_pending_path)
             if postprocess is not None:
                 remove_postprocess_artifact(upscaled_path)
-            if final_published:
-                final_path.unlink(missing_ok=True)
-            pending_path.unlink(missing_ok=True)
-            if backup_created and backup_path.exists():
-                os.replace(backup_path, final_path)
+            final_removed = True
+            if final_published or backup_created:
+                final_removed = remove_postprocess_artifact(final_path)
+            remove_postprocess_artifact(pending_path)
+            if backup_created and final_removed:
+                try:
+                    os.replace(backup_path, final_path)
+                except OSError:
+                    pass
 
         def commit() -> None:
             backup_path.unlink(missing_ok=True)
