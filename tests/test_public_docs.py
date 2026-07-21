@@ -27,7 +27,7 @@ class PublicDocumentationTests(unittest.TestCase):
             "`max_rounds` must be from `1` through `3`",
             "`outputs/runs/<run_id>/manifest.json`",
             "`round-01.png`",
-            "`round-01.preview.jpg`",
+            "`round-01-preview.jpg`",
             "`final.png`",
             "`idempotency_key`",
             "`recoverable_next_actions`",

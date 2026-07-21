@@ -16,6 +16,7 @@ from .backend_contract import validate_backend_result
 from .errors import ArtifactError, AssetEngineError, ConflictError, StateError, ValidationError
 from .generation_plan import validate_confirmed_run_request, validate_generation_plan
 from .preview import MAX_PREVIEW_BYTES, PreviewResult, create_preview
+from .postprocess import RealEsrganAdapter, SUPPORTED_MODELS
 from .profile_registry import ProfileRegistry
 from .run_store import AttemptHandle, RunStore
 
@@ -31,16 +32,23 @@ class AssetRunEngine:
         store: RunStore,
         backend_runner: BackendRunner,
         capability_provider: CapabilityProvider,
+        postprocessor: RealEsrganAdapter | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
         self.backend_runner = backend_runner
         self.capability_provider = capability_provider
+        self.postprocessor = postprocessor if postprocessor is not None else RealEsrganAdapter.from_environment()
 
     def list_profiles(self) -> dict[str, object]:
+        capabilities = copy.deepcopy(self.capability_provider())
+        models = sorted(self.postprocessor.available_models())
+        capabilities["postprocessors"] = {
+            "anime_upscale": {"available": bool(models), "models": models},
+        }
         return {
             **self.registry.list_catalog(),
-            "capabilities": copy.deepcopy(self.capability_provider()),
+            "capabilities": capabilities,
         }
 
     def start_run(self, arguments: dict[str, object]) -> dict[str, object]:
@@ -161,7 +169,7 @@ class AssetRunEngine:
                 backend_result["path"] = final_path.name
                 self.store.mark_attempt_image(handle, image_metadata, backend_result)
 
-            preview_path = final_path.with_suffix(".preview.jpg")
+            preview_path = _preferred_preview_path(final_path)
             preview = create_preview(final_path, preview_path)
             preview_metadata = _preview_metadata(preview, run_root)
             warnings = [preview.warning] if preview.warning is not None else []
@@ -198,15 +206,34 @@ class AssetRunEngine:
         summary = _required(arguments, "summary", str)
         if not summary.strip() or len(summary.strip()) > 2000:
             raise ValidationError("invalid_final_summary", "Final summary must be non-empty and concise.")
+        postprocess = _postprocess_request(arguments.get("postprocess")) if "postprocess" in arguments else None
+        if postprocess is not None:
+            manifest = self.store.get(run_id)
+            request = manifest.get("request")
+            if not isinstance(request, dict):
+                raise ArtifactError("corrupt_manifest", "Manifest request must be an object.")
+            if request.get("upscale_policy") == "off":
+                raise ValidationError(
+                    "postprocess_disabled",
+                    "Anime postprocessing is disabled by the confirmed upscale policy.",
+                )
+            if request.get("style") != "anime":
+                raise ValidationError(
+                    "postprocess_requires_anime_style",
+                    "Anime postprocessing requires the confirmed anime style.",
+                )
         run_root = self._run_root(run_id)
         pending_path = ensure_within(run_root, run_root / "final.pending.png")
         final_path = ensure_within(run_root, run_root / "final.png")
+        upscaled_path = run_root / "final-upscaled.png"
+        upscaled_pending_path = run_root / "final-upscaled.pending.png"
         backup_path = ensure_within(run_root, run_root / f".final.rollback.{secrets.token_hex(8)}.png")
         backup_created = False
         final_published = False
+        postprocess_outcome: dict[str, object] | None = None
 
         def publish(selected: dict[str, object]) -> dict[str, object]:
-            nonlocal backup_created, final_published
+            nonlocal backup_created, final_published, postprocess_outcome
             image = selected.get("image")
             if not isinstance(image, dict):
                 raise ArtifactError("invalid_image_metadata", "Selected round has no full image metadata.")
@@ -227,9 +254,51 @@ class AssetRunEngine:
             final_published = True
             final_image = copy.deepcopy(source)
             final_image["path"] = final_path.name
+            if postprocess is not None:
+                model = str(postprocess["model"])
+                upscaled_pending_path.unlink(missing_ok=True)
+                upscaled_path.unlink(missing_ok=True)
+                try:
+                    available_models = sorted(self.postprocessor.available_models())
+                    if model not in available_models:
+                        postprocess_outcome = {
+                            "type": "anime_upscale",
+                            "status": "unavailable",
+                            "model": model,
+                            "warning": "postprocess_unavailable",
+                        }
+                    else:
+                        result = self.postprocessor.upscale(final_path, upscaled_path, model)
+                        postprocess_outcome = _final_postprocess_metadata(
+                            result,
+                            run_root,
+                            final_image,
+                            final_path,
+                            upscaled_path,
+                            model,
+                        )
+                except Exception as error:
+                    upscaled_path.unlink(missing_ok=True)
+                    pending_path.unlink(missing_ok=True)
+                    shutil.copyfile(source_path, pending_path)
+                    validate_png(pending_path, width, height)
+                    os.replace(pending_path, final_path)
+                    code = error.code if isinstance(error, AssetEngineError) else "postprocess_failed"
+                    unavailable = code == "postprocess_unavailable"
+                    postprocess_outcome = {
+                        "type": "anime_upscale",
+                        "status": "unavailable" if unavailable else "failed",
+                        "model": model,
+                        "warning": "postprocess_unavailable" if unavailable else "postprocess_failed",
+                    }
+                finally:
+                    upscaled_pending_path.unlink(missing_ok=True)
             return final_image
 
         def rollback() -> None:
+            upscaled_pending_path.unlink(missing_ok=True)
+            if postprocess is not None:
+                upscaled_path.unlink(missing_ok=True)
             if final_published:
                 final_path.unlink(missing_ok=True)
             pending_path.unlink(missing_ok=True)
@@ -239,6 +308,20 @@ class AssetRunEngine:
         def commit() -> None:
             backup_path.unlink(missing_ok=True)
 
+        def decorate_manifest(value: dict[str, object]) -> None:
+            if postprocess_outcome is None:
+                return
+            final = value.get("final")
+            if not isinstance(final, dict):
+                raise ArtifactError("corrupt_manifest", "Final selection metadata is missing.")
+            outcome = copy.deepcopy(postprocess_outcome)
+            warning = outcome.pop("warning", None)
+            final["postprocess"] = outcome
+            if outcome.get("status") == "completed":
+                final["path"] = "final-upscaled.png"
+            if isinstance(warning, str):
+                _extend_manifest_warnings(value, [warning])
+
         finalized = self.store.finalize_round_published(
             run_id,
             round_number,
@@ -246,14 +329,20 @@ class AssetRunEngine:
             publish,
             rollback,
             commit,
+            decorate_manifest=decorate_manifest if postprocess is not None else None,
         )
         request = finalized.get("request", {})
         max_rounds = request.get("max_rounds") if isinstance(request, dict) else None
+        final = finalized.get("final")
+        delivered_path = final.get("path") if isinstance(final, dict) else final_path.name
+        if not isinstance(delivered_path, str):
+            raise ArtifactError("corrupt_manifest", "Final artifact path is invalid.")
+        resolved_delivery = ensure_within(run_root, run_root / delivered_path)
         return {
             **finalized,
             "ok": True,
             "max_rounds": max_rounds,
-            "full_image_path": str(final_path.resolve()),
+            "full_image_path": str(resolved_delivery),
             "recoverable_next_actions": recoverable_next_actions(finalized),
         }
 
@@ -309,7 +398,7 @@ class AssetRunEngine:
         image_path = ensure_within(run_root, run_root / str(retained["path"]))
         preview = _load_retained_preview(round_value, run_root, image_path)
         if preview is None:
-            preview = create_preview(image_path, image_path.with_suffix(".preview.jpg"))
+            preview = create_preview(image_path, _preferred_preview_path(image_path))
             preview_value = _preview_metadata(preview, run_root)
             warnings = [preview.warning] if preview.warning is not None else []
 
@@ -386,6 +475,69 @@ def _arguments(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValidationError("invalid_argument_type", "Tool arguments must be an object.", {"field": "arguments"})
     return value
+
+
+def _postprocess_request(value: object) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != {"type", "model"}:
+        raise ValidationError(
+            "invalid_postprocess",
+            "postprocess must contain exactly type and model.",
+        )
+    postprocess_type = value.get("type")
+    model = value.get("model")
+    if postprocess_type != "anime_upscale" or not isinstance(model, str) or model not in SUPPORTED_MODELS:
+        raise ValidationError(
+            "invalid_postprocess",
+            "postprocess must request anime_upscale with a supported model.",
+            {"allowed_models": sorted(SUPPORTED_MODELS)},
+        )
+    return {"type": postprocess_type, "model": model}
+
+
+def _final_postprocess_metadata(
+    result: object,
+    run_root: Path,
+    final_image: dict[str, object],
+    source_path: Path,
+    output_path: Path,
+    model: str,
+) -> dict[str, object]:
+    if (
+        not isinstance(result, dict)
+        or result.get("type") != "anime_upscale"
+        or result.get("model") != model
+        or result.get("scale") != 4
+    ):
+        raise ArtifactError("invalid_postprocess_result", "Postprocessor returned invalid metadata.")
+    for field, expected in (("source", source_path), ("output", output_path)):
+        metadata = result.get(field)
+        path_value = metadata.get("path") if isinstance(metadata, dict) else None
+        if not isinstance(path_value, str):
+            raise ArtifactError("invalid_postprocess_result", "Postprocessor artifact metadata is incomplete.")
+        candidate = Path(path_value)
+        if not candidate.is_absolute():
+            candidate = run_root / candidate
+        if ensure_within(run_root, candidate) != expected:
+            raise ArtifactError("invalid_postprocess_result", "Postprocessor artifact path is invalid.")
+
+    width = final_image.get("width")
+    height = final_image.get("height")
+    if not _exact_int(width) or not _exact_int(height) or width <= 0 or height <= 0:
+        raise ArtifactError("invalid_image_metadata", "Final image dimensions are invalid.")
+    source = validate_png(source_path, width, height)
+    output = validate_png(output_path, width * 4, height * 4)
+    if source.get("sha256") != final_image.get("sha256"):
+        raise ArtifactError("image_hash_mismatch", "Postprocessor changed the immutable final source image.")
+    source["path"] = source_path.relative_to(run_root).as_posix()
+    output["path"] = output_path.relative_to(run_root).as_posix()
+    return {
+        "type": "anime_upscale",
+        "status": "completed",
+        "model": model,
+        "scale": 4,
+        "source": source,
+        "output": output,
+    }
 
 
 def _engine_profile(merged: dict[str, object]) -> dict[str, object]:
@@ -621,6 +773,10 @@ def _preview_metadata(preview: PreviewResult, run_root: Path) -> dict[str, objec
         "height": preview.height,
         "sha256": sha256_file(path),
     }
+
+
+def _preferred_preview_path(image_path: Path) -> Path:
+    return image_path.with_name(f"{image_path.stem}-preview.jpg")
 
 
 def _load_retained_preview(

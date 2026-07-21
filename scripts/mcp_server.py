@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from local_gpu_imagegen.errors import AssetEngineError
+from local_gpu_imagegen.postprocess import SUPPORTED_MODELS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -183,6 +184,7 @@ def get_asset_engine() -> Any:
     global _asset_engine
     if _asset_engine is None:
         from local_gpu_imagegen.engine import AssetRunEngine
+        from local_gpu_imagegen.postprocess import RealEsrganAdapter
         from local_gpu_imagegen.profile_registry import ProfileRegistry
         from local_gpu_imagegen.run_store import RunStore
 
@@ -193,6 +195,7 @@ def get_asset_engine() -> Any:
             store,
             lambda args: run_script("generate_image.py", args),
             get_capabilities,
+            RealEsrganAdapter.from_environment(),
         )
     return _asset_engine
 
@@ -401,6 +404,10 @@ def tool_schema() -> list[dict[str, Any]]:
                 "run_id": {"type": "string", "minLength": 1},
                 "round_number": {"type": "integer", "minimum": 1, "maximum": 3},
                 "summary": {"type": "string", "minLength": 1},
+                "postprocess": _object_schema({
+                    "type": {"type": "string", "enum": ["anime_upscale"]},
+                    "model": {"type": "string", "enum": sorted(SUPPORTED_MODELS)},
+                }, ["type", "model"]),
             }, ["run_id", "round_number", "summary"]),
             "outputSchema": _output_schema({
                 **run_manifest_properties,
@@ -462,6 +469,47 @@ def schema_type_matches(value: object, schema_type: object) -> bool:
     if schema_type == "object":
         return isinstance(value, dict)
     return False
+
+
+def _validate_nested_object(field: str, value: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any] | None:
+    properties = schema.get("properties", {})
+    unknown = sorted(set(value) - set(properties))
+    if unknown:
+        fields = [f"{field}.{name}" for name in unknown]
+        return tool_error(
+            "unknown_argument",
+            "validation",
+            f"Unknown nested tool argument(s): {', '.join(fields)}.",
+            {"fields": fields},
+        )
+    for name in schema.get("required", []):
+        if name not in value:
+            nested_field = f"{field}.{name}"
+            return tool_error(
+                "missing_argument",
+                "validation",
+                f"postprocess requires {name}.",
+                {"field": nested_field},
+            )
+    for name, nested_value in value.items():
+        nested_schema = properties[name]
+        expected_type = nested_schema.get("type")
+        nested_field = f"{field}.{name}"
+        if expected_type and not schema_type_matches(nested_value, expected_type):
+            return tool_error(
+                "invalid_argument_type",
+                "validation",
+                f"{nested_field} must be a JSON {expected_type}.",
+                {"field": nested_field, "expectedType": expected_type},
+            )
+        if "enum" in nested_schema and nested_value not in nested_schema["enum"]:
+            return tool_error(
+                "invalid_argument_value",
+                "validation",
+                f"{nested_field} is not supported.",
+                {"field": nested_field, "allowed": nested_schema["enum"]},
+            )
+    return None
 
 
 def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any] | None:
@@ -545,6 +593,13 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
                     f"{field} must be an array of {item_type}s.",
                     {"field": field, "itemType": item_type},
                 )
+
+    if tool["name"] == "local_gpu_finalize_run" and "postprocess" in arguments:
+        postprocess = arguments["postprocess"]
+        assert isinstance(postprocess, dict)
+        nested_error = _validate_nested_object("postprocess", postprocess, properties["postprocess"])
+        if nested_error is not None:
+            return nested_error
 
     if tool["name"] == "local_gpu_start_run":
         approved_model_ids = _approved_model_ids()

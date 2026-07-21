@@ -475,10 +475,16 @@ class RunStore:
         publish: Callable[[dict[str, object]], dict[str, object]],
         rollback: Callable[[], object],
         commit: Callable[[], object] | None = None,
+        decorate_manifest: Callable[[dict[str, object]], object] | None = None,
     ) -> dict[str, object]:
         """Validate and publish the caller-nominated reviewed round under one run lock."""
         self._validate_final_summary(summary)
-        if not callable(publish) or not callable(rollback) or commit is not None and not callable(commit):
+        if (
+            not callable(publish)
+            or not callable(rollback)
+            or commit is not None and not callable(commit)
+            or decorate_manifest is not None and not callable(decorate_manifest)
+        ):
             raise ValidationError("invalid_final_publisher", "Final publication callbacks must be callable.")
 
         run_root = self._run_root(run_id)
@@ -499,6 +505,9 @@ class RunStore:
                     raise ArtifactError("corrupt_manifest", "Final selection metadata is missing.")
                 final["image"] = copy.deepcopy(validated_image)
                 final["path"] = validated_image["path"]
+                if decorate_manifest is not None:
+                    decorate_manifest(manifest)
+                validate_json_serializable(manifest)
                 revision = manifest.get("manifest_revision")
                 if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
                     raise ArtifactError("corrupt_manifest", "Manifest revision is invalid.", {"run_id": run_id})
@@ -1375,41 +1384,57 @@ class RunStore:
     def _final_paths(self, run_root: Path, manifest: dict[str, object]) -> set[Path]:
         final = manifest.get("final")
         if isinstance(final, str):
-            path_value = final
+            path_values = {final}
         elif isinstance(final, dict) and isinstance(final.get("path"), str):
-            path_value = final["path"]
+            path_values = {final["path"]}
+            image = final.get("image")
+            if isinstance(image, dict) and isinstance(image.get("path"), str):
+                path_values.add(image["path"])
+            postprocess = final.get("postprocess")
+            if isinstance(postprocess, dict) and postprocess.get("status") == "completed":
+                for field in ("source", "output"):
+                    metadata = postprocess.get(field)
+                    if not isinstance(metadata, dict) or not isinstance(metadata.get("path"), str):
+                        raise ArtifactError(
+                            "invalid_final_artifact",
+                            "Completed postprocess metadata must identify every retained final artifact.",
+                        )
+                    path_values.add(metadata["path"])
         else:
             raise ArtifactError(
                 "invalid_final_artifact",
                 "Final metadata must identify a retained artifact path.",
             )
 
-        candidate = Path(path_value)
-        if not candidate.is_absolute():
-            candidate = run_root / candidate
-        resolved = ensure_within(self.output_root, candidate)
-        if resolved != run_root and run_root not in resolved.parents:
-            raise ArtifactError(
-                "path_outside_output_root",
-                "Final artifact path escapes its run directory.",
-                {"path": str(resolved)},
-            )
-        try:
-            final_stat = os.stat(candidate, follow_symlinks=False)
-            link_like = _path_is_link_like(candidate)
-        except OSError as error:
-            raise ArtifactError(
-                "invalid_final_artifact",
-                "Final artifact must be a retained regular file.",
-                {"path": str(candidate)},
-            ) from error
-        if link_like or not stat.S_ISREG(final_stat.st_mode):
-            raise ArtifactError(
-                "invalid_final_artifact",
-                "Final artifact must be a retained regular file.",
-                {"path": str(candidate)},
-            )
-        return {resolved}
+        resolved_paths: set[Path] = set()
+        for path_value in path_values:
+            candidate = Path(path_value)
+            if not candidate.is_absolute():
+                candidate = run_root / candidate
+            resolved = ensure_within(self.output_root, candidate)
+            if resolved != run_root and run_root not in resolved.parents:
+                raise ArtifactError(
+                    "path_outside_output_root",
+                    "Final artifact path escapes its run directory.",
+                    {"path": str(resolved)},
+                )
+            try:
+                final_stat = os.stat(candidate, follow_symlinks=False)
+                link_like = _path_is_link_like(candidate)
+            except OSError as error:
+                raise ArtifactError(
+                    "invalid_final_artifact",
+                    "Final artifact must be a retained regular file.",
+                    {"path": str(candidate)},
+                ) from error
+            if link_like or not stat.S_ISREG(final_stat.st_mode):
+                raise ArtifactError(
+                    "invalid_final_artifact",
+                    "Final artifact must be a retained regular file.",
+                    {"path": str(candidate)},
+                )
+            resolved_paths.add(resolved)
+        return resolved_paths
 
     def _prune_intermediate_references(self, manifest: dict[str, object], cleaned_at: str) -> None:
         if manifest.get("active_attempt") is not None:

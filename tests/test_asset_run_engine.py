@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.engine import AssetRunEngine  # noqa: E402
 import local_gpu_imagegen.engine as engine_module  # noqa: E402
+from local_gpu_imagegen.artifacts import validate_png  # noqa: E402
 from local_gpu_imagegen.errors import AssetEngineError, ValidationError  # noqa: E402
 from local_gpu_imagegen.preview import MAX_PREVIEW_BYTES, PreviewResult  # noqa: E402
 from local_gpu_imagegen.profile_registry import ProfileRegistry  # noqa: E402
@@ -33,10 +34,15 @@ def _chunk(kind: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(data, zlib.crc32(kind)) & 0xFFFFFFFF)
 
 
-def write_test_png(path: Path, width: int = 256, height: int = 256) -> None:
+def write_test_png(
+    path: Path,
+    width: int = 256,
+    height: int = 256,
+    pixel: bytes = b"\x20\x40\x80",
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    scanlines = b"".join(b"\x00" + b"\x20\x40\x80" * width for _ in range(height))
+    scanlines = b"".join(b"\x00" + pixel * width for _ in range(height))
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(scanlines)) + _chunk(b"IEND", b""))
 
 
@@ -69,6 +75,46 @@ class FakeBackendRunner:
         return self.exit_code, json.dumps(result), self.stderr
 
 
+class FakePostprocessor:
+    def __init__(self, models: list[str] | None = None) -> None:
+        self.models = list(models or [])
+        self.available_calls = 0
+        self.available_failure: Exception | None = None
+        self.upscale_calls: list[tuple[Path, Path, str]] = []
+        self.failure: AssetEngineError | None = None
+        self.leave_pending_on_failure = False
+        self.mutate_source_on_failure = False
+
+    def available_models(self) -> list[str]:
+        self.available_calls += 1
+        if self.available_failure is not None:
+            raise self.available_failure
+        return list(self.models)
+
+    def upscale(self, source: Path, destination: Path, model: str) -> dict[str, object]:
+        source = Path(source).resolve()
+        destination = Path(destination).resolve()
+        self.upscale_calls.append((source, destination, model))
+        if self.failure is not None:
+            if self.mutate_source_on_failure:
+                write_test_png(source, 256, 256, b"\x80\x40\x20")
+            if self.leave_pending_on_failure:
+                (destination.parent / "final-upscaled.pending.png").write_bytes(b"residue")
+            raise self.failure
+        source_metadata = validate_png(source, 256, 256)
+        write_test_png(destination, 1024, 1024)
+        output_metadata = validate_png(destination, 1024, 1024)
+        source_metadata["path"] = str(source)
+        output_metadata["path"] = str(destination)
+        return {
+            "type": "anime_upscale",
+            "model": model,
+            "scale": 4,
+            "source": source_metadata,
+            "output": output_metadata,
+        }
+
+
 class SimulatedCrash(BaseException):
     pass
 
@@ -93,33 +139,48 @@ class AssetRunEngineTests(unittest.TestCase):
         model_path.write_text(json.dumps(model), encoding="utf-8")
         self.registry = ProfileRegistry(profiles_root)
         self.runner = FakeBackendRunner()
+        self.postprocessor = FakePostprocessor()
         self.capabilities = {"available_backends": ["webui", "diffusers"], "cuda": True}
         self.engine = AssetRunEngine(
             self.registry,
             RunStore(self.output_root),
             self.runner,
             lambda: self.capabilities,
+            self.postprocessor,
         )
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def start_arguments(self, *, max_rounds: int = 3) -> dict[str, object]:
+    def start_arguments(
+        self,
+        *,
+        max_rounds: int = 3,
+        style: str | None = None,
+        upscale_policy: str = "off",
+    ) -> dict[str, object]:
         return {
             "profile": "standalone-illustration",
-            "style": None,
+            "style": style,
             "intent": "A calm coast at dawn.",
             "constraints": {"width": 256, "height": 256},
             "model_choice": TEST_MODEL_ID,
             "backend": "webui",
-            "upscale_policy": "off",
+            "upscale_policy": upscale_policy,
             "max_rounds": max_rounds,
         }
 
-    def plan(self, *, max_rounds: int = 3, parameters: dict[str, object] | None = None) -> dict[str, object]:
+    def plan(
+        self,
+        *,
+        max_rounds: int = 3,
+        parameters: dict[str, object] | None = None,
+        style: str | None = None,
+        upscale_policy: str = "off",
+    ) -> dict[str, object]:
         return {
             "profile": "standalone-illustration",
-            "style": None,
+            "style": style,
             "intent": "A calm coast at dawn.",
             "positive_prompt": "calm coast at dawn",
             "negative_prompt": "watermark, text",
@@ -128,7 +189,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "backend": "webui",
             "parameters": parameters or {"mode": "txt2img", "scheduler": "euler"},
             "max_rounds": max_rounds,
-            "upscale_policy": "off",
+            "upscale_policy": upscale_policy,
         }
 
     def generate_arguments(
@@ -139,6 +200,8 @@ class AssetRunEngineTests(unittest.TestCase):
         action: str = "initial",
         seed: int = 42,
         max_rounds: int = 3,
+        style: str | None = None,
+        upscale_policy: str = "off",
     ) -> dict[str, object]:
         return {
             "run_id": run_id,
@@ -150,11 +213,23 @@ class AssetRunEngineTests(unittest.TestCase):
             "plan": self.plan(
                 max_rounds=max_rounds,
                 parameters={"steps": 8, "guidance_scale": 6.0} if action == "refine" else None,
+                style=style,
+                upscale_policy=upscale_policy,
             ),
         }
 
-    def start(self, *, max_rounds: int = 3) -> dict[str, object]:
-        return self.engine.start_run(self.start_arguments(max_rounds=max_rounds))
+    def start(
+        self,
+        *,
+        max_rounds: int = 3,
+        style: str | None = None,
+        upscale_policy: str = "off",
+    ) -> dict[str, object]:
+        return self.engine.start_run(self.start_arguments(
+            max_rounds=max_rounds,
+            style=style,
+            upscale_policy=upscale_policy,
+        ))
 
     def review(self, run_id: str, round_number: int, score: int = 4, hard_failures: list[str] | None = None) -> dict[str, object]:
         rubric = self.engine.get_run({"run_id": run_id})["request"]["merged_profile"]["rubric"]
@@ -176,10 +251,37 @@ class AssetRunEngineTests(unittest.TestCase):
     def test_list_profiles_injects_capabilities_without_mutating_registry(self) -> None:
         catalog_before = self.engine.registry.list_catalog()
         listed = self.engine.list_profiles()
-        self.assertEqual(listed["capabilities"], self.capabilities)
+        self.assertEqual(listed["capabilities"], {
+            **self.capabilities,
+            "postprocessors": {"anime_upscale": {"available": False, "models": []}},
+        })
+
+    def prepare_anime_run(self, *, upscale_policy: str = "auto") -> str:
+        started = self.start(style="anime", upscale_policy=upscale_policy)
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(
+            run_id,
+            style="anime",
+            upscale_policy=upscale_policy,
+        ))
+        self.review(run_id, 1)
+        return run_id
         self.assertEqual(self.engine.registry.list_catalog(), catalog_before)
         self.capabilities["cuda"] = False
         self.assertTrue(listed["capabilities"]["cuda"])
+
+    def test_list_profiles_reports_sorted_postprocessor_capability_without_upscaling(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime", "realesr-animevideov3-x4"]
+
+        listed = self.engine.list_profiles()
+
+        self.assertEqual(listed["capabilities"]["postprocessors"], {
+            "anime_upscale": {
+                "available": True,
+                "models": ["realesr-animevideov3-x4", "realesrgan-x4plus-anime"],
+            },
+        })
+        self.assertEqual(self.postprocessor.upscale_calls, [])
 
     def test_start_and_get_return_run_id_rubric_and_deterministic_actions(self) -> None:
         started = self.start()
@@ -340,6 +442,7 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertIsNotNone(preview)
         self.assertIsNotNone(preview.data_base64)
         manifest = self.engine.get_run({"run_id": started["run_id"]})
+        self.assertEqual(manifest["rounds"][0]["preview"]["path"], "round-01-preview.jpg")
         expected_plan = self.plan()
         self.assertIn("generation_plan", manifest["attempts"][0])
         self.assertIn("change_summary", manifest["attempts"][0])
@@ -508,11 +611,33 @@ class AssetRunEngineTests(unittest.TestCase):
         started = self.start()
         arguments = self.generate_arguments(started["run_id"])
         first, _ = self.engine.generate_round(arguments)
-        preview_path = Path(first["full_image_path"]).with_suffix(".preview.jpg")
+        preview_path = Path(first["full_image_path"]).with_name("round-01-preview.jpg")
         preview_path.unlink(missing_ok=True)
         second, preview = self.engine.generate_round(arguments)
         self.assertEqual(len(self.runner.calls), 1)
         self.assertEqual(second["round"]["round_number"], 1)
+        self.assertIsNotNone(preview)
+
+    def test_completed_retry_accepts_legacy_dot_preview_manifest_path(self) -> None:
+        started = self.start()
+        run_id = started["run_id"]
+        arguments = self.generate_arguments(run_id)
+        first, _ = self.engine.generate_round(arguments)
+        run_root = self.output_root / "runs" / run_id
+        current = run_root / first["round"]["preview"]["path"]
+        legacy = run_root / "round-01.preview.jpg"
+        os.replace(current, legacy)
+
+        def retain_legacy(manifest: dict[str, object]) -> None:
+            manifest["rounds"][0]["preview"]["path"] = legacy.name
+
+        self.engine.store.update(run_id, retain_legacy)
+        with patch("local_gpu_imagegen.engine.create_preview") as rebuild:
+            second, preview = self.engine.generate_round(arguments)
+
+        rebuild.assert_not_called()
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertEqual(second["round"]["preview"]["path"], legacy.name)
         self.assertIsNotNone(preview)
 
     def test_completed_retry_rebuilds_untrusted_preview_without_returning_png_bytes(self) -> None:
@@ -706,6 +831,245 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(len(self.runner.calls), 1)
         self.assertEqual(base64.b64decode(preview.data_base64), target_path.read_bytes())
 
+    def test_auto_policy_without_explicit_postprocess_never_calls_adapter(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        run_id = self.prepare_anime_run()
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Keep the reviewed original.",
+        })
+
+        self.assertEqual(self.postprocessor.available_calls, 0)
+        self.assertEqual(self.postprocessor.upscale_calls, [])
+        self.assertEqual(finalized["final"]["path"], "final.png")
+        self.assertNotIn("postprocess", finalized["final"])
+
+    def test_engine_rejects_non_exact_postprocess_before_adapter_work(self) -> None:
+        cases = (
+            {},
+            {"type": "anime_upscale"},
+            {"model": "realesrgan-x4plus-anime"},
+            {"type": "anime_upscale", "model": "realesrgan-x4plus-anime", "extra": True},
+            {"type": "other", "model": "realesrgan-x4plus-anime"},
+            {"type": "anime_upscale", "model": "../../model"},
+        )
+        for index, postprocess in enumerate(cases):
+            with self.subTest(postprocess=postprocess):
+                run_id = self.prepare_anime_run()
+                with self.assertRaises(ValidationError) as raised:
+                    self.engine.finalize_run({
+                        "run_id": run_id,
+                        "round_number": 1,
+                        "summary": f"Invalid request {index}.",
+                        "postprocess": postprocess,
+                    })
+                self.assertEqual(raised.exception.code, "invalid_postprocess")
+                self.assertEqual(self.engine.get_run({"run_id": run_id})["state"], "reviewed")
+                self.assertEqual(self.postprocessor.available_calls, 0)
+                self.assertEqual(self.postprocessor.upscale_calls, [])
+
+    def test_explicit_postprocess_rejects_off_policy_before_adapter_work(self) -> None:
+        run_id = self.prepare_anime_run(upscale_policy="off")
+
+        with self.assertRaises(ValidationError) as raised:
+            self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "Upscale is disabled.",
+                "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+            })
+
+        self.assertEqual(raised.exception.code, "postprocess_disabled")
+        self.assertEqual(self.postprocessor.available_calls, 0)
+        self.assertEqual(self.postprocessor.upscale_calls, [])
+
+    def test_explicit_postprocess_rejects_non_anime_style_before_adapter_work(self) -> None:
+        started = self.start(upscale_policy="auto")
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id, upscale_policy="auto"))
+        self.review(run_id, 1)
+
+        with self.assertRaises(ValidationError) as raised:
+            self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "Style is not anime.",
+                "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+            })
+
+        self.assertEqual(raised.exception.code, "postprocess_requires_anime_style")
+        self.assertEqual(self.postprocessor.available_calls, 0)
+        self.assertEqual(self.postprocessor.upscale_calls, [])
+
+    def test_successful_anime_postprocess_retains_original_and_records_final_metadata(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Publish the faithful 4x result.",
+            "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+        })
+
+        metadata = finalized["final"]["postprocess"]
+        self.assertEqual(metadata["status"], "completed")
+        self.assertEqual(metadata["type"], "anime_upscale")
+        self.assertEqual(metadata["model"], "realesrgan-x4plus-anime")
+        self.assertEqual(metadata["scale"], 4)
+        self.assertEqual(metadata["source"]["path"], "final.png")
+        self.assertEqual(metadata["output"]["path"], "final-upscaled.png")
+        self.assertEqual((metadata["source"]["width"], metadata["source"]["height"]), (256, 256))
+        self.assertEqual((metadata["output"]["width"], metadata["output"]["height"]), (1024, 1024))
+        self.assertEqual(metadata["source"]["sha256"], hashlib.sha256((run_root / "final.png").read_bytes()).hexdigest())
+        self.assertEqual(metadata["output"]["sha256"], hashlib.sha256((run_root / "final-upscaled.png").read_bytes()).hexdigest())
+        self.assertEqual(finalized["final"]["image"]["path"], "final.png")
+        self.assertEqual(finalized["final"]["path"], "final-upscaled.png")
+        self.assertEqual(finalized["full_image_path"], str((run_root / "final-upscaled.png").resolve()))
+        self.assertTrue((run_root / "final.png").is_file())
+        self.assertTrue((run_root / "final-upscaled.png").is_file())
+        self.assertFalse((run_root / "final-upscaled.pending.png").exists())
+
+    def test_unavailable_postprocess_warns_and_returns_original_final(self) -> None:
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Retain the original when unavailable.",
+            "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+        })
+
+        self.assertIn("postprocess_unavailable", finalized["warnings"])
+        self.assertEqual(finalized["final"]["postprocess"]["status"], "unavailable")
+        self.assertEqual(finalized["final"]["path"], "final.png")
+        self.assertEqual(finalized["full_image_path"], str((run_root / "final.png").resolve()))
+        self.assertTrue((run_root / "final.png").is_file())
+        self.assertFalse((run_root / "final-upscaled.png").exists())
+        self.assertEqual(self.postprocessor.upscale_calls, [])
+        self.assertIn("postprocess_unavailable", self.engine.get_run({"run_id": run_id})["warnings"])
+
+    def test_failed_postprocess_warns_returns_original_and_removes_pending_residue(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        self.postprocessor.failure = AssetEngineError(
+            "postprocess_failed",
+            "Synthetic failure.",
+            "postprocess",
+        )
+        self.postprocessor.leave_pending_on_failure = True
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Retain the original after failure.",
+            "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+        })
+
+        self.assertIn("postprocess_failed", finalized["warnings"])
+        self.assertEqual(finalized["final"]["postprocess"]["status"], "failed")
+        self.assertEqual(finalized["final"]["path"], "final.png")
+        self.assertEqual(finalized["full_image_path"], str((run_root / "final.png").resolve()))
+        self.assertFalse((run_root / "final-upscaled.pending.png").exists())
+        self.assertFalse((run_root / "final-upscaled.png").exists())
+
+    def test_postprocess_capability_failure_warns_and_keeps_original_final(self) -> None:
+        self.postprocessor.available_failure = OSError("capability probe failed")
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Retain the original after capability failure.",
+            "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+        })
+
+        self.assertIn("postprocess_failed", finalized["warnings"])
+        self.assertEqual(finalized["final"]["postprocess"]["status"], "failed")
+        self.assertEqual(finalized["final"]["path"], "final.png")
+        self.assertEqual(finalized["full_image_path"], str((run_root / "final.png").resolve()))
+        self.assertTrue((run_root / "final.png").is_file())
+        self.assertEqual(self.postprocessor.upscale_calls, [])
+
+    def test_failed_postprocess_restores_original_when_adapter_mutates_source(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        self.postprocessor.failure = AssetEngineError(
+            "postprocess_failed",
+            "Synthetic mutating failure.",
+            "postprocess",
+        )
+        self.postprocessor.mutate_source_on_failure = True
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+        original_hash = hashlib.sha256((run_root / "round-01.png").read_bytes()).hexdigest()
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Restore the immutable original.",
+            "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+        })
+
+        self.assertIn("postprocess_failed", finalized["warnings"])
+        self.assertEqual(finalized["final"]["path"], "final.png")
+        self.assertEqual(hashlib.sha256((run_root / "final.png").read_bytes()).hexdigest(), original_hash)
+        self.assertEqual(finalized["final"]["image"]["sha256"], original_hash)
+
+    def test_postprocess_pending_alias_resolution_cannot_delete_original_final(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        self.postprocessor.failure = AssetEngineError(
+            "postprocess_failed",
+            "Synthetic failure.",
+            "postprocess",
+        )
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+        original_ensure_within = engine_module.ensure_within
+
+        def alias_pending(root: Path, candidate: Path) -> Path:
+            if Path(candidate).name == "final-upscaled.pending.png":
+                return (run_root / "final.png").resolve()
+            return original_ensure_within(root, candidate)
+
+        with patch("local_gpu_imagegen.engine.ensure_within", side_effect=alias_pending):
+            finalized = self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "Keep exact final artifact names.",
+                "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+            })
+
+        self.assertIn("postprocess_failed", finalized["warnings"])
+        self.assertTrue((run_root / "final.png").is_file())
+        self.assertEqual(finalized["final"]["path"], "final.png")
+
+    def test_intermediate_cleanup_preserves_original_and_upscaled_final_references(self) -> None:
+        self.postprocessor.models = ["realesrgan-x4plus-anime"]
+        run_id = self.prepare_anime_run()
+        run_root = self.output_root / "runs" / run_id
+        self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Publish and clean intermediates.",
+            "postprocess": {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"},
+        })
+
+        self.engine.cleanup_run({"run_id": run_id, "scope": "intermediates", "confirmation": run_id})
+
+        cleaned = self.engine.get_run({"run_id": run_id})
+        self.assertTrue((run_root / "final.png").is_file())
+        self.assertTrue((run_root / "final-upscaled.png").is_file())
+        self.assertEqual(cleaned["final"]["image"]["path"], "final.png")
+        self.assertEqual(cleaned["final"]["path"], "final-upscaled.png")
+        self.assertEqual(cleaned["final"]["postprocess"]["source"]["path"], "final.png")
+        self.assertEqual(cleaned["final"]["postprocess"]["output"]["path"], "final-upscaled.png")
+
     def test_nominated_eligible_round_is_published_even_when_later_round_scores_higher(self) -> None:
         started = self.start()
         run_id = started["run_id"]
@@ -811,7 +1175,7 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(cleaned["final"]["image"]["path"], "final.png")
         self.assertTrue((run_root / "final.png").is_file())
         self.assertFalse((run_root / "round-01.png").exists())
-        self.assertFalse((run_root / "round-01.preview.jpg").exists())
+        self.assertFalse((run_root / "round-01-preview.jpg").exists())
         self.assertNotIn("image", cleaned["rounds"][0])
         self.assertNotIn("preview", cleaned["rounds"][0])
         self.assertNotIn("path", cleaned["rounds"][0]["backend_result"])

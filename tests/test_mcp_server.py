@@ -87,7 +87,7 @@ class McpServerUnitTests(unittest.TestCase):
             "local_gpu_record_review": {
                 "run_id", "round_number", "scores", "hard_failures", "critique", "constraint_results", "next_action",
             },
-            "local_gpu_finalize_run": {"run_id", "round_number", "summary"},
+            "local_gpu_finalize_run": {"run_id", "round_number", "summary", "postprocess"},
             "local_gpu_cleanup_run": {"run_id", "scope", "confirmation"},
         }
         for name, fields in expected.items():
@@ -97,7 +97,24 @@ class McpServerUnitTests(unittest.TestCase):
                     continue
                 schema = tools[name]["inputSchema"]
                 self.assertEqual(set(schema["properties"]), fields)
-                self.assertEqual(set(schema.get("required", [])), fields)
+                required = fields - {"postprocess"}
+                self.assertEqual(set(schema.get("required", [])), required)
+
+    def test_finalize_postprocess_schema_is_optional_and_exact(self) -> None:
+        tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
+        schema = tools["local_gpu_finalize_run"]["inputSchema"]
+        postprocess = schema["properties"]["postprocess"]
+
+        self.assertNotIn("postprocess", schema["required"])
+        self.assertEqual(postprocess["type"], "object")
+        self.assertFalse(postprocess["additionalProperties"])
+        self.assertEqual(set(postprocess["properties"]), {"type", "model"})
+        self.assertEqual(set(postprocess["required"]), {"type", "model"})
+        self.assertEqual(postprocess["properties"]["type"]["enum"], ["anime_upscale"])
+        self.assertEqual(
+            postprocess["properties"]["model"]["enum"],
+            ["realesr-animevideov3-x4", "realesrgan-x4plus-anime"],
+        )
 
     def test_each_high_level_tool_rejects_unknown_arguments_before_engine_work(self) -> None:
         for name in HIGH_LEVEL_TOOLS:
@@ -257,6 +274,51 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertFalse(result["isError"])
         self.assertEqual(result["structuredContent"]["final"]["round_number"], 2)
         engine.finalize_run.assert_called_once_with(arguments)
+
+    def test_finalize_run_rejects_nested_postprocess_errors_before_engine_work(self) -> None:
+        base = {"run_id": "run-1", "round_number": 1, "summary": "Done."}
+        cases = (
+            ({}, "missing_argument"),
+            ({"type": "anime_upscale"}, "missing_argument"),
+            ({"model": "realesrgan-x4plus-anime"}, "missing_argument"),
+            ({"type": "anime_upscale", "model": "realesrgan-x4plus-anime", "extra": True}, "unknown_argument"),
+            ({"type": "other", "model": "realesrgan-x4plus-anime"}, "invalid_argument_value"),
+            ({"type": "anime_upscale", "model": "../../model"}, "invalid_argument_value"),
+            ({"type": "anime_upscale", "model": 1}, "invalid_argument_type"),
+        )
+        for postprocess, expected_code in cases:
+            arguments = {**base, "postprocess": postprocess}
+            with self.subTest(postprocess=postprocess), patch.object(mcp_server, "get_asset_engine") as get_engine:
+                result = mcp_server.handle_tool_call({"name": "local_gpu_finalize_run", "arguments": arguments})
+
+                self.assertTrue(result["isError"])
+                self.assertEqual(result["structuredContent"]["error"]["code"], expected_code)
+                get_engine.assert_not_called()
+
+    def test_finalize_run_forwards_exact_postprocess_object_unchanged(self) -> None:
+        postprocess = {"type": "anime_upscale", "model": "realesrgan-x4plus-anime"}
+        arguments = {
+            "run_id": "run-1",
+            "round_number": 1,
+            "summary": "Publish the 4x result.",
+            "postprocess": postprocess,
+        }
+        engine = Mock()
+        engine.finalize_run.return_value = {
+            "ok": True,
+            "run_id": "run-1",
+            "state": "finalized",
+            "final": {"round_number": 1, "quality_status": "accepted"},
+            "full_image_path": "D:/output/final-upscaled.png",
+            "recoverable_next_actions": ["get_run", "cleanup_run"],
+            "warnings": [],
+        }
+        with patch.object(mcp_server, "get_asset_engine", return_value=engine):
+            result = mcp_server.handle_tool_call({"name": "local_gpu_finalize_run", "arguments": arguments})
+
+        self.assertFalse(result["isError"])
+        engine.finalize_run.assert_called_once_with(arguments)
+        self.assertIs(engine.finalize_run.call_args.args[0]["postprocess"], postprocess)
 
     def test_cleanup_all_requires_exact_confirmation_before_engine_work(self) -> None:
         with patch.object(mcp_server, "get_asset_engine", create=True) as get_engine:
