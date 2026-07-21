@@ -105,11 +105,15 @@ Run the immutable child with the same bounded initial/refine/explore state rules
 
 ## Review Evidence
 
-On a vision-capable host, inspect the actual returned preview or accessible full image. Record the complete returned rubric with evidence-based 1-to-5 scores, hard failures, explicit-constraint results, a concise critique, and the next action. Do not store chain-of-thought; store only conclusions, observed evidence, and the concise preserve/change intent.
+On a vision-capable host, display the original full-resolution image and inspect that image before recording a review. A preview is an auxiliary navigation aid, not sufficient visual evidence. Record `full_resolution_inspected: true`, `prominent_human`, and an observed status plus concise observation for `limb_separation`, `feet_and_contact`, `hands_and_held_objects`, and `text_and_watermarks`. When `prominent_human` is true, the three anatomy checks cannot be `not_applicable`. Any required check that is fail or uncertain requires `next_action` refine or explore; it cannot be finalized.
+
+Call `local_gpu_record_review` only after those checks. Record the complete returned rubric with evidence-based 1-to-5 scores, hard failures, explicit-constraint results, a concise critique, and the next action. Do not store chain-of-thought; store only conclusions, observed evidence, and the concise preserve/change intent.
+
+For an eligible reviewed result, display `quality_status: candidate`, its limitations, the full image SHA-256, and the exact confirmation `finalize:<run_id>:<round_number>:<image_sha256>`. Then stop and wait for a later user message. Only that later message may provide the displayed confirmation for `local_gpu_finalize_run`. A candidate is not accepted until the later user confirmation is verified, and the Agent cannot accept it on the user's behalf.
 
 On a text-only host, generate exactly one successful round per confirmed run, then mark `review unavailable` and stop after the first retained round. Do not call `local_gpu_record_review` or `local_gpu_finalize_run`. Report the retained path as unreviewed; any remaining round budget stays unused until a human or vision-capable host can review. Do not fabricate scores, constraint results, defects, or visual critique. Do not claim the result is accepted, polished, or visually verified.
 
-For a vision-reviewed eligible result, finalize the nominated reviewed round and report the final absolute path and actual quality status. An ineligible budget-exhausted result may be finalized only with its `needs_user_review` limitation stated; never relabel it accepted.
+An ineligible or uncertain result is never publishable, including when its round budget is exhausted. Keep it as a reviewed artifact; refine or explore when confirmed budget remains, otherwise report the limitation and wait for a new user decision without publication.
 
 ## Hard Boundaries
 

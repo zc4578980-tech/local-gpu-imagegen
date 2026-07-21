@@ -88,6 +88,30 @@ def _assert_text_only_contract(text: str) -> None:
         raise AssertionError("Text-only branch permits a review/finalize call")
 
 
+def _assert_visual_acceptance_contract(text: str) -> None:
+    section = _section(text, "## Review Evidence", "## Hard Boundaries")
+    _assert_ordered(section, (
+        "display the original full-resolution image",
+        "`local_gpu_record_review`",
+        "`quality_status: candidate`",
+        "finalize:<run_id>:<round_number>:<image_sha256>",
+        "stop and wait for a later user message",
+        "`local_gpu_finalize_run`",
+    ))
+    for required in (
+        "`full_resolution_inspected: true`",
+        "`prominent_human`",
+        "`limb_separation`",
+        "`feet_and_contact`",
+        "`hands_and_held_objects`",
+        "`text_and_watermarks`",
+        "fail or uncertain",
+        "A candidate is not accepted until the later user confirmation is verified",
+    ):
+        if required not in section:
+            raise AssertionError(f"Missing visual acceptance boundary: {required}")
+
+
 def _assert_plugin_discovery_contract(plugin: dict[str, object]) -> None:
     findings = plugin_discovery_findings(plugin)
     if findings:
@@ -335,6 +359,27 @@ class SkillContractTests(unittest.TestCase):
         ):
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, self.text)
+
+    def test_visual_acceptance_requires_a_later_user_turn(self) -> None:
+        _assert_visual_acceptance_contract(self.text)
+
+    def test_visual_acceptance_rejects_same_turn_and_self_acceptance_mutations(self) -> None:
+        valid = self.text
+        mutations = (
+            valid.replace(
+                "stop and wait for a later user message",
+                "continue in the same turn",
+            ),
+            valid.replace(
+                "A candidate is not accepted until the later user confirmation is verified",
+                "The Agent may mark the candidate accepted",
+            ),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation[-160:]):
+                self.assertNotEqual(valid, mutation)
+                with self.assertRaises(AssertionError):
+                    _assert_visual_acceptance_contract(mutation)
 
     def test_text_only_branch_rejects_missing_or_contradictory_prohibitions(self) -> None:
         prohibition = "Do not call `local_gpu_record_review` or `local_gpu_finalize_run`"
