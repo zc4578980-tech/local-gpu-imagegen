@@ -13,8 +13,9 @@ The plugin exposes exactly nine MCP tools: `local_gpu_imagegen_check`, `local_gp
 
 ## Adaptive Brief
 
-1. Call `local_gpu_list_profiles` before proposing a run. Select a Profile, optional style, compatible backend, and an approved non-empty `model_choice` from its returned catalog. The model must be registered, enabled, and license-approved. If none exists, state a clear unavailable-model boundary and stop. Do not invent a model ID, enable a candidate, download a model, or call `local_gpu_start_run`.
-2. Extract known values first. Ask only for missing high-impact boundaries:
+1. Extract known values first.
+2. Call `local_gpu_list_profiles` before proposing a run. Select a Profile, optional style, compatible backend, and an approved non-empty `model_choice` from its returned catalog. The model must be registered, enabled, and license-approved. If none exists, state a clear unavailable-model boundary and stop. Do not invent a model ID, enable a candidate, download a model, or call `local_gpu_start_run`.
+3. Ask only for missing high-impact boundaries:
    - intended use/subtype;
    - subject/outcome;
    - style/composition;
@@ -22,8 +23,8 @@ The plugin exposes exactly nine MCP tools: `local_gpu_imagegen_check`, `local_gp
    - required/prohibited content;
    - round budget of 1 to 3 successful rounds;
    - permission for seed/model switching and compatible upscaling.
-3. Do not ask the user to repeat or reconfirm known values. A stated cap selects that maximum as `max_rounds`. Do not start after one conversational turn when any high-impact boundary remains missing.
-4. Present a concise summary covering Profile/style/model choice, dimensions/safe area, preserve/prohibit constraints, the selected 1 to 3 successful rounds, and backend/download/upscale policy:
+4. Do not ask the user to repeat or reconfirm known values. A stated cap selects that maximum as `max_rounds`. Do not start after one conversational turn when any high-impact boundary remains missing. A safe default must be advertised by the selected catalog Profile or model and must not conflict with user constraints.
+5. Present a concise resolved summary covering Profile/style/model choice, dimensions/safe area, preserve/prohibit constraints, the selected 1 to 3 successful rounds, and backend/download/upscale policy:
 
 ```text
 Profile/style/model choice: ...
@@ -35,7 +36,23 @@ Backend/download/upscale policy: ...
 Seed/model switching: ...
 ```
 
-5. Confirmation must cover the resolved complete summary, including the exact `model_choice`. Generic wording such as "the approved local model and start" does not pre-authorize any concrete model ID: show the resolved ID and ask for confirmation without repeating known creative requirements. An explicit `use defaults and start` is immediate-default confirmation only when the catalog has exactly one compatible approved model and every other missing field has a safe displayed default. A safe default must be advertised by the selected catalog Profile or model and must not conflict with user constraints. Present that resolved summary, then start without re-asking. Do not call `local_gpu_start_run` before confirmation of the complete summary.
+## Confirmation Gate
+
+An early `use defaults and start` received before catalog resolution records intent only; it never authorizes an unseen model. Generic wording such as "the approved local model and start" does not pre-authorize any concrete model ID. Confirmation must cover the resolved complete summary, including the exact `model_choice`.
+
+After `local_gpu_list_profiles` resolves an approved model and the complete summary is ready, display it. Always require a new explicit confirmation after displaying that summary, even when the user supplied start/default intent earlier. Only a user message received after the display and clearly accepting the shown summary is confirmation; that later message may itself say `use defaults and start`.
+
+Required temporal order:
+
+```text
+early `use defaults and start` -> intent only
+-> `local_gpu_list_profiles`
+-> display resolved complete summary with exact `model_choice`
+-> receive post-display confirmation
+-> `local_gpu_start_run`
+```
+
+Do not call `local_gpu_start_run` before that post-display confirmation.
 
 ## Run Sequence
 
@@ -63,7 +80,7 @@ For each generation, use a unique idempotency key and a plan bound to the confir
 
 On a vision-capable host, inspect the actual returned preview or accessible full image. Record the complete returned rubric with evidence-based 1-to-5 scores, hard failures, explicit-constraint results, a concise critique, and the next action. Do not store chain-of-thought; store only conclusions, observed evidence, and the concise preserve/change intent.
 
-On a text-only host, generate exactly one successful round per confirmed run. Mark `review unavailable`, stop after the first retained round, and report its path as unreviewed; any remaining round budget stays unused until a human or vision-capable host can review. Do not fabricate scores, constraint results, defects, or visual critique. Because `local_gpu_record_review` requires visual scores, do not call it or `local_gpu_finalize_run` without that evidence. Do not claim the result is accepted, polished, or visually verified.
+On a text-only host, generate exactly one successful round per confirmed run, then mark `review unavailable` and stop after the first retained round. Do not call `local_gpu_record_review` or `local_gpu_finalize_run`. Report the retained path as unreviewed; any remaining round budget stays unused until a human or vision-capable host can review. Do not fabricate scores, constraint results, defects, or visual critique. Do not claim the result is accepted, polished, or visually verified.
 
 For a vision-reviewed eligible result, finalize the nominated reviewed round and report the final absolute path and actual quality status. An ineligible budget-exhausted result may be finalized only with its `needs_user_review` limitation stated; never relabel it accepted.
 

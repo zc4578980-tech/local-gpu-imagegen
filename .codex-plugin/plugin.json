@@ -1,15 +1,15 @@
 {
   "name": "local-gpu-imagegen",
   "version": "0.3.0",
-  "description": "Run a durable, reviewable local Agent visual asset engine on the local GPU.",
+  "description": "Orchestrate catalog-gated, reviewable local visual asset runs.",
   "author": {
     "name": "Capricorn"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Local GPU Visual Asset Engine",
-    "shortDescription": "Brief, generate, review, and finalize local visual assets.",
-    "longDescription": "A local Agent visual asset engine with adaptive briefing, confirmed 1-to-3-round workflows, approved catalog model selection, bounded previews, durable recovery, and no hidden downloads. Model-free tests cover the MCP contract and orchestration policy; real host/GPU output acceptance remains unverified.",
+    "shortDescription": "Brief and review catalog-gated local visual asset runs.",
+    "longDescription": "A local Agent visual asset engine with adaptive briefing, confirmed 1-to-3-round workflows, catalog-gated model resolution, bounded previews, durable recovery, and no hidden downloads. No production model is bundled or currently approved. Model-free tests cover the MCP contract and orchestration policy; real host/GPU output acceptance remains unverified.",
     "developerName": "Capricorn",
     "category": "Creative",
     "capabilities": [
@@ -24,9 +24,9 @@
       "Crash recovery"
     ],
     "defaultPrompt": [
-      "Create a local visual asset with an adaptive brief.",
-      "Check whether CUDA image generation is ready.",
-      "Create, review, and finalize a local illustration run."
+      "Plan a catalog-gated local visual asset run.",
+      "Inspect local CUDA image generation readiness.",
+      "Prepare a reviewable local illustration run."
     ],
     "brandColor": "#2563EB"
   },
