@@ -2,7 +2,7 @@
 
 Give MCP-compatible agents a focused, local-first image generation toolchain for AUTOMATIC1111/Forge WebUI and Hugging Face Diffusers.
 
-> Pre-release status: the stdio protocol, schemas, structured errors, durable run engine, mocked WebUI integration, and no-download safety policy are covered by model-free tests. No retained real Codex-client/GPU generation evidence exists for v0.3.
+> Pre-release status: the stdio protocol, schemas, structured errors, durable run engine, mocked WebUI integration, and no-download safety policy are covered by model-free tests. No retained real Codex-client/GPU generation evidence exists for v0.3. Current AUTOMATIC1111/Forge and Diffusers backend readiness has not been verified for v0.3.
 
 ## Why This Project
 
@@ -119,10 +119,10 @@ These two compatibility tools remain available beside the seven high-level run t
 | `local_gpu_get_run` | Read the durable manifest and its `recoverable_next_actions`. |
 | `local_gpu_generate_round` | Generate one confirmed `txt2img` round and optionally return a bounded JPEG preview. |
 | `local_gpu_record_review` | Store rubric scores, hard failures, constraint results, critique, and next action. |
-| `local_gpu_finalize_run` | Publish the engine-selected reviewed round as the final local PNG. |
+| `local_gpu_finalize_run` | Publish the caller-nominated reviewed round as the final local PNG. |
 | `local_gpu_cleanup_run` | Remove intermediates or the entire confirmed run directory. |
 
-`max_rounds` must be from `1` through `3`. Only successfully retained PNG rounds consume that budget; a backend failure is recorded as an attempt without consuming a round. An eligible reviewed round can be finalized early. If the budget is exhausted without an eligible result, the best reviewed round may be published with quality status `needs_user_review`; this is a warning to inspect the file, not an acceptance claim.
+`max_rounds` must be from `1` through `3`. Only successfully retained PNG rounds consume that budget; a backend failure is recorded as an attempt without consuming a round. `local_gpu_finalize_run` requires a `round_number` from 1 through 3 and a summary. It validates the current run state and review under the run lock, then publishes that nominated reviewed round without substituting a higher-scoring round. An eligible nomination receives quality status `accepted`; an ineligible nomination receives `needs_user_review`, which is a warning to inspect the file rather than an acceptance claim.
 
 In v0.3, `model_choice` is currently stored as `null`; there is no adaptive model registry or automatic model selection. `upscale_policy` accepts only `auto` or `off`, and v0.3 records that policy without claiming a bundled upscaler. `local_gpu_list_profiles` reports current capabilities, and `local_gpu_start_run` freezes the advertised available backends into the confirmed run request.
 
@@ -236,6 +236,8 @@ Pending before a `1.0` claim:
 - measured performance or VRAM data
 
 The test suite does not load a model or GPU backend. No real-generation, production, performance, VRAM, image-quality, named-client compatibility, or popularity claim is made.
+
+Current AUTOMATIC1111/Forge and Diffusers backend readiness has not been verified for v0.3; use the readiness commands above to inspect the target environment.
 
 ## Documentation
 

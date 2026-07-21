@@ -33,11 +33,11 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 
 Each high-level run lives under `outputs/runs/<run_id>/` by default. `manifest.json` is the durable source of truth for the confirmed request, attempt history, retained rounds, reviews, warnings, final selection, and monotonically increasing revision. The output root can be replaced with `LOCAL_GPU_IMAGEGEN_OUTPUT_DIR`.
 
-Full generated artifacts are validated full-resolution local PNG files such as `round-01.png`. The optional `round-01.preview.jpg` is a bounded JPEG preview for MCP content; it is not the authoritative image. Finalization copies the selected reviewed round through `final.pending.png` and atomically publishes `final.png` before committing final manifest metadata.
+Full generated artifacts are validated full-resolution local PNG files such as `round-01.png`. The optional `round-01.preview.jpg` is a bounded JPEG preview for MCP content; it is not the authoritative image. Finalization validates the caller-nominated reviewed round and current state under the run lock, copies that exact round through `final.pending.png`, and atomically publishes `final.png` before committing final manifest metadata.
 
 Generation attempts carry an idempotency key plus a hash of their confirmed request. The same key and request can return a retained completed round without rerunning the backend. A conflicting request is rejected. Run locks include process identity so stale ownership can be reclaimed without taking a live attempt. If interruption occurs after the PNG is retained, the next matching call can resume preview creation rather than regenerate the image.
 
-Run responses expose `recoverable_next_actions`, derived from persisted state. A run permits one to three successful rounds; failed backend attempts do not consume that budget. Review eligibility comes from the merged profile rubric and hard-failure rules. Once the budget is exhausted, a best reviewed but ineligible result can be finalized with `needs_user_review` rather than being described as accepted.
+Run responses expose `recoverable_next_actions`, derived from persisted state. A run permits one to three successful rounds; failed backend attempts do not consume that budget. Review eligibility comes from the merged profile rubric and hard-failure rules. Final metadata marks the nominated reviewed round as `accepted` or `needs_user_review`; finalization does not replace the nomination with a weighted-best candidate.
 
 ## Error Layers
 

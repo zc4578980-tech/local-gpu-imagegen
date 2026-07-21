@@ -20,6 +20,10 @@ All notable changes will be documented in this file.
 - Public documentation now distinguishes model-free and mocked coverage from the still-absent retained real Codex-client/GPU generation evidence.
 - The original readiness and direct generation compatibility tools, local-only Diffusers default, and explicit download permission remain available.
 
+### Fixed
+
+- High-level finalization now validates and publishes the caller-nominated reviewed round under the run lock instead of silently substituting a weighted-best round.
+
 ## [0.2.0]
 
 ### Added

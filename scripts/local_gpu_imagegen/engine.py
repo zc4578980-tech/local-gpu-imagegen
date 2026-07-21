@@ -175,6 +175,9 @@ class AssetRunEngine:
     def finalize_run(self, arguments: dict[str, object]) -> dict[str, object]:
         arguments = _arguments(arguments)
         run_id = _required(arguments, "run_id", str)
+        round_number = _required(arguments, "round_number", int, reject_bool=True)
+        if not 1 <= round_number <= 3:
+            raise ValidationError("invalid_round_number", "round_number must be an integer from 1 to 3.")
         summary = _required(arguments, "summary", str)
         if not summary.strip() or len(summary.strip()) > 2000:
             raise ValidationError("invalid_final_summary", "Final summary must be non-empty and concise.")
@@ -219,8 +222,9 @@ class AssetRunEngine:
         def commit() -> None:
             backup_path.unlink(missing_ok=True)
 
-        finalized = self.store.finalize_best_published(
+        finalized = self.store.finalize_round_published(
             run_id,
+            round_number,
             summary,
             publish,
             rollback,
@@ -760,25 +764,6 @@ def _is_eligible(manifest: dict[str, object], review: dict[str, object]) -> bool
     return not failures and all(_exact_int(scores.get(name)) and scores[name] >= 3 for name in critical)
 
 
-def _weighted_score(manifest: dict[str, object], review: dict[str, object]) -> float:
-    request = manifest.get("request")
-    merged = request.get("merged_profile") if isinstance(request, dict) else None
-    rubric = merged.get("rubric") if isinstance(merged, dict) else None
-    scores = review.get("scores")
-    if not isinstance(rubric, dict) or not isinstance(scores, dict):
-        raise ArtifactError("corrupt_manifest", "Stored weighted review data is invalid.")
-    total = 0.0
-    for name, specification in rubric.items():
-        weight = specification.get("weight", 1) if isinstance(specification, dict) else 1
-        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
-            raise ArtifactError("corrupt_manifest", "Rubric weight must be numeric.")
-        score = scores.get(name)
-        if not _exact_int(score):
-            raise ArtifactError("corrupt_manifest", "Review score must be an integer.")
-        total += float(weight) * score
-    return total
-
-
 def _eligible_candidates(manifest: dict[str, object]) -> list[dict[str, object]]:
     reviews = _reviews_by_round(manifest)
     rounds = manifest.get("rounds")
@@ -791,33 +776,3 @@ def _eligible_candidates(manifest: dict[str, object]) -> list[dict[str, object]]
         and round_value["round_number"] in reviews
         and _is_eligible(manifest, reviews[int(round_value["round_number"])])
     ]
-
-
-def _select_final_candidate(manifest: dict[str, object]) -> dict[str, object]:
-    reviews = _reviews_by_round(manifest)
-    rounds = manifest.get("rounds")
-    request = manifest.get("request")
-    if not isinstance(rounds, list) or not isinstance(request, dict):
-        raise ArtifactError("corrupt_manifest", "Run selection data is invalid.")
-    reviewed = [
-        value for value in rounds
-        if isinstance(value, dict)
-        and _exact_int(value.get("round_number"))
-        and int(value["round_number"]) in reviews
-    ]
-    if not reviewed:
-        raise StateError("round_requires_review", "At least one generated round must be reviewed.")
-    eligible = [value for value in reviewed if _is_eligible(manifest, reviews[int(value["round_number"])])]
-    candidates = eligible
-    max_rounds = request.get("max_rounds")
-    if not candidates:
-        if not _exact_int(max_rounds) or len(rounds) < max_rounds:
-            raise StateError("no_eligible_round", "No eligible reviewed round is available before the budget is exhausted.")
-        candidates = reviewed
-    return max(
-        candidates,
-        key=lambda value: (
-            _weighted_score(manifest, reviews[int(value["round_number"])]),
-            -int(value["round_number"]),
-        ),
-    )

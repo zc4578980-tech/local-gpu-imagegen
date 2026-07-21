@@ -185,6 +185,41 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertFalse(result["isError"])
         engine.start_run.assert_called_once_with(arguments)
 
+    def test_finalize_run_rejects_missing_or_invalid_round_before_engine_work(self) -> None:
+        calls = (
+            {"run_id": "run-1", "summary": "Missing."},
+            {"run_id": "run-1", "round_number": True, "summary": "Boolean."},
+            {"run_id": "run-1", "round_number": "1", "summary": "String."},
+            {"run_id": "run-1", "round_number": 0, "summary": "Low."},
+            {"run_id": "run-1", "round_number": 4, "summary": "High."},
+        )
+        for arguments in calls:
+            with self.subTest(arguments=arguments), patch.object(mcp_server, "get_asset_engine") as get_engine:
+                result = mcp_server.handle_tool_call({"name": "local_gpu_finalize_run", "arguments": arguments})
+
+                self.assertTrue(result["isError"])
+                self.assertEqual(result["structuredContent"]["error"]["category"], "validation")
+                get_engine.assert_not_called()
+
+    def test_finalize_run_forwards_nominated_round_to_engine(self) -> None:
+        arguments = {"run_id": "run-1", "round_number": 2, "summary": "Use round two."}
+        engine = Mock()
+        engine.finalize_run.return_value = {
+            "ok": True,
+            "run_id": "run-1",
+            "state": "finalized",
+            "final": {"round_number": 2, "quality_status": "accepted"},
+            "full_image_path": "D:/output/final.png",
+            "recoverable_next_actions": ["get_run", "cleanup_run"],
+            "warnings": [],
+        }
+        with patch.object(mcp_server, "get_asset_engine", return_value=engine):
+            result = mcp_server.handle_tool_call({"name": "local_gpu_finalize_run", "arguments": arguments})
+
+        self.assertFalse(result["isError"])
+        self.assertEqual(result["structuredContent"]["final"]["round_number"], 2)
+        engine.finalize_run.assert_called_once_with(arguments)
+
     def test_cleanup_all_requires_exact_confirmation_before_engine_work(self) -> None:
         with patch.object(mcp_server, "get_asset_engine", create=True) as get_engine:
             result = mcp_server.handle_tool_call({

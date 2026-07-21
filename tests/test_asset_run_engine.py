@@ -587,46 +587,118 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(len(self.runner.calls), 1)
         self.assertEqual(base64.b64decode(preview.data_base64), target_path.read_bytes())
 
-    def test_review_and_weighted_eligible_selection_publish_final_atomically(self) -> None:
+    def test_nominated_eligible_round_is_published_even_when_later_round_scores_higher(self) -> None:
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
         self.review(run_id, 1, score=3)
         self.engine.generate_round(self.generate_arguments(run_id, key="refine-1", action="refine"))
         self.review(run_id, 2, score=5)
-        finalized = self.engine.finalize_run({"run_id": run_id, "summary": "Best reviewed result."})
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Nominated reviewed result.",
+        })
         run_root = self.output_root / "runs" / run_id
-        self.assertEqual(finalized["final"]["round_number"], 2)
+        self.assertEqual(finalized["final"]["round_number"], 1)
         self.assertEqual(finalized["final"]["quality_status"], "accepted")
         self.assertEqual(finalized["final"]["image"]["path"], "final.png")
         self.assertTrue((run_root / "final.png").is_file())
         self.assertFalse((run_root / "final.pending.png").exists())
+
+    def test_nominated_ineligible_round_is_not_replaced_by_accepted_round(self) -> None:
+        started = self.start()
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id))
+        self.review(run_id, 1, score=5, hard_failures=["missing_subject"])
+        self.engine.generate_round(self.generate_arguments(run_id, key="refine-1", action="refine"))
+        self.review(run_id, 2, score=5)
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "User nominated the first reviewed round.",
+        })
+
+        self.assertEqual(finalized["final"]["round_number"], 1)
+        self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
 
     def test_early_finalize_accepts_eligible_round(self) -> None:
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
         self.review(run_id, 1)
-        finalized = self.engine.finalize_run({"run_id": run_id, "summary": "Accepted early."})
+        finalized = self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Accepted early."})
         self.assertEqual(finalized["final"]["quality_status"], "accepted")
 
-    def test_exhausted_custom_budget_selects_best_ineligible_for_user_review(self) -> None:
+    def test_exhausted_custom_budget_marks_nominated_ineligible_round_for_user_review(self) -> None:
         started = self.start(max_rounds=1)
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id, max_rounds=1))
         self.review(run_id, 1, score=5, hard_failures=["missing_subject"])
-        finalized = self.engine.finalize_run({"run_id": run_id, "summary": "Budget exhausted."})
+        finalized = self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Budget exhausted."})
         self.assertEqual(finalized["max_rounds"], 1)
         self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
 
-    def test_ineligible_run_cannot_finalize_before_budget_is_exhausted(self) -> None:
+    def test_ineligible_nominated_round_finalizes_for_user_review_before_budget_is_exhausted(self) -> None:
         started = self.start()
         run_id = started["run_id"]
         self.engine.generate_round(self.generate_arguments(run_id))
         self.review(run_id, 1, hard_failures=["missing_subject"])
-        with self.assertRaises(AssetEngineError) as raised:
-            self.engine.finalize_run({"run_id": run_id, "summary": "Too early."})
-        self.assertEqual(raised.exception.code, "no_eligible_round")
+
+        finalized = self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "User nominated an ineligible draft.",
+        })
+
+        self.assertEqual(finalized["final"]["round_number"], 1)
+        self.assertEqual(finalized["final"]["quality_status"], "needs_user_review")
+
+    def test_finalize_requires_strict_round_number_before_publication(self) -> None:
+        cases = (
+            ({}, "missing_argument"),
+            ({"round_number": True}, "invalid_argument_type"),
+            ({"round_number": "1"}, "invalid_argument_type"),
+            ({"round_number": 0}, "invalid_round_number"),
+            ({"round_number": 4}, "invalid_round_number"),
+        )
+        for change, expected_code in cases:
+            with self.subTest(change=change):
+                started = self.start()
+                run_id = started["run_id"]
+                self.engine.generate_round(self.generate_arguments(run_id, key=f"initial-{run_id}"))
+                self.review(run_id, 1)
+                arguments = {"run_id": run_id, "summary": "Invalid nomination.", **change}
+
+                with self.assertRaises(ValidationError) as raised:
+                    self.engine.finalize_run(arguments)
+
+                self.assertEqual(raised.exception.code, expected_code)
+                self.assertEqual(self.engine.get_run({"run_id": run_id})["state"], "reviewed")
+                self.assertFalse((self.output_root / "runs" / run_id / "final.png").exists())
+
+    def test_unreviewed_or_nonexistent_nominated_round_is_rejected_before_publication(self) -> None:
+        for case, expected_code in (("unreviewed", "round_requires_review"), ("nonexistent", "round_not_found")):
+            with self.subTest(case=case):
+                started = self.start()
+                run_id = started["run_id"]
+                self.engine.generate_round(self.generate_arguments(run_id, key=f"initial-{case}"))
+                if case == "nonexistent":
+                    self.review(run_id, 1)
+                nominated_round = 1 if case == "unreviewed" else 2
+
+                with self.assertRaises(AssetEngineError) as raised:
+                    self.engine.finalize_run({
+                        "run_id": run_id,
+                        "round_number": nominated_round,
+                        "summary": "Invalid nominated round.",
+                    })
+
+                self.assertEqual(raised.exception.code, expected_code)
+                run_root = self.output_root / "runs" / run_id
+                self.assertFalse((run_root / "final.png").exists())
+                self.assertFalse((run_root / "final.pending.png").exists())
 
     def test_invalid_final_summary_does_not_publish_an_artifact(self) -> None:
         started = self.start()
@@ -634,7 +706,7 @@ class AssetRunEngineTests(unittest.TestCase):
         self.engine.generate_round(self.generate_arguments(run_id))
         self.review(run_id, 1)
         with self.assertRaises(ValidationError) as raised:
-            self.engine.finalize_run({"run_id": run_id, "summary": " "})
+            self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": " "})
         self.assertEqual(raised.exception.code, "invalid_final_summary")
         self.assertFalse((self.output_root / "runs" / run_id / "final.png").exists())
         self.assertEqual(self.engine.get_run({"run_id": run_id})["state"], "reviewed")
@@ -652,7 +724,7 @@ class AssetRunEngineTests(unittest.TestCase):
         run_root = self.output_root / "runs" / run_id
         try:
             with self.assertRaises(AssetEngineError) as raised:
-                self.engine.finalize_run({"run_id": run_id, "summary": "Must wait."})
+                self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Must wait."})
             self.assertEqual(raised.exception.code, "run_busy")
             self.assertFalse((run_root / "final.png").exists())
             self.assertFalse((run_root / "final.pending.png").exists())
@@ -668,7 +740,7 @@ class AssetRunEngineTests(unittest.TestCase):
         run_root = self.output_root / "runs" / run_id
 
         with self.assertRaises(AssetEngineError) as raised:
-            self.engine.finalize_run({"run_id": run_id, "summary": "Round one only."})
+            self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Round one only."})
         self.assertEqual(raised.exception.code, "round_requires_review")
         self.assertFalse((run_root / "final.png").exists())
         self.assertFalse((run_root / "final.pending.png").exists())
@@ -679,7 +751,7 @@ class AssetRunEngineTests(unittest.TestCase):
         self.engine.generate_round(self.generate_arguments(run_id))
         self.review(run_id, 1)
         run_root = self.output_root / "runs" / run_id
-        original_finalize = getattr(self.engine.store, "finalize_best_published", None)
+        original_finalize = getattr(self.engine.store, "finalize_round_published", None)
 
         def complete_generation_then_finalize(*args: object, **kwargs: object) -> dict[str, object]:
             refine = self.engine.store.begin_attempt(run_id, "refine-before-final-lock", {
@@ -692,12 +764,12 @@ class AssetRunEngineTests(unittest.TestCase):
 
         with patch.object(
             self.engine.store,
-            "finalize_best_published",
+            "finalize_round_published",
             create=True,
             side_effect=complete_generation_then_finalize,
         ) as finalize_call:
             with self.assertRaises(AssetEngineError) as raised:
-                self.engine.finalize_run({"run_id": run_id, "summary": "Raced selection."})
+                self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Raced selection."})
         self.assertEqual(finalize_call.call_count, 1)
         self.assertEqual(raised.exception.code, "round_requires_review")
         self.assertFalse((run_root / "final.png").exists())
@@ -740,7 +812,7 @@ class AssetRunEngineTests(unittest.TestCase):
                         context = patch("local_gpu_imagegen.run_store.atomic_write_json", side_effect=OSError("manifest failed"))
                     with context:
                         with self.assertRaises(OSError):
-                            engine.finalize_run({"run_id": run_id, "summary": "Transactional final."})
+                            engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Transactional final."})
                     if failure == "publisher":
                         self.assertEqual((run_root / "final.png").read_bytes(), b"prior-untracked-final")
                     else:
@@ -767,7 +839,11 @@ class AssetRunEngineTests(unittest.TestCase):
 
         def finalize_winner() -> None:
             try:
-                winner_results.append(self.engine.finalize_run({"run_id": run_id, "summary": "Winner."}))
+                winner_results.append(self.engine.finalize_run({
+                    "run_id": run_id,
+                    "round_number": 1,
+                    "summary": "Winner.",
+                }))
             except BaseException as error:
                 winner_errors.append(error)
 
@@ -777,7 +853,7 @@ class AssetRunEngineTests(unittest.TestCase):
             self.assertTrue(copied.wait(timeout=5))
             try:
                 with self.assertRaises(AssetEngineError) as raised:
-                    self.engine.finalize_run({"run_id": run_id, "summary": "Loser."})
+                    self.engine.finalize_run({"run_id": run_id, "round_number": 1, "summary": "Loser."})
                 self.assertEqual(raised.exception.code, "run_busy")
             finally:
                 continue_winner.set()
@@ -804,7 +880,11 @@ class AssetRunEngineTests(unittest.TestCase):
             original_unlink(path, *args, **kwargs)
 
         with patch.object(Path, "unlink", new=fail_committed_backup_cleanup):
-            finalized = self.engine.finalize_run({"run_id": run_id, "summary": "Committed despite cleanup."})
+            finalized = self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "Committed despite cleanup.",
+            })
 
         self.assertEqual(finalized["state"], "finalized")
         self.assertIn("finalize_cleanup_failed", finalized["warnings"])

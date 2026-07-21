@@ -70,11 +70,11 @@ Call `local_gpu_get_run` and inspect its state, warnings, attempts, and `recover
 
 Retry the exact generation with the same `idempotency_key` and the same request. A completed retry returns the retained round without calling the backend again. If a validated PNG was retained before interruption, the engine can rebuild its preview. Do not reuse an idempotency key after changing the action, seed, or plan; that returns `idempotency_conflict`.
 
-## The Round Budget Is Exhausted
+## Round Budget And Final Selection
 
-`max_rounds` is limited to 1 through 3 successful rounds. Backend failures do not consume a round. Every generated round must be reviewed before another round is created. An eligible reviewed round can finalize early; an ineligible round cannot finalize until the budget is exhausted.
+`max_rounds` is limited to 1 through 3 successful rounds. Backend failures do not consume a round. Every generated round must be reviewed before another round is created. Finalization requires an explicit reviewed `round_number`; the engine publishes that exact nomination rather than selecting another round by score.
 
-When an exhausted run publishes its best reviewed but ineligible round, final metadata uses `quality_status: needs_user_review`. Inspect the full local PNG and the recorded failures; this status does not mean the result passed the rubric.
+When a caller nominates an ineligible reviewed round, final metadata uses `quality_status: needs_user_review`. Inspect the full local PNG and the recorded failures; this status does not mean the result passed the rubric.
 
 ## A Preview Is Missing
 

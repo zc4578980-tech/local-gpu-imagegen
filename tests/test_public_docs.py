@@ -36,6 +36,8 @@ class PublicDocumentationTests(unittest.TestCase):
             "`upscale_policy` accepts only `auto` or `off`",
             "confirmation must exactly equal the `run_id`",
             "No retained real Codex-client/GPU generation evidence exists for v0.3",
+            "Current AUTOMATIC1111/Forge and Diffusers backend readiness has not been verified for v0.3",
+            "publishes that nominated reviewed round",
         ):
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, readme)
