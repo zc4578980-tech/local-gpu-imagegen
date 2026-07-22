@@ -14,7 +14,7 @@ Then inspect backend readiness:
 python .\scripts\check_gpu.py
 ```
 
-The second command exits with code 1 when no backend is ready, but its JSON report is still valid diagnostic output. ComfyUI adapter: contract-tested; real ComfyUI integration evidence: not retained.
+The second command exits with code 1 when no backend is ready, but its JSON report is still valid diagnostic output. ComfyUI adapter: contract-tested; local Z-Image and Anima adapter executions: observed; public acceptance evidence: not retained.
 
 `local_gpu_list_profiles` returns the scoped merged model catalog beside backend capabilities. A high-level run uses the exact backend from a confirmed route; there is no `auto` fallback and no silent model switch. Capability reporting does not install packages, trust a model, or download one.
 
@@ -66,7 +66,9 @@ User-local trust defaults to the OS state directory; set `LOCAL_GPU_IMAGEGEN_STA
 
 ## ComfyUI Workflow Is Rejected
 
-`invalid_workflow_template`, `invalid_workflow_source`, or `workflow_registration_drifted` means the graph is malformed, changed, over budget, contains an unapproved node/input, or no longer matches its registered local copy. Use the shipped `sd15-txt2img-v1` template or re-import a reviewed graph. Shell, Python/script/process, command, HTTP/download/fetch/webhook behavior, unknown custom nodes, unbound parameters, traversal paths, and resource overruns are rejected.
+`invalid_workflow_template`, `invalid_workflow_source`, or `workflow_registration_drifted` means the graph is malformed, changed, over budget, contains an unapproved node/input, or no longer matches its registered local copy. Use the shipped `sd15-txt2img-v1`, `z-image-turbo-txt2img-v1`, or `anima-txt2img-v1` template, or re-import a reviewed graph. Shell, Python/script/process, command, HTTP/download/fetch/webhook behavior, unknown custom nodes, unbound parameters, traversal paths, and resource overruns are rejected.
+
+An empty `CheckpointLoaderSimple` choice list is normal when ComfyUI contains only split diffusion models; discovery should still return `UNETLoader` choices. If a split workflow fails at submission, verify the exact text encoder and VAE named by the template are already installed. The plugin never downloads a missing component. Do not substitute another encoder/VAE or change loader type without a new reviewed workflow and route confirmation.
 
 ## ComfyUI Job Times Out Or Disappears
 

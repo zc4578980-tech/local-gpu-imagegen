@@ -27,6 +27,7 @@ PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 MODEL = "anything-v5.safetensors"
+UNET_MODEL = "z_image_turbo_nvfp4.safetensors"
 
 
 class FakeClock:
@@ -52,6 +53,15 @@ class ComfyUIAdapterTests(unittest.TestCase):
                 "input": {
                     "required": {
                         "ckpt_name": [[MODEL], {"tooltip": "models"}],
+                    }
+                }
+            }
+        })
+        self.server.routes[("GET", "/object_info/UNETLoader")] = FakeResponse.json({
+            "UNETLoader": {
+                "input": {
+                    "required": {
+                        "unet_name": [[UNET_MODEL], {"tooltip": "models"}],
                     }
                 }
             }
@@ -99,7 +109,9 @@ class ComfyUIAdapterTests(unittest.TestCase):
                 "height": 512,
             },
         )
-        self.model = self.adapter.discover()[0]
+        discovered = self.adapter.discover()
+        self.model = discovered[0]
+        self.unet_model = discovered[1]
         self.server.requests.clear()
 
     def tearDown(self) -> None:
@@ -164,9 +176,66 @@ class ComfyUIAdapterTests(unittest.TestCase):
     def test_discovery_uses_checkpoint_choices_without_mutation(self) -> None:
         records = self.adapter.discover()
 
-        self.assertEqual([item["backend_model_id"] for item in records], [MODEL])
+        self.assertEqual([item["backend_model_id"] for item in records], [MODEL, UNET_MODEL])
         self.assertEqual(records[0]["identity_strength"], "backend_binding")
+        self.assertEqual(records[0]["metadata"], {
+            "loader_class": "CheckpointLoaderSimple",
+            "loader_input": "ckpt_name",
+        })
+        self.assertEqual(records[1]["metadata"], {
+            "loader_class": "UNETLoader",
+            "loader_input": "unet_name",
+        })
         self.assertFalse(any(item["method"] == "POST" for item in self.server.requests))
+
+    def test_discovery_accepts_split_model_only_installation(self) -> None:
+        self.server.routes[("GET", "/object_info/CheckpointLoaderSimple")] = FakeResponse.json({
+            "CheckpointLoaderSimple": {
+                "input": {"required": {"ckpt_name": [[]]}},
+            }
+        })
+
+        records = self.adapter.discover()
+
+        self.assertEqual([item["backend_model_id"] for item in records], [UNET_MODEL])
+        self.assertEqual(records[0]["metadata"]["loader_class"], "UNETLoader")
+
+    def test_generate_accepts_reviewed_unet_workflow(self) -> None:
+        registry = WorkflowTemplateRegistry(
+            ROOT / "workflows" / "comfyui",
+            Path(self.temporary_directory.name) / "z-state",
+        )
+        settings = {
+            "positive_prompt": "cinematic observatory at dawn",
+            "negative_prompt": "anatomy errors",
+            "seed": 42,
+            "steps": 8,
+            "guidance_scale": 1.0,
+            "sampler": "res_multistep",
+            "scheduler": "simple",
+            "width": 768,
+            "height": 768,
+        }
+        workflow = registry.resolve(
+            "z-image-turbo-txt2img",
+            UNET_MODEL,
+            "txt2img",
+            settings,
+        )
+        self.server.routes[("GET", "/history/prompt-1")] = FakeResponse.json(
+            self.completed_history(output_node="11")
+        )
+
+        result = self.adapter.generate(self.request(
+            model=copy.deepcopy(self.unet_model),
+            workflow=workflow,
+            **settings,
+        ))
+
+        self.assertEqual(result["model"], UNET_MODEL)
+        self.assertEqual(result["workflow_template_id"], "z-image-turbo-txt2img")
+        submitted = json.loads(self.server.requests[0]["body"].decode("utf-8"))
+        self.assertEqual(submitted["prompt"]["1"]["class_type"], "UNETLoader")
 
     def test_generate_submits_polls_and_retrieves_named_output(self) -> None:
         result = self.adapter.generate(self.request())

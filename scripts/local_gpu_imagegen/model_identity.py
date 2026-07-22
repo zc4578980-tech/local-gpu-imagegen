@@ -105,6 +105,15 @@ def identity_token(record: dict[str, object]) -> str:
             "identity_strength",
         )
     }
+    if validated["backend"] == "comfyui":
+        metadata = validated["metadata"]
+        loader_class = metadata.get("loader_class")
+        loader_input = metadata.get("loader_input")
+        if isinstance(loader_class, str) and isinstance(loader_input, str):
+            boundary["loader_identity"] = {
+                "loader_class": loader_class,
+                "loader_input": loader_input,
+            }
     encoded = json.dumps(
         boundary,
         sort_keys=True,

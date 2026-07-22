@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "template_id": "anima-txt2img",
+  "template_version": 1,
+  "operation": "txt2img",
+  "model_families": [
+    "anima"
+  ],
+  "allowed_node_classes": [
+    "UNETLoader",
+    "CLIPLoader",
+    "VAELoader",
+    "CLIPTextEncode",
+    "EmptyLatentImage",
+    "KSampler",
+    "VAEDecode",
+    "SaveImage"
+  ],
+  "output_node": "9",
+  "bindings": {
+    "model": ["1", "inputs", "unet_name"],
+    "positive_prompt": ["4", "inputs", "text"],
+    "negative_prompt": ["5", "inputs", "text"],
+    "seed": ["7", "inputs", "seed"],
+    "steps": ["7", "inputs", "steps"],
+    "guidance_scale": ["7", "inputs", "cfg"],
+    "sampler": ["7", "inputs", "sampler_name"],
+    "scheduler": ["7", "inputs", "scheduler"],
+    "width": ["6", "inputs", "width"],
+    "height": ["6", "inputs", "height"]
+  },
+  "graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "anima-aesthetic-v1.1.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_06b_base.safetensors",
+        "type": "stable_diffusion",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "qwen_image_vae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": ["2", 0]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": ["2", 0]
+      }
+    },
+    "6": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "width": 768,
+        "height": 768,
+        "batch_size": 1
+      }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 0,
+        "steps": 30,
+        "cfg": 4.0,
+        "sampler_name": "er_sde",
+        "scheduler": "simple",
+        "denoise": 1.0,
+        "model": ["1", 0],
+        "positive": ["4", 0],
+        "negative": ["5", 0],
+        "latent_image": ["6", 0]
+      }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": ["7", 0],
+        "vae": ["3", 0]
+      }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "local-gpu-imagegen",
+        "images": ["8", 0]
+      }
+    }
+  }
+}

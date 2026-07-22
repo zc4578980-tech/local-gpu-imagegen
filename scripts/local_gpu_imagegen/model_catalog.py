@@ -533,7 +533,10 @@ def _execution_identity(
     backend = binding.get("backend")
     model_id = binding.get("backend_model_id")
     endpoint = binding.get("endpoint_identity")
+    backend_token = binding.get("backend_identity_token")
     if not isinstance(backend, str) or not isinstance(model_id, str):
+        return None
+    if backend_token is not None and not isinstance(backend_token, str):
         return None
     candidates = [
         item
@@ -541,6 +544,7 @@ def _execution_identity(
         if item["backend"] == backend
         and item["backend_model_id"] == model_id
         and (endpoint is None or item["endpoint_identity"] == endpoint)
+        and (backend_token is None or identity_token(item) == backend_token)
     ]
     if len(candidates) != 1:
         return None

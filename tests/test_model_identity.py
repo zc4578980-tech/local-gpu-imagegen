@@ -65,6 +65,25 @@ class ModelIdentityTests(unittest.TestCase):
 
         self.assertTrue(validated["public_evidence_eligible"])
 
+    def test_comfyui_loader_identity_is_part_of_route_token(self) -> None:
+        checkpoint = discovery_record()
+        checkpoint.update({
+            "backend": "comfyui",
+            "metadata": {
+                "loader_class": "CheckpointLoaderSimple",
+                "loader_input": "ckpt_name",
+            },
+        })
+        unet = {
+            **checkpoint,
+            "metadata": {
+                "loader_class": "UNETLoader",
+                "loader_input": "unet_name",
+            },
+        }
+
+        self.assertNotEqual(identity_token(checkpoint), identity_token(unet))
+
     def test_filesystem_is_a_discovery_source_not_a_generation_backend(self) -> None:
         record = discovery_record(
             identity_strength="cryptographic",

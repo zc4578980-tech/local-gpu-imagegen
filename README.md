@@ -2,7 +2,7 @@
 
 An Agent-native local visual-asset control plane for existing AUTOMATIC1111/Forge, ComfyUI, and Diffusers installations. Describe the outcome in natural language; the Agent resolves one inspectable local model route, confirms it, and keeps generation/review/revision state durable.
 
-> Version 0.5.0 is pre-release. Mocked/model-free tests cover the MCP contract, three visual Profiles, nine fixed briefs, three child revisions, discovery/routing, WebUI, and ComfyUI adapter contracts. That does not prove visual quality and is not retained real Codex, vision, model, GPU, ComfyUI, or Real-ESRGAN generation evidence. Codex and other clients are not verified hosts.
+> Version 0.5.0 is pre-release. Mocked/model-free tests cover the MCP contract, three visual Profiles, nine fixed briefs, three child revisions, discovery/routing, WebUI, and ComfyUI adapter contracts. Local Z-Image and Anima calls through the project adapter have been observed, but they do not prove visual quality and are not public 9+3 acceptance evidence. Real Codex/vision acceptance and Real-ESRGAN execution remain unverified; Codex and other clients are not verified hosts.
 
 ## Why This Project
 
@@ -142,7 +142,9 @@ Trust is stored outside the repository under the OS user-state directory, overri
 
 No model weights are bundled. The repository catalog includes the auditable ID `civitai/anything-v5@30163` for an already reviewed local WebUI checkpoint, and downloads remain unapproved. Other local models can enter the private catalog only through discovery and explicit trust; model quality still comes from the user's model. This project adds safer routing, durable review, and hot revision rather than claiming a superior prompt translator.
 
-ComfyUI uses the shipped reviewed `sd15-txt2img-v1` template or a locally copied imported workflow that passes the same allowlist. Shell, Python/script/process execution, network/download/webhook/fetch nodes, commands, unknown custom nodes, unbound parameters, and resource overruns are rejected. ComfyUI adapter: contract-tested; real ComfyUI integration evidence: not retained.
+ComfyUI ships reviewed `sd15-txt2img-v1`, `z-image-turbo-txt2img-v1`, and `anima-txt2img-v1` workflow files. Discovery distinguishes `CheckpointLoaderSimple` from `UNETLoader`; the split-model templates pin their CLIP/text encoder, VAE, latent, sampling, and output nodes while binding only the confirmed primary model. A pure split-model installation may have no checkpoint choices. Shell, Python/script/process execution, network/download/webhook/fetch nodes, commands, unknown custom nodes, unbound parameters, and resource overruns are rejected.
+
+The workflow files do not include, install, trust, or license model weights. Z-Image and Anima still require exact local discovery, user approval, and a confirmed route. Anima is an optional anime route and must not be presented as a commercial or public-evidence default under its upstream weight restrictions. ComfyUI adapter: contract-tested; local Z-Image and Anima adapter executions: observed; public acceptance evidence: not retained.
 
 ## Tool Reference
 

@@ -419,7 +419,11 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("adaptive briefing", discovery)
         self.assertIn("model-free", discovery)
         self.assertIn("complete real 9+3 host/vision acceptance matrix", discovery)
-        self.assertIn("real comfyui generation evidence are not retained", discovery)
+        self.assertIn(
+            "real comfyui generation evidence remains local development validation",
+            discovery,
+        )
+        self.assertIn("rather than public acceptance evidence", discovery)
         self.assertNotIn("codex is verified", discovery)
         self.assertNotIn("real image acceptance is verified", discovery)
         self.assertNotIn("v0.5", discovery)

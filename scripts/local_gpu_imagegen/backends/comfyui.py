@@ -22,6 +22,7 @@ from ..workflow_templates import (
     MAX_SEED,
     MAX_STEPS,
     MIN_DIMENSION,
+    MODEL_LOADER_INPUTS,
     SAFE_NODE_INPUTS,
 )
 from .base import BoundedJsonClient
@@ -95,23 +96,27 @@ class ComfyUIAdapter:
         }
 
     def discover(self) -> list[dict[str, object]]:
-        info = self.client.get_json("/object_info/CheckpointLoaderSimple")
-        names = _checkpoint_choices(info)
         records: list[dict[str, object]] = []
-        for name in sorted(names):
-            record = validate_discovery_record({
-                "backend": self.backend_id,
-                "endpoint_identity": self.endpoint_identity,
-                "backend_model_id": name,
-                "format": Path(name.replace("\\", "/")).suffix.lower() or "unknown",
-                "byte_size": None,
-                "modified_ns": None,
-                "sha256": None,
-                "identity_strength": "backend_binding",
-                "metadata": {},
-            })
-            record["identity_token"] = identity_token(record)
-            records.append(record)
+        for loader_class, input_name in MODEL_LOADER_INPUTS.items():
+            info = self.client.get_json(f"/object_info/{loader_class}")
+            names = _loader_choices(info, loader_class, input_name)
+            for name in sorted(names):
+                record = validate_discovery_record({
+                    "backend": self.backend_id,
+                    "endpoint_identity": self.endpoint_identity,
+                    "backend_model_id": name,
+                    "format": Path(name.replace("\\", "/")).suffix.lower() or "unknown",
+                    "byte_size": None,
+                    "modified_ns": None,
+                    "sha256": None,
+                    "identity_strength": "backend_binding",
+                    "metadata": {
+                        "loader_class": loader_class,
+                        "loader_input": input_name,
+                    },
+                })
+                record["identity_token"] = identity_token(record)
+                records.append(record)
         return records
 
     def generate(self, request: dict[str, object]) -> dict[str, object]:
@@ -390,7 +395,7 @@ def _validate_resolved_workflow(
             "Resolved ComfyUI graph size is invalid.",
         )
     outputs = []
-    loaders = []
+    loaders: list[tuple[str, str]] = []
     samplers = []
     latent_nodes = []
     prompt_values = []
@@ -425,11 +430,11 @@ def _validate_resolved_workflow(
                     "unsafe_comfy_workflow",
                     "Resolved ComfyUI output prefix is unsafe.",
                 )
-        elif class_type == "CheckpointLoaderSimple":
-            loaders.append(inputs.get("ckpt_name"))
+        elif class_type in MODEL_LOADER_INPUTS:
+            loaders.append((class_type, inputs.get(MODEL_LOADER_INPUTS[class_type])))
         elif class_type == "KSampler":
             samplers.append(inputs)
-        elif class_type == "EmptyLatentImage":
+        elif class_type in {"EmptyLatentImage", "EmptySD3LatentImage"}:
             latent_nodes.append(inputs)
         elif class_type == "CLIPTextEncode":
             prompt_values.append(inputs.get("text"))
@@ -440,7 +445,18 @@ def _validate_resolved_workflow(
                     "unsafe_comfy_workflow",
                     "Resolved ComfyUI input image path is unsafe.",
                 )
-    if outputs != [value["output_node"]] or loaders != [model["backend_model_id"]]:
+    metadata = model.get("metadata")
+    expected_loader = (
+        metadata.get("loader_class"),
+        model["backend_model_id"],
+    ) if isinstance(metadata, dict) else (None, model["backend_model_id"])
+    expected_input = metadata.get("loader_input") if isinstance(metadata, dict) else None
+    if (
+        outputs != [value["output_node"]]
+        or expected_loader[0] not in MODEL_LOADER_INPUTS
+        or MODEL_LOADER_INPUTS[expected_loader[0]] != expected_input
+        or loaders != [expected_loader]
+    ):
         raise ConflictError(
             "backend_model_mismatch",
             "Resolved ComfyUI graph changed its confirmed model or output.",
@@ -525,23 +541,22 @@ def _nested_version(stats: dict[str, object]) -> str | None:
     return None
 
 
-def _checkpoint_choices(value: object) -> list[str]:
+def _loader_choices(value: object, loader_class: str, input_name: str) -> list[str]:
     try:
-        choices = value["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]
+        choices = value[loader_class]["input"]["required"][input_name][0]
     except (KeyError, IndexError, TypeError) as error:
         raise ArtifactError(
             "invalid_backend_response",
-            "ComfyUI checkpoint choices are missing.",
+            "ComfyUI model loader choices are missing.",
         ) from error
     if (
         not isinstance(choices, list)
-        or not choices
         or any(not isinstance(item, str) or not _safe_relative_path(item) for item in choices)
         or len(set(choices)) != len(choices)
     ):
         raise ArtifactError(
             "invalid_backend_response",
-            "ComfyUI checkpoint choices are invalid.",
+            "ComfyUI model loader choices are invalid.",
         )
     return list(choices)
 

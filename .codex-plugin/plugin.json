@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Local GPU Visual Asset Engine",
     "shortDescription": "Brief and review catalog-gated local visual asset runs.",
-    "longDescription": "An Agent-native local visual asset control plane with adaptive briefing, bounded local model discovery, user-local trust, confirmed deterministic routing, three visual Profiles, 1-to-3-round review workflows, immutable preserve/change revisions, and durable recovery. No model weights are bundled or downloaded implicitly. Model-free tests cover WebUI and ComfyUI adapter contracts; the complete real 9+3 host/vision acceptance matrix and real ComfyUI generation evidence are not retained.",
+    "longDescription": "An Agent-native local visual asset control plane with adaptive briefing, bounded local model discovery, user-local trust, confirmed deterministic routing, reviewed checkpoint and split-model ComfyUI workflows, three visual Profiles, 1-to-3-round review workflows, immutable preserve/change revisions, and durable recovery. No model weights are bundled or downloaded implicitly. Model-free tests cover WebUI and ComfyUI adapter contracts. Real ComfyUI generation evidence remains local development validation rather than public acceptance evidence; the complete real 9+3 host/vision acceptance matrix is not retained.",
     "developerName": "Capricorn",
     "category": "Creative",
     "capabilities": [

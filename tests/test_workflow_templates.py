@@ -19,6 +19,8 @@ from local_gpu_imagegen.workflow_templates import (  # noqa: E402
 
 
 MODEL = "anything-v5.safetensors"
+Z_IMAGE_MODEL = "z_image_turbo_nvfp4.safetensors"
+ANIMA_MODEL = "anima-aesthetic-v1.1.safetensors"
 
 
 def parameters(**changes: object) -> dict[str, object]:
@@ -113,6 +115,71 @@ class WorkflowTemplateTests(unittest.TestCase):
         self.assertEqual(resolved["graph"]["3"]["inputs"]["steps"], 24)
         self.assertEqual(resolved["graph"]["3"]["inputs"]["cfg"], 5.5)
         self.assertEqual(resolved["graph"]["5"]["inputs"]["width"], 768)
+
+    def test_reviewed_split_model_templates_render_exact_model_contracts(self) -> None:
+        cases = (
+            (
+                "z-image-turbo-txt2img",
+                Z_IMAGE_MODEL,
+                parameters(
+                    steps=8,
+                    guidance_scale=1.0,
+                    sampler="res_multistep",
+                    scheduler="simple",
+                    width=768,
+                    height=768,
+                ),
+                "z-image",
+                "qwen_3_4b_fp4_mixed.safetensors",
+                "ae.safetensors",
+            ),
+            (
+                "anima-txt2img",
+                ANIMA_MODEL,
+                parameters(
+                    steps=30,
+                    guidance_scale=4.0,
+                    sampler="er_sde",
+                    scheduler="simple",
+                    width=768,
+                    height=768,
+                ),
+                "anima",
+                "qwen_3_06b_base.safetensors",
+                "qwen_image_vae.safetensors",
+            ),
+        )
+        for template_id, model, settings, family, clip, vae in cases:
+            with self.subTest(template_id=template_id):
+                resolved = self.registry.resolve(template_id, model, "txt2img", settings)
+                graph = resolved["graph"]
+                self.assertEqual(resolved["model_family"], family)
+                self.assertEqual(graph["1"]["inputs"]["unet_name"], model)
+                self.assertEqual(graph["2"]["inputs"]["clip_name"], clip)
+                self.assertEqual(graph["3"]["inputs"]["vae_name"], vae)
+                self.assertEqual(graph[resolved["output_node"]]["inputs"]["filename_prefix"], "local-gpu-imagegen")
+
+    def test_split_model_routes_reject_unreviewed_loader_settings(self) -> None:
+        document = json.loads(
+            (ROOT / "workflows" / "comfyui" / "z-image-turbo-txt2img-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        graph = document["graph"]
+        graph_binding = {**document["bindings"], "output": [document["output_node"]]}
+        mutations = (
+            ("1", "weight_dtype", "fp8_e4m3fn"),
+            ("2", "type", "qwen_image"),
+            ("8", "shift", 4.0),
+        )
+        for node_id, field, value in mutations:
+            changed = copy.deepcopy(graph)
+            changed[node_id]["inputs"][field] = value
+            with self.subTest(node_id=node_id, field=field), self.assertRaisesRegex(
+                ValidationError,
+                "unsafe_comfy_workflow",
+            ):
+                validate_imported_workflow(changed, graph_binding, [Z_IMAGE_MODEL])
 
     def test_rejects_every_unsafe_fixture(self) -> None:
         unsafe = {

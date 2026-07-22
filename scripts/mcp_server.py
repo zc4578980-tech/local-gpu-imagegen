@@ -12,6 +12,7 @@ from typing import Any
 from local_gpu_imagegen.errors import AssetEngineError
 from local_gpu_imagegen.model_identity import identity_token
 from local_gpu_imagegen.postprocess import SUPPORTED_MODELS
+from local_gpu_imagegen.workflow_templates import MODEL_LOADER_INPUTS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -469,6 +470,10 @@ def tool_schema() -> list[dict[str, Any]]:
                     "license_url": {"type": "string", "minLength": 1},
                     "output_redistribution_status": {"type": "string", "minLength": 1},
                 }, ["source", "license_id", "license_url", "output_redistribution_status"]),
+                "workflow_template_id": {
+                    "type": "string",
+                    "enum": _shipped_workflow_template_ids(),
+                },
                 "workflow_path": {"type": "string", "minLength": 1},
                 "workflow_binding": json_object,
                 "preference": {"type": "integer", "minimum": -100, "maximum": 100},
@@ -698,7 +703,6 @@ def _registered_style_ids() -> list[str]:
     return sorted(path.stem for path in (ROOT / "profiles" / "styles").glob("*.json"))
 
 
-
 def _registered_subtype_ids() -> list[str]:
     subtypes: set[str] = set()
     for path in (ROOT / "profiles" / "use-cases").glob("*.json"):
@@ -707,6 +711,16 @@ def _registered_subtype_ids() -> list[str]:
         if isinstance(values, list):
             subtypes.update(value for value in values if isinstance(value, str) and value)
     return sorted(subtypes)
+
+
+def _shipped_workflow_template_ids() -> list[str]:
+    template_ids = []
+    for path in (ROOT / "workflows" / "comfyui").glob("*.json"):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        template_id = document.get("template_id") if isinstance(document, dict) else None
+        if isinstance(template_id, str) and template_id:
+            template_ids.append(template_id)
+    return sorted(template_ids)
 
 
 def _approved_model_ids() -> list[str]:
@@ -926,6 +940,13 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
                 "workflow_path and workflow_binding must be provided together.",
                 {"fields": ["workflow_path", "workflow_binding"]},
             )
+        if "workflow_template_id" in arguments and "workflow_path" in arguments:
+            return tool_error(
+                "invalid_workflow_binding",
+                "validation",
+                "Choose either one shipped workflow template or one imported workflow, not both.",
+                {"fields": ["workflow_template_id", "workflow_path", "workflow_binding"]},
+            )
 
     if tool["name"] == "local_gpu_branch_run":
         edit_mode = arguments.get("edit_mode")
@@ -1091,14 +1112,25 @@ def _registered_workflow_binding(
     })
     registered = services.workflows.register_import(Path(path), binding, available_models)
     graph = registered.get("graph")
-    loader_names = [
-        node.get("inputs", {}).get("ckpt_name")
-        for node in graph.values()
-        if isinstance(node, dict) and node.get("class_type") == "CheckpointLoaderSimple"
-    ] if isinstance(graph, dict) else []
+    loader_bindings = []
+    if isinstance(graph, dict):
+        for node in graph.values():
+            if not isinstance(node, dict):
+                continue
+            loader_class = node.get("class_type")
+            loader_input = MODEL_LOADER_INPUTS.get(loader_class)
+            inputs = node.get("inputs")
+            if loader_input is not None and isinstance(inputs, dict):
+                loader_bindings.append((loader_class, loader_input, inputs.get(loader_input)))
     matches = [
         item for item in comfy_records
-        if item.get("backend_model_id") in loader_names
+        if any(
+            item.get("backend_model_id") == model_name
+            and isinstance(item.get("metadata"), dict)
+            and item["metadata"].get("loader_class") == loader_class
+            and item["metadata"].get("loader_input") == loader_input
+            for loader_class, loader_input, model_name in loader_bindings
+        )
     ]
     if record.get("backend") == "comfyui":
         matches = [item for item in matches if identity_token(item) == identity_token(record)]
@@ -1113,6 +1145,7 @@ def _registered_workflow_binding(
         "backend": "comfyui",
         "endpoint_identity": selected["endpoint_identity"],
         "backend_model_id": selected["backend_model_id"],
+        "backend_identity_token": identity_token(selected),
         "template_id": registered["template_id"],
         "template_version": registered["template_version"],
     }
@@ -1124,6 +1157,108 @@ def _registered_workflow_binding(
     return trust_binding, public_registration
 
 
+def _shipped_workflow_binding(
+    services: Any,
+    record: dict[str, object],
+    template_id: str,
+    capabilities: dict[str, object],
+) -> tuple[dict[str, object], dict[str, object]]:
+    if record.get("backend") != "comfyui":
+        raise AssetEngineError(
+            "shipped_workflow_requires_backend_identity",
+            "A shipped workflow must bind one exact current ComfyUI API identity.",
+            "validation",
+        )
+    operations = capabilities.get("operations") if isinstance(capabilities, dict) else None
+    recommended = capabilities.get("recommended") if isinstance(capabilities, dict) else None
+    resolution = recommended.get("resolution") if isinstance(recommended, dict) else None
+    if (
+        not isinstance(operations, list)
+        or len(operations) != 1
+        or not isinstance(operations[0], str)
+        or not isinstance(recommended, dict)
+        or not isinstance(resolution, dict)
+    ):
+        raise AssetEngineError(
+            "invalid_workflow_capabilities",
+            "Shipped workflow binding requires one operation and complete recommended settings.",
+            "validation",
+        )
+    try:
+        parameters = {
+            "positive_prompt": "catalog validation",
+            "negative_prompt": "",
+            "seed": 0,
+            "steps": recommended["steps"],
+            "guidance_scale": recommended["guidance"],
+            "sampler": recommended["sampler"],
+            "scheduler": recommended["scheduler"],
+            "width": resolution["width"],
+            "height": resolution["height"],
+        }
+    except KeyError as error:
+        raise AssetEngineError(
+            "invalid_workflow_capabilities",
+            "Shipped workflow binding requires complete recommended settings.",
+            "validation",
+        ) from error
+    resolved = services.workflows.resolve(
+        template_id,
+        str(record["backend_model_id"]),
+        operations[0],
+        parameters,
+    )
+    if resolved.get("model_family") != capabilities.get("model_family"):
+        raise AssetEngineError(
+            "workflow_model_family_mismatch",
+            "Shipped workflow model family does not match the declared capability boundary.",
+            "validation",
+        )
+    metadata = record.get("metadata")
+    loader_bindings = _workflow_loader_bindings(resolved.get("graph"))
+    expected = (
+        metadata.get("loader_class"),
+        metadata.get("loader_input"),
+        record.get("backend_model_id"),
+    ) if isinstance(metadata, dict) else (None, None, record.get("backend_model_id"))
+    if loader_bindings != [expected]:
+        raise AssetEngineError(
+            "workflow_model_binding_ambiguous",
+            "Shipped workflow must bind the exact confirmed ComfyUI loader identity.",
+            "validation",
+        )
+    trust_binding = {
+        "backend": "comfyui",
+        "endpoint_identity": record["endpoint_identity"],
+        "backend_model_id": record["backend_model_id"],
+        "backend_identity_token": identity_token(record),
+        "template_id": resolved["template_id"],
+        "template_version": resolved["template_version"],
+    }
+    public_registration = {
+        "source": "shipped",
+        "template_id": resolved["template_id"],
+        "template_version": resolved["template_version"],
+        "workflow_sha256": resolved["workflow_sha256"],
+    }
+    return trust_binding, public_registration
+
+
+def _workflow_loader_bindings(graph: object) -> list[tuple[object, object, object]]:
+    bindings = []
+    if not isinstance(graph, dict):
+        return bindings
+    for node in graph.values():
+        if not isinstance(node, dict):
+            continue
+        loader_class = node.get("class_type")
+        loader_input = MODEL_LOADER_INPUTS.get(loader_class)
+        inputs = node.get("inputs")
+        if loader_input is not None and isinstance(inputs, dict):
+            bindings.append((loader_class, loader_input, inputs.get(loader_input)))
+    return bindings
+
+
 def _trust_call(services: Any, arguments: dict[str, Any]) -> dict[str, object]:
     token = arguments["identity_token"]
     if arguments["action"] == "revoke":
@@ -1133,7 +1268,14 @@ def _trust_call(services: Any, arguments: dict[str, Any]) -> dict[str, object]:
     record = _inventory_identity(services, token)
     workflow_binding = None
     registered_workflow = None
-    if "workflow_path" in arguments:
+    if "workflow_template_id" in arguments:
+        workflow_binding, registered_workflow = _shipped_workflow_binding(
+            services,
+            record,
+            arguments["workflow_template_id"],
+            arguments["capabilities"],
+        )
+    elif "workflow_path" in arguments:
         workflow_binding, registered_workflow = _registered_workflow_binding(
             services,
             record,

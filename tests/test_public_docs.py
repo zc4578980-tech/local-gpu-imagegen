@@ -77,7 +77,7 @@ class PublicDocumentationTests(unittest.TestCase):
             "`civitai/anything-v5@30163`",
             "No model weights are bundled",
             "Mocked/model-free",
-            "not retained real Codex, vision, model, GPU, ComfyUI, or Real-ESRGAN generation evidence",
+            "Local Z-Image and Anima calls through the project adapter have been observed",
             "`LOCAL_GPU_IMAGEGEN_REALESRGAN_DIR`",
             "`realesrgan-x4plus-anime`",
             "`realesr-animevideov3-x4`",
@@ -132,13 +132,17 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("## [0.4.0] - 2026-07-21", changelog)
         self.assertIn("## [0.3.0]", changelog)
 
-    def test_docs_distinguish_contract_tested_comfyui_from_real_evidence(self) -> None:
+    def test_docs_distinguish_local_comfyui_validation_from_public_acceptance(self) -> None:
         public = "\n".join(
             (ROOT / path).read_text(encoding="utf-8")
             for path in ("README.md", "docs/architecture.md", "docs/troubleshooting.md")
         )
         self.assertIn("ComfyUI adapter: contract-tested", public)
-        self.assertIn("real ComfyUI integration evidence: not retained", public)
+        self.assertIn("local Z-Image and Anima adapter executions: observed", public)
+        self.assertIn("public acceptance evidence: not retained", public)
+        self.assertIn("`z-image-turbo-txt2img-v1`", public)
+        self.assertIn("`anima-txt2img-v1`", public)
+        self.assertIn("`UNETLoader`", public)
         self.assertNotIn("supports arbitrary models", public.lower())
 
     def test_plugin_manifest_describes_current_byom_boundary(self) -> None:
@@ -170,6 +174,8 @@ class PublicDocumentationTests(unittest.TestCase):
             "public_evidence",
             "no silent model switch",
             "sd15-txt2img-v1",
+            "z-image-turbo-txt2img-v1",
+            "anima-txt2img-v1",
             "model quality still comes from the user's model",
         ):
             with self.subTest(required=required):

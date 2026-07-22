@@ -15,8 +15,14 @@ from .errors import ArtifactError, ConflictError, ValidationError
 
 SAFE_NODE_INPUTS = {
     "CheckpointLoaderSimple": frozenset({"ckpt_name"}),
+    "UNETLoader": frozenset({"unet_name", "weight_dtype"}),
+    "CLIPLoader": frozenset({"clip_name", "type", "device"}),
+    "VAELoader": frozenset({"vae_name"}),
     "CLIPTextEncode": frozenset({"text", "clip"}),
+    "ConditioningZeroOut": frozenset({"conditioning"}),
     "EmptyLatentImage": frozenset({"width", "height", "batch_size"}),
+    "EmptySD3LatentImage": frozenset({"width", "height", "batch_size"}),
+    "ModelSamplingAuraFlow": frozenset({"model", "shift"}),
     "KSampler": frozenset({
         "seed",
         "steps",
@@ -37,6 +43,10 @@ SAFE_NODE_INPUTS = {
     "SaveImage": frozenset({"filename_prefix", "images"}),
 }
 SAFE_NODE_CLASSES = frozenset(SAFE_NODE_INPUTS)
+MODEL_LOADER_INPUTS = {
+    "CheckpointLoaderSimple": "ckpt_name",
+    "UNETLoader": "unet_name",
+}
 FORBIDDEN_TERMS = (
     "shell",
     "python",
@@ -311,7 +321,7 @@ def _validate_shipped_document(value: object) -> dict[str, object]:
             "invalid_workflow_template",
             "Reviewed workflow node allowlist is invalid.",
         )
-    available = _checkpoint_names(graph)
+    available = _primary_model_names(graph)
     try:
         validated = validate_imported_workflow(
             graph,
@@ -366,7 +376,7 @@ def _validate_registered_document(value: object, digest: str) -> dict[str, objec
     }
     if _canonical_hash(payload) != digest:
         raise ValueError("registration digest mismatch")
-    available = _checkpoint_names(value["graph"])
+    available = _primary_model_names(value["graph"])
     validated = validate_imported_workflow(
         value["graph"],
         {**value["bindings"], "output": [value["output_node"]]},
@@ -418,9 +428,10 @@ def _validate_binding(
         normalized[key] = list(path)
     model_node = graph[normalized["model"][0]]
     output = graph[output_node]
+    model_class = model_node["class_type"]
     if (
-        model_node["class_type"] != "CheckpointLoaderSimple"
-        or normalized["model"][2] != "ckpt_name"
+        model_class not in MODEL_LOADER_INPUTS
+        or normalized["model"][2] != MODEL_LOADER_INPUTS[model_class]
         or output["class_type"] != "SaveImage"
     ):
         raise _unsafe("Workflow model or output binding targets the wrong node class.")
@@ -475,6 +486,21 @@ def _enforce_resource_limits(graph: dict[str, object]) -> None:
         ):
             raise _unsafe("Workflow denoise is outside the reviewed limit.", node_id)
         class_type = node["class_type"]
+        for field in ("ckpt_name", "unet_name", "clip_name", "vae_name"):
+            if field in inputs and (
+                not isinstance(inputs[field], str)
+                or not _safe_relative_path(inputs[field])
+            ):
+                raise _unsafe("Workflow model component name is unsafe.", node_id)
+        if class_type == "UNETLoader" and inputs.get("weight_dtype") != "default":
+            raise _unsafe("Workflow UNet precision is outside the reviewed route.", node_id)
+        if class_type == "CLIPLoader" and (
+            inputs.get("type") not in {"lumina2", "stable_diffusion"}
+            or inputs.get("device", "default") != "default"
+        ):
+            raise _unsafe("Workflow text encoder settings are outside the reviewed routes.", node_id)
+        if class_type == "ModelSamplingAuraFlow" and inputs.get("shift") != 3.0:
+            raise _unsafe("Workflow sampling shift is outside the reviewed route.", node_id)
         if class_type == "SaveImage" and inputs.get("filename_prefix") != "local-gpu-imagegen":
             raise _unsafe("Workflow output prefix is outside the owned namespace.", node_id)
         if class_type in {"LoadImage", "LoadImageMask"}:
@@ -487,16 +513,13 @@ def _enforce_model_names(
     graph: dict[str, object],
     available_models: set[str],
 ) -> None:
-    loaders = [
-        node
-        for node in graph.values()
-        if node["class_type"] == "CheckpointLoaderSimple"
-    ]
+    loaders = [node for node in graph.values() if node["class_type"] in MODEL_LOADER_INPUTS]
     if len(loaders) != 1:
-        raise _unsafe("Workflow must contain exactly one checkpoint loader.")
-    model = loaders[0]["inputs"].get("ckpt_name")
+        raise _unsafe("Workflow must contain exactly one primary model loader.")
+    loader = loaders[0]
+    model = loader["inputs"].get(MODEL_LOADER_INPUTS[loader["class_type"]])
     if not isinstance(model, str) or model not in available_models:
-        raise _unsafe("Workflow checkpoint is not in the displayed backend inventory.")
+        raise _unsafe("Workflow model is not in the displayed backend inventory.")
 
 
 def _validate_parameters(value: object) -> dict[str, object]:
@@ -576,15 +599,22 @@ def _read_bounded_json(path: Path) -> object:
         ) from error
 
 
-def _checkpoint_names(graph: object) -> list[str]:
+def _primary_model_names(graph: object) -> list[str]:
     if not isinstance(graph, dict):
         raise ValueError("invalid graph")
     names = []
     for node in graph.values():
-        if isinstance(node, dict) and node.get("class_type") == "CheckpointLoaderSimple":
-            inputs = node.get("inputs")
-            if isinstance(inputs, dict) and isinstance(inputs.get("ckpt_name"), str):
-                names.append(inputs["ckpt_name"])
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type")
+        input_name = MODEL_LOADER_INPUTS.get(class_type)
+        inputs = node.get("inputs")
+        if (
+            input_name is not None
+            and isinstance(inputs, dict)
+            and isinstance(inputs.get(input_name), str)
+        ):
+            names.append(inputs[input_name])
     return names
 
 
