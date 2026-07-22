@@ -42,6 +42,34 @@ class RepositoryHygieneTests(unittest.TestCase):
             any(path.startswith(("outputs/", "docs/evidence/runs/")) for path in tracked)
         )
 
+    def test_tracked_public_files_do_not_contain_personal_absolute_roots(self) -> None:
+        tracked = subprocess.run(
+            ["git", "ls-files"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        forbidden = (
+            "C:" + "\\Users\\" + "Capricorn",
+            "C:" + "\\\\Users\\\\" + "Capricorn",
+            "D:" + "\\CodexWorkspace",
+            "D:" + "\\AI\\envs\\" + "pytorch-vla",
+        )
+        findings: list[str] = []
+        for relative in tracked:
+            if relative.startswith("tests/"):
+                continue
+            path = ROOT / relative
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for value in forbidden:
+                if value in content:
+                    findings.append(f"{relative}:{value}")
+        self.assertEqual(findings, [])
+
     def test_registry_metadata_is_exact_and_uses_uvx_stdio(self) -> None:
         server = json.loads((ROOT / "server.json").read_text(encoding="utf-8"))
         self.assertEqual(

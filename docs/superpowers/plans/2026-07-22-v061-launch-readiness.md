@@ -12,7 +12,7 @@
 
 - Keep exactly fifteen MCP tools and preserve all existing run, review, trust, and finalization contracts.
 - Keep `v0.6.0` and tag `v0.6.0` unchanged; all corrected active version fields become `0.6.1`.
-- Do not modify shared/global Python or `<local-ai-root>\envs\pytorch-vla`.
+- Do not modify shared/global Python or the user's shared learning environment.
 - Do not download, install, trust, or silently switch a model or runtime.
 - Do not publish private trust state, endpoints, prompts, account data, absolute paths, `docs/evidence/runs/`, failed runs, or unapproved output bytes.
 - Use the existing SDXL checkpoint SHA-256 `31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b`, workflow SHA-256 `05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d36000e`, and bundle SHA-256 `ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62`.
@@ -377,7 +377,7 @@ def test_rejects_config_only_source_checkout_and_version_mismatch(self) -> None:
 
 def test_rejects_private_values_and_unhashed_results(self) -> None:
     document = valid_session(client="codex", tool="local_gpu_get_run")
-    document["tool_calls"][0]["result"] = {"path": "C:\\Users\\Capricorn\\private.png"}
+    document["tool_calls"][0]["result"] = {"path": "C:\\private\\output.png"}
     document["tool_calls"][0]["result_sha256"] = "0" * 64
     findings = validate_session(document, expected_server_version="0.6.1")
     self.assertIn("private_value", findings)
@@ -685,7 +685,7 @@ Expected: exactly one `local_gpu_imagegen-0.6.1-py3-none-any.whl`.
 - [ ] **Step 3: Install and verify outside the checkout**
 
 ```powershell
-$rc = '<codex-workspace>\scratch\local-gpu-imagegen-v061-rc'
+$rc = Join-Path $env:TEMP 'local-gpu-imagegen-v061-rc'
 py -3.12 -m venv $rc
 & "$rc\Scripts\python.exe" -m pip install .\dist\local_gpu_imagegen-0.6.1-py3-none-any.whl --no-deps
 & "$rc\Scripts\local-gpu-imagegen.exe" verify
@@ -838,7 +838,7 @@ git commit -m "docs(evidence): retain real Codex and Claude sessions"
 - Modify after live verification: `docs/release-checklist.md`
 - Modify: `PROJECT_NODES.md`
 - Modify: `NEXT_SESSION.md`
-- Append: `<codex-workspace>\obsidian\Codex Logs\2026-07-22.md`
+- Append: the configured private Obsidian daily log for `2026-07-22`
 
 **Interfaces:**
 - Produces: public branch, four green jobs, PyPI `0.6.1`, official MCP Registry record, immutable `v0.6.1` tag, GitHub prerelease, topics, and verified URLs.

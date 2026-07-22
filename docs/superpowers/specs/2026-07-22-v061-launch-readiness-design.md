@@ -21,7 +21,7 @@ The existing public `v0.6.0` tag remains an unreleased candidate. It is not move
 - Do not complete the full 9+3 public acceptance matrix for this preview.
 - Do not add a frontend panel, model training, automatic segmentation, or a new backend.
 - Do not download or silently switch image models.
-- Do not change shared/global Python or `<local-ai-root>\envs\pytorch-vla`.
+- Do not change shared/global Python or the user's shared learning environment.
 - Do not claim that the control plane improves the underlying model's visual intelligence.
 - Do not guarantee stars, production readiness, latency, concurrency, or VRAM behavior.
 

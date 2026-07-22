@@ -4,16 +4,22 @@ This checklist covers repository release readiness. It does not grant model, wor
 
 ## Local gate
 
-- [ ] All model-free tests pass on the exact `0.6.1` release commit.
-- [ ] Python sources compile.
-- [ ] All tracked JSON documents parse.
-- [ ] The `0.6.1` wheel builds and installs in an isolated virtual environment outside the checkout.
-- [ ] The installed wheel exposes exactly fifteen MCP tools and both evidence schemas.
-- [ ] Codex and Claude Code guided setup remains read-only without `--apply`.
-- [ ] The protocol demo regenerates byte-for-byte and contains no private values.
-- [ ] Tracked files contain no credentials or personal absolute paths.
-- [ ] `git diff --check` passes.
-- [ ] `docs/evidence/runs/`, `outputs/`, trust state, and private images remain untracked and unstaged.
+- [x] All model-free tests pass on the `0.6.1` local RC tree: 539 passed, 4 expected Windows link-privilege skips, 0 failures.
+- [x] Python sources compile.
+- [x] All 30 tracked JSON documents parse.
+- [x] The `0.6.1` wheel builds and installs under isolated Python 3.12.12 outside the checkout.
+- [x] The installed wheel exposes exactly fifteen MCP tools and both evidence schemas.
+- [x] Codex and Claude Code guided setup remains read-only without `--apply`.
+- [x] The protocol demo regenerates byte-for-byte and contains no private values.
+- [x] Tracked files contain no credentials or personal absolute paths.
+- [x] `git diff --check` passes.
+- [x] `docs/evidence/runs/`, `outputs/`, trust state, and private images remain untracked and unstaged.
+
+Local RC artifact: `local_gpu_imagegen-0.6.1-py3-none-any.whl`
+
+SHA-256: `d4df7de961c872568d7a33ae1a029d3544b6303050c903f9b68d4375db7bdb44`
+
+These local observations must be repeated at the exact final release commit after genuine demo and named-client evidence are added.
 
 ## Evidence gate
 
