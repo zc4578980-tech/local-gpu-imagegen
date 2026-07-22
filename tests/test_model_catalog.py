@@ -13,7 +13,11 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.errors import ConflictError, ValidationError  # noqa: E402
 from local_gpu_imagegen.model_catalog import ModelCatalog, REPOSITORY_REQUIRED  # noqa: E402
-from local_gpu_imagegen.model_identity import identity_token, validate_discovery_record  # noqa: E402
+from local_gpu_imagegen.model_identity import (  # noqa: E402
+    build_component_bundle,
+    identity_token,
+    validate_discovery_record,
+)
 
 
 def discovery_record(
@@ -154,6 +158,7 @@ class FakeWorkflows:
             "template_id": template_id,
             "template_version": 1,
             "operation": operation,
+            "workflow_sha256": "d" * 64,
         }
 
 
@@ -327,7 +332,10 @@ class ModelCatalogTests(unittest.TestCase):
             "modified_ns": None,
             "sha256": None,
             "identity_strength": "backend_binding",
-            "metadata": {},
+            "metadata": {
+                "loader_class": "CheckpointLoaderSimple",
+                "loader_input": "ckpt_name",
+            },
         })
         comfy["identity_token"] = identity_token(comfy)
         trusted = trust_record(
@@ -339,9 +347,36 @@ class ModelCatalogTests(unittest.TestCase):
             "backend": "comfyui",
             "backend_model_id": "anything-v5.safetensors",
             "endpoint_identity": "endpoint:comfyui",
+            "backend_identity_token": comfy["identity_token"],
             "template_id": "sd15-txt2img",
             "template_version": 1,
+            "workflow_sha256": "d" * 64,
         }
+        trusted["component_bundle"] = build_component_bundle(
+            [{
+                "role": "primary_model",
+                "loader_class": "CheckpointLoaderSimple",
+                "loader_input": "ckpt_name",
+                "backend_model_id": "anything-v5.safetensors",
+                "filesystem_identity_token": filesystem["identity_token"],
+                "sha256": "c" * 64,
+                "byte_size": 2048,
+            }],
+            {
+                "template_id": "sd15-txt2img",
+                "template_version": 1,
+                "sha256": "d" * 64,
+            },
+        )
+        trusted["workflow_binding"]["component_bundle_sha256"] = trusted["component_bundle"]["bundle_sha256"]
+        trusted["public_metadata"]["components"] = [{
+            "role": "primary_model",
+            "sha256": "c" * 64,
+            "source": "https://example.invalid/component",
+            "license_id": "test-license",
+            "license_url": "https://example.invalid/license",
+            "output_redistribution_status": "approved",
+        }]
         trusted["capabilities"]["operations"] = ["txt2img"]
         self.inventory.extend((filesystem, comfy))
         self.trust.records.append(trusted)
@@ -355,6 +390,10 @@ class ModelCatalogTests(unittest.TestCase):
         self.assertEqual(model["identity_strength"], "cryptographic")
         self.assertEqual(model["sha256"], "c" * 64)
         self.assertEqual(model["workflow_template_id"], "sd15-txt2img")
+        self.assertEqual(
+            model["component_bundle_sha256"],
+            trusted["component_bundle"]["bundle_sha256"],
+        )
         self.assertEqual(
             identity_token(validate_discovery_record(model)),
             model["identity_token"],
@@ -370,6 +409,10 @@ class ModelCatalogTests(unittest.TestCase):
             self.trust.observations[-1][1],
             filesystem["identity_token"],
         )
+
+        self.inventory.remove(filesystem)
+        with self.assertRaisesRegex(ValidationError, "model_not_eligible"):
+            self.catalog.resolve("local:filesystem-comfy", "public_evidence")
 
     def test_shipped_schema_and_records_expose_exact_routing_metadata(self) -> None:
         schema = json.loads(

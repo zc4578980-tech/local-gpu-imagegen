@@ -12,6 +12,9 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import urlsplit
 
+from local_gpu_imagegen.errors import AssetEngineError
+from local_gpu_imagegen.model_identity import build_component_bundle, validate_component_bundle
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -46,6 +49,21 @@ PUBLIC_ROUTE_KEYS = {
     "workflow_template_version",
     "prompt_compiler_id",
     "prompt_compiler_version",
+    "component_bundle",
+    "component_bundle_sha256",
+}
+AUTHORITY_COMPONENT_FIELDS = {
+    "role",
+    "loader_class",
+    "loader_input",
+    "backend_model_id",
+    "filesystem_identity_token",
+    "sha256",
+    "byte_size",
+    "source",
+    "license_id",
+    "license_url",
+    "output_redistribution_status",
 }
 PRIVATE_EVIDENCE_KEYS = frozenset({
     "backend_model_id",
@@ -185,7 +203,7 @@ def validate_authority(path: Path, briefs_path: Path) -> dict[str, object]:
     backend = authority.get("backend")
     if (
         not isinstance(backend, dict)
-        or backend.get("type") not in {"webui", "diffusers"}
+        or backend.get("type") not in {"webui", "diffusers", "comfyui"}
         or not _nonempty(backend.get("implementation"))
         or backend.get("local") is not True
     ):
@@ -201,7 +219,8 @@ def validate_authority(path: Path, briefs_path: Path) -> dict[str, object]:
             "id", "source", "sha256", "license_id", "license_url",
             "output_redistribution_status", "expected_storage", "use_approved", "download_approved",
         }
-        if set(model) != required_model:
+        component_fields = {"components", "workflow", "component_bundle_sha256"}
+        if frozenset(model) not in {frozenset(required_model), frozenset(required_model | component_fields)}:
             raise EvidenceError("invalid_acceptance_authority", "Approved model fields are incomplete.")
         model_id = model.get("id")
         if not _nonempty(model_id) or model_id in seen_models or is_mock_marker(str(model_id)):
@@ -215,6 +234,13 @@ def validate_authority(path: Path, briefs_path: Path) -> dict[str, object]:
             raise EvidenceError("model_output_redistribution_unapproved", "Public evidence requires output redistribution approval.")
         if type(model.get("download_approved")) is not bool:
             raise EvidenceError("invalid_acceptance_authority", "Model download approval must be explicit.")
+        if component_fields <= set(model):
+            _validate_authority_component_bundle(model)
+        elif backend.get("type") == "comfyui":
+            raise EvidenceError(
+                "invalid_acceptance_authority",
+                "ComfyUI authority requires an exact component bundle and reviewed workflow.",
+            )
     if authority.get("repository_license") not in {"MIT", "Apache-2.0"}:
         raise EvidenceError("invalid_acceptance_authority", "Repository license must be explicitly approved.")
     if not _nonempty(authority.get("copyright_holder")):
@@ -229,6 +255,82 @@ def validate_authority(path: Path, briefs_path: Path) -> dict[str, object]:
     ):
         raise EvidenceError("invalid_acceptance_authority", "Install/download authority is invalid.")
     return authority
+
+
+def _validate_authority_component_bundle(model: dict[str, object]) -> dict[str, object]:
+    components = model.get("components")
+    workflow = model.get("workflow")
+    if not isinstance(components, list) or not components or not isinstance(workflow, dict):
+        raise EvidenceError(
+            "invalid_acceptance_authority",
+            "Component authority requires model components and one reviewed workflow.",
+        )
+    identities = []
+    primary_sha = None
+    for component in components:
+        if not isinstance(component, dict) or set(component) != AUTHORITY_COMPONENT_FIELDS:
+            raise EvidenceError(
+                "invalid_acceptance_authority",
+                "Approved component fields are incomplete or unexpected.",
+            )
+        if not all(
+            _nonempty(component.get(key))
+            for key in (
+                "role",
+                "loader_class",
+                "loader_input",
+                "backend_model_id",
+                "filesystem_identity_token",
+                "sha256",
+                "source",
+                "license_id",
+                "license_url",
+            )
+        ):
+            raise EvidenceError(
+                "invalid_acceptance_authority",
+                "Approved component identity, source, and license facts are required.",
+            )
+        if (
+            not _valid_sha(component.get("sha256"))
+            or type(component.get("byte_size")) is not int
+            or int(component["byte_size"]) < 1
+            or component.get("output_redistribution_status") != "approved"
+        ):
+            raise EvidenceError(
+                "model_output_redistribution_unapproved",
+                "Every component requires exact bytes and output redistribution approval.",
+            )
+        identities.append({
+            key: component[key]
+            for key in (
+                "role",
+                "loader_class",
+                "loader_input",
+                "backend_model_id",
+                "filesystem_identity_token",
+                "sha256",
+                "byte_size",
+            )
+        })
+        if component.get("role") == "primary_model":
+            primary_sha = component.get("sha256")
+    try:
+        bundle = build_component_bundle(identities, workflow)
+    except AssetEngineError as error:
+        raise EvidenceError(
+            "invalid_acceptance_authority",
+            "Approved component bundle is invalid.",
+        ) from error
+    if (
+        model.get("component_bundle_sha256") != bundle["bundle_sha256"]
+        or model.get("sha256") != primary_sha
+    ):
+        raise EvidenceError(
+            "invalid_acceptance_authority",
+            "Approved component bundle digest or primary model hash is inconsistent.",
+        )
+    return bundle
 
 
 def _validate_package(
@@ -482,6 +584,8 @@ def _validate_public_route(value: object, authority: dict[str, object]) -> dict[
         raise EvidenceError("route_authority_mismatch", "Public route shape is invalid.")
     workflow_id = value.get("workflow_template_id")
     workflow_version = value.get("workflow_template_version")
+    component_bundle = value.get("component_bundle")
+    component_bundle_sha = value.get("component_bundle_sha256")
     if (
         value.get("authorization_scope") != "public_evidence"
         or value.get("identity_strength") != "cryptographic"
@@ -493,6 +597,7 @@ def _validate_public_route(value: object, authority: dict[str, object]) -> dict[
         or int(value["prompt_compiler_version"]) < 1
         or ((workflow_id is None) != (workflow_version is None))
         or (workflow_id is not None and (not _nonempty(workflow_id) or type(workflow_version) is not int))
+        or ((component_bundle is None) != (component_bundle_sha is None))
     ):
         raise EvidenceError("route_authority_mismatch", "Public route values are invalid.")
     backend = authority.get("backend")
@@ -511,6 +616,40 @@ def _validate_public_route(value: object, authority: dict[str, object]) -> dict[
         or value.get("sha256") != approved.get("sha256")
     ):
         raise EvidenceError("route_authority_mismatch", "Public route differs from acceptance authority.")
+    if value.get("backend") == "comfyui" and component_bundle is None:
+        raise EvidenceError(
+            "route_authority_mismatch",
+            "Public ComfyUI routes require a complete component bundle.",
+        )
+    if component_bundle is not None:
+        try:
+            bundle = validate_component_bundle(component_bundle)
+        except AssetEngineError as error:
+            raise EvidenceError(
+                "route_authority_mismatch",
+                "Public route component bundle is invalid.",
+            ) from error
+        workflow = bundle["workflow"]
+        if (
+            component_bundle_sha != bundle["bundle_sha256"]
+            or workflow_id != workflow["template_id"]
+            or workflow_version != workflow["template_version"]
+        ):
+            raise EvidenceError(
+                "route_authority_mismatch",
+                "Public route workflow and component bundle are inconsistent.",
+            )
+        if not {"components", "workflow", "component_bundle_sha256"} <= set(approved):
+            raise EvidenceError(
+                "route_authority_mismatch",
+                "Acceptance authority does not approve this component bundle.",
+            )
+        authority_bundle = _validate_authority_component_bundle(approved)
+        if bundle != authority_bundle:
+            raise EvidenceError(
+                "route_authority_mismatch",
+                "Public route component bytes differ from acceptance authority.",
+            )
     return value
 
 

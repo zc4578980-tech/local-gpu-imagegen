@@ -138,11 +138,11 @@ Complete PPT decks are excluded. Frontend code and components are excluded. Prod
 
 Discovery has four levels: `api_only`, `selected_folders`, `common_locations`, and `full_drive`. Filesystem discovery is two-stage: `index` records bounded metadata without opening checkpoint payloads; `fingerprint` computes SHA-256 only for explicitly selected indexed candidates. `.ckpt` remains opaque, and scans do not follow symlinks, junctions, or reparse points.
 
-Trust is stored outside the repository under the OS user-state directory, overridable with `LOCAL_GPU_IMAGEGEN_STATE_DIR`. A `backend_binding` identity can be trusted only for `private` use. A `cryptographic` identity may become a `public_evidence` candidate only with SHA-256, source, license, and output-redistribution metadata; acceptance authority is still required before export.
+Trust is stored outside the repository under the OS user-state directory, overridable with `LOCAL_GPU_IMAGEGEN_STATE_DIR`. A `backend_binding` identity can be trusted only for `private` use. For split ComfyUI routes, the trust tool first offers a non-mutating inspection action that binds the primary model, text encoder, VAE, and reviewed workflow into one canonical SHA-256 bundle. The exact bundle digest is part of the later trust confirmation and route token. A cryptographic bundle may become a `public_evidence` candidate only with exact source, license, and output-redistribution metadata for every component; acceptance authority must approve that same bundle before export.
 
 No model weights are bundled. The repository catalog includes the auditable ID `civitai/anything-v5@30163` for an already reviewed local WebUI checkpoint, and downloads remain unapproved. Other local models can enter the private catalog only through discovery and explicit trust; model quality still comes from the user's model. This project adds safer routing, durable review, and hot revision rather than claiming a superior prompt translator.
 
-ComfyUI ships reviewed `sd15-txt2img-v1`, `z-image-turbo-txt2img-v1`, and `anima-txt2img-v1` workflow files. Discovery distinguishes `CheckpointLoaderSimple` from `UNETLoader`; the split-model templates pin their CLIP/text encoder, VAE, latent, sampling, and output nodes while binding only the confirmed primary model. A pure split-model installation may have no checkpoint choices. Shell, Python/script/process execution, network/download/webhook/fetch nodes, commands, unknown custom nodes, unbound parameters, and resource overruns are rejected.
+ComfyUI ships reviewed `sd15-txt2img-v1`, `z-image-turbo-txt2img-v1`, and `anima-txt2img-v1` workflow files. Discovery distinguishes `CheckpointLoaderSimple`, `UNETLoader`, `CLIPLoader`, and `VAELoader`. A private backend-bound route may still bind only the primary loader, but public-evidence eligibility for a split workflow requires current API identities plus filesystem SHA-256 identities for every frozen component. A pure split-model installation may have no checkpoint choices. Shell, Python/script/process execution, network/download/webhook/fetch nodes, commands, unknown custom nodes, unbound parameters, and resource overruns are rejected.
 
 The workflow files do not include, install, trust, or license model weights. Z-Image and Anima still require exact local discovery, user approval, and a confirmed route. Anima is an optional anime route and must not be presented as a commercial or public-evidence default under its upstream weight restrictions. ComfyUI adapter: contract-tested; local Z-Image and Anima adapter executions: observed; public acceptance evidence: not retained.
 
@@ -176,7 +176,7 @@ These two compatibility tools remain available beside the thirteen high-level to
 | Tool | Responsibility |
 |---|---|
 | `local_gpu_discover_models` | Plan or execute bounded API/filesystem inventory without loading model weights. |
-| `local_gpu_set_model_trust` | Approve or revoke one exact current identity in user-local state after confirmation. |
+| `local_gpu_set_model_trust` | Inspect a reviewed component bundle without mutation, or approve/revoke one exact identity in user-local state after confirmation. |
 | `local_gpu_recommend_models` | Return one deterministic route and at most two explained alternatives. |
 | `local_gpu_list_profiles` | List registered use-case profiles and the current backend capabilities. |
 | `local_gpu_start_run` | Persist a confirmed intent, profile, constraints, backend choice, and round budget. |

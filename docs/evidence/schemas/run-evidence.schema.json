@@ -20,6 +20,49 @@
       "properties": {
         "authorization_scope": {"const": "public_evidence"},
         "backend": {"enum": ["webui", "diffusers", "comfyui"], "type": "string"},
+        "component_bundle": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "additionalProperties": false,
+              "properties": {
+                "bundle_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+                "components": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "backend_model_id": {"minLength": 1, "type": "string"},
+                      "byte_size": {"minimum": 1, "type": "integer"},
+                      "filesystem_identity_token": {"pattern": "^model:[0-9a-f]{64}$", "type": "string"},
+                      "loader_class": {"minLength": 1, "type": "string"},
+                      "loader_input": {"minLength": 1, "type": "string"},
+                      "role": {"enum": ["primary_model", "text_encoder", "vae"]},
+                      "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+                    },
+                    "required": ["role", "loader_class", "loader_input", "backend_model_id", "filesystem_identity_token", "sha256", "byte_size"],
+                    "type": "object"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "schema_version": {"const": 1},
+                "workflow": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+                    "template_id": {"minLength": 1, "type": "string"},
+                    "template_version": {"minimum": 1, "type": "integer"}
+                  },
+                  "required": ["template_id", "template_version", "sha256"],
+                  "type": "object"
+                }
+              },
+              "required": ["schema_version", "components", "workflow", "bundle_sha256"],
+              "type": "object"
+            }
+          ]
+        },
+        "component_bundle_sha256": {"pattern": "^[0-9a-f]{64}$", "type": ["string", "null"]},
         "identity_strength": {"const": "cryptographic"},
         "model_id": {"minLength": 1, "type": "string"},
         "prompt_compiler_id": {"minLength": 1, "type": "string"},
@@ -28,7 +71,7 @@
         "workflow_template_id": {"type": ["string", "null"]},
         "workflow_template_version": {"type": ["integer", "null"]}
       },
-      "required": ["authorization_scope", "backend", "model_id", "sha256", "identity_strength", "workflow_template_id", "workflow_template_version", "prompt_compiler_id", "prompt_compiler_version"],
+      "required": ["authorization_scope", "backend", "model_id", "sha256", "identity_strength", "workflow_template_id", "workflow_template_version", "prompt_compiler_id", "prompt_compiler_version", "component_bundle", "component_bundle_sha256"],
       "type": "object"
     },
     "run_id": {"minLength": 1, "type": "string"},

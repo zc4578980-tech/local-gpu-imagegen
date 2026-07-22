@@ -126,6 +126,8 @@ class CapabilityRouter:
             ),
             "workflow_template_id": model.get("workflow_template_id"),
             "workflow_template_version": model.get("workflow_template_version"),
+            "component_bundle": copy.deepcopy(model.get("component_bundle")),
+            "component_bundle_sha256": model.get("component_bundle_sha256"),
             "prompt_compiler_id": compiler_id,
             "prompt_compiler_version": self.compilers.version(compiler_id),
             "recommended_settings": copy.deepcopy(model["recommended"]),
@@ -228,6 +230,15 @@ def _hard_match(
     if (
         requirements["authorization_scope"] == "public_evidence"
         and model.get("identity_strength") != "cryptographic"
+    ):
+        return False
+    if (
+        requirements["authorization_scope"] == "public_evidence"
+        and model.get("backend") == "comfyui"
+        and (
+            not isinstance(model.get("component_bundle"), dict)
+            or not isinstance(model.get("component_bundle_sha256"), str)
+        )
     ):
         return False
     if model.get("backend") == "comfyui" and not model.get("workflow_template_id"):

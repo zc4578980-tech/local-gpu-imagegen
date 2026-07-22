@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.errors import ArtifactError, StateError, ValidationError  # noqa: E402
+from local_gpu_imagegen.model_identity import build_component_bundle  # noqa: E402
 from local_gpu_imagegen.trust_registry import (  # noqa: E402
     TrustRegistry,
     default_state_dir,
@@ -35,6 +36,25 @@ def discovery_record(
         "identity_strength": identity_strength,
         "metadata": {"family": "sd15"},
     }
+
+
+def component_bundle() -> dict[str, object]:
+    return build_component_bundle(
+        [{
+            "role": "primary_model",
+            "loader_class": "UNETLoader",
+            "loader_input": "unet_name",
+            "backend_model_id": "anything-v5.safetensors",
+            "filesystem_identity_token": "model:" + "b" * 64,
+            "sha256": "a" * 64,
+            "byte_size": 1024,
+        }],
+        {
+            "template_id": "z-image-turbo-txt2img",
+            "template_version": 1,
+            "sha256": "c" * 64,
+        },
+    )
 
 
 class TrustRegistryTests(unittest.TestCase):
@@ -137,6 +157,91 @@ class TrustRegistryTests(unittest.TestCase):
                     "output_redistribution_status": "approved",
                 },
             )
+
+    def test_bundle_digest_is_part_of_exact_approval_confirmation(self) -> None:
+        record = discovery_record(identity_strength="cryptographic", sha256="a" * 64)
+        bundle = component_bundle()
+        confirmation = self.registry.confirmation_value(
+            "approve_public_candidate",
+            record,
+            bundle,
+        )
+
+        self.assertEqual(
+            confirmation,
+            f"approve_public_candidate:{self.registry.confirmation_value('approve_public_candidate', record).split(':', 1)[1]}:bundle:{bundle['bundle_sha256']}",
+        )
+        with self.assertRaisesRegex(ValidationError, "trust_confirmation_mismatch"):
+            self.registry.approve_public_candidate(
+                record,
+                self.registry.confirmation_value("approve_public_candidate", record),
+                metadata={
+                    "source": "https://example.invalid/model",
+                    "license_id": "Example-1.0",
+                    "license_url": "https://example.invalid/license",
+                    "output_redistribution_status": "approved",
+                    "components": [{
+                        "role": "primary_model",
+                        "sha256": "a" * 64,
+                        "source": "https://example.invalid/component",
+                        "license_id": "Example-1.0",
+                        "license_url": "https://example.invalid/license",
+                        "output_redistribution_status": "approved",
+                    }],
+                },
+                capabilities={"operations": ["txt2img"]},
+                workflow_binding={"backend": "comfyui"},
+                component_bundle=bundle,
+            )
+
+    def test_public_comfyui_candidate_requires_complete_component_authority(self) -> None:
+        record = discovery_record(identity_strength="cryptographic", sha256="a" * 64)
+        bundle = component_bundle()
+        base_metadata = {
+            "source": "https://example.invalid/model",
+            "license_id": "Example-1.0",
+            "license_url": "https://example.invalid/license",
+            "output_redistribution_status": "approved",
+        }
+
+        with self.assertRaisesRegex(ValidationError, "public_component_bundle_required"):
+            self.registry.approve_public_candidate(
+                record,
+                self.registry.confirmation_value("approve_public_candidate", record),
+                metadata=base_metadata,
+                workflow_binding={"backend": "comfyui"},
+            )
+        with self.assertRaisesRegex(ValidationError, "public_metadata_incomplete"):
+            self.registry.approve_public_candidate(
+                record,
+                self.registry.confirmation_value("approve_public_candidate", record, bundle),
+                metadata={**base_metadata, "components": []},
+                workflow_binding={"backend": "comfyui"},
+                component_bundle=bundle,
+            )
+
+        metadata = {
+            **base_metadata,
+            "components": [{
+                "role": "primary_model",
+                "sha256": "a" * 64,
+                "source": "https://example.invalid/component",
+                "license_id": "Example-1.0",
+                "license_url": "https://example.invalid/license",
+                "output_redistribution_status": "approved",
+            }],
+        }
+        approved = self.registry.approve_public_candidate(
+            record,
+            self.registry.confirmation_value("approve_public_candidate", record, bundle),
+            metadata=metadata,
+            capabilities={"operations": ["txt2img"]},
+            workflow_binding={"backend": "comfyui"},
+            component_bundle=bundle,
+        )
+
+        self.assertEqual(approved["component_bundle"], bundle)
+        self.assertEqual(approved["public_metadata"], metadata)
 
     def test_rejects_credentials_recursively_before_writing(self) -> None:
         record = discovery_record()

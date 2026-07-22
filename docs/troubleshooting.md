@@ -62,6 +62,8 @@ Loopback is local. A LAN WebUI/ComfyUI endpoint requires the exact displayed tra
 
 `model_identity_drifted` means endpoint, backend-visible model binding, file metadata, SHA-256, trust identity, or workflow binding no longer matches the frozen route. Generation stops before backend invocation and before an attempt is created. Rediscover, re-fingerprint if needed, review trust, recommend again, and obtain a new confirmation. Never edit the manifest or transplant the old route token.
 
+`invalid_component_bundle`, `workflow_component_binding_ambiguous`, or `component_bundle_mismatch` means a split workflow component is missing, duplicated, mapped to the wrong loader/name, changed after hashing, or no longer matches the reviewed workflow digest. Repeat API discovery and selected-folder fingerprinting, then run `inspect_workflow_binding` again. Inspection is read-only. Do not reuse an older bundle confirmation or fill missing license facts by inference.
+
 User-local trust defaults to the OS state directory; set `LOCAL_GPU_IMAGEGEN_STATE_DIR` only before launching the server when an explicit alternative is needed. A `backend_binding` record remains private. Public evidence requires `cryptographic` identity plus authority; changing the state directory cannot promote trust.
 
 ## ComfyUI Workflow Is Rejected

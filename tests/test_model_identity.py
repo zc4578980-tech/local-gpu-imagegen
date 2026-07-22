@@ -14,8 +14,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.errors import ConflictError, ValidationError  # noqa: E402
 from local_gpu_imagegen.model_identity import (  # noqa: E402
+    build_component_bundle,
     fingerprint_selected_file,
     identity_token,
+    validate_component_bundle,
     validate_discovery_record,
 )
 
@@ -94,6 +96,79 @@ class ModelIdentityTests(unittest.TestCase):
         validated = validate_discovery_record(record)
 
         self.assertEqual(validated["backend"], "filesystem")
+
+    def test_component_bundle_is_canonical_and_binds_workflow_and_every_file(self) -> None:
+        components = [
+            {
+                "role": "vae",
+                "loader_class": "VAELoader",
+                "loader_input": "vae_name",
+                "backend_model_id": "ae.safetensors",
+                "filesystem_identity_token": "model:" + "c" * 64,
+                "sha256": "3" * 64,
+                "byte_size": 300,
+            },
+            {
+                "role": "primary_model",
+                "loader_class": "UNETLoader",
+                "loader_input": "unet_name",
+                "backend_model_id": "z-image.safetensors",
+                "filesystem_identity_token": "model:" + "a" * 64,
+                "sha256": "1" * 64,
+                "byte_size": 100,
+            },
+            {
+                "role": "text_encoder",
+                "loader_class": "CLIPLoader",
+                "loader_input": "clip_name",
+                "backend_model_id": "qwen.safetensors",
+                "filesystem_identity_token": "model:" + "b" * 64,
+                "sha256": "2" * 64,
+                "byte_size": 200,
+            },
+        ]
+        workflow = {
+            "template_id": "z-image-turbo-txt2img",
+            "template_version": 1,
+            "sha256": "d" * 64,
+        }
+
+        first = build_component_bundle(components, workflow)
+        second = build_component_bundle(list(reversed(components)), dict(reversed(list(workflow.items()))))
+
+        self.assertEqual(first, second)
+        self.assertEqual(validate_component_bundle(first), first)
+        self.assertEqual(
+            [item["role"] for item in first["components"]],
+            ["primary_model", "text_encoder", "vae"],
+        )
+
+        tampered = {**first, "workflow": {**first["workflow"], "sha256": "e" * 64}}
+        with self.assertRaisesRegex(ConflictError, "component_bundle_mismatch"):
+            validate_component_bundle(tampered)
+
+    def test_component_bundle_rejects_missing_primary_or_duplicate_role(self) -> None:
+        component = {
+            "role": "text_encoder",
+            "loader_class": "CLIPLoader",
+            "loader_input": "clip_name",
+            "backend_model_id": "qwen.safetensors",
+            "filesystem_identity_token": "model:" + "a" * 64,
+            "sha256": "b" * 64,
+            "byte_size": 100,
+        }
+        workflow = {
+            "template_id": "z-image-turbo-txt2img",
+            "template_version": 1,
+            "sha256": "c" * 64,
+        }
+
+        for components in ([component], [component, {**component}]):
+            with self.subTest(components=components), self.assertRaisesRegex(
+                ValidationError,
+                "invalid_component_bundle",
+            ):
+                build_component_bundle(components, workflow)
 
     def test_rejects_incomplete_or_inconsistent_identity_records(self) -> None:
         incomplete = discovery_record()

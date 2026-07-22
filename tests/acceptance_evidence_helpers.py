@@ -25,6 +25,8 @@ def public_route() -> dict[str, object]:
         "workflow_template_version": None,
         "prompt_compiler_id": "sd15-tags-v1",
         "prompt_compiler_version": 1,
+        "component_bundle": None,
+        "component_bundle_sha256": None,
     }
 
 

@@ -47,6 +47,17 @@ MODEL_LOADER_INPUTS = {
     "CheckpointLoaderSimple": "ckpt_name",
     "UNETLoader": "unet_name",
 }
+COMPONENT_LOADER_INPUTS = {
+    **MODEL_LOADER_INPUTS,
+    "CLIPLoader": "clip_name",
+    "VAELoader": "vae_name",
+}
+COMPONENT_LOADER_ROLES = {
+    "CheckpointLoaderSimple": "primary_model",
+    "UNETLoader": "primary_model",
+    "CLIPLoader": "text_encoder",
+    "VAELoader": "vae",
+}
 FORBIDDEN_TERMS = (
     "shell",
     "python",
@@ -217,6 +228,57 @@ class WorkflowTemplateRegistry:
                 "Exactly one reviewed workflow template must match the requested ID.",
             )
         return matches[0]
+
+
+def workflow_component_bindings(graph: object) -> list[dict[str, str]]:
+    if not isinstance(graph, dict):
+        raise ValidationError(
+            "invalid_workflow_components",
+            "Workflow graph must be an object before components can be bound.",
+        )
+    components: list[dict[str, str]] = []
+    roles: set[str] = set()
+    for node in graph.values():
+        if not isinstance(node, dict):
+            continue
+        loader_class = node.get("class_type")
+        loader_input = COMPONENT_LOADER_INPUTS.get(loader_class)
+        inputs = node.get("inputs")
+        if loader_input is None or not isinstance(inputs, dict):
+            continue
+        backend_model_id = inputs.get(loader_input)
+        role = COMPONENT_LOADER_ROLES[loader_class]
+        if not isinstance(backend_model_id, str) or not backend_model_id:
+            raise ValidationError(
+                "invalid_workflow_components",
+                "Workflow component loader has no frozen backend model name.",
+            )
+        if role in roles:
+            raise ValidationError(
+                "invalid_workflow_components",
+                "Workflow component roles must be unique.",
+            )
+        roles.add(role)
+        components.append({
+            "role": role,
+            "loader_class": loader_class,
+            "loader_input": loader_input,
+            "backend_model_id": backend_model_id,
+        })
+    if "primary_model" not in roles:
+        raise ValidationError(
+            "invalid_workflow_components",
+            "Workflow must freeze one primary model component.",
+        )
+    components.sort(
+        key=lambda item: (
+            item["role"],
+            item["loader_class"],
+            item["loader_input"],
+            item["backend_model_id"],
+        )
+    )
+    return components
 
 
 def validate_imported_workflow(

@@ -10,9 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from local_gpu_imagegen.errors import AssetEngineError
-from local_gpu_imagegen.model_identity import identity_token
+from local_gpu_imagegen.model_identity import build_component_bundle, identity_token
 from local_gpu_imagegen.postprocess import SUPPORTED_MODELS
-from local_gpu_imagegen.workflow_templates import MODEL_LOADER_INPUTS
+from local_gpu_imagegen.workflow_templates import (
+    MODEL_LOADER_INPUTS,
+    workflow_component_bindings,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -460,7 +463,7 @@ def tool_schema() -> list[dict[str, Any]]:
             "name": "local_gpu_set_model_trust",
             "description": "Approve or revoke one exact current local model identity after explicit confirmation.",
             "inputSchema": _object_schema({
-                "action": {"type": "string", "enum": ["approve_private", "approve_public_candidate", "revoke"]},
+                "action": {"type": "string", "enum": ["inspect_workflow_binding", "approve_private", "approve_public_candidate", "revoke"]},
                 "identity_token": {"type": "string", "minLength": 1},
                 "confirmation": {"type": "string", "minLength": 1},
                 "capabilities": json_object,
@@ -469,7 +472,24 @@ def tool_schema() -> list[dict[str, Any]]:
                     "license_id": {"type": "string", "minLength": 1},
                     "license_url": {"type": "string", "minLength": 1},
                     "output_redistribution_status": {"type": "string", "minLength": 1},
+                    "components": {
+                        "type": "array",
+                        "items": _object_schema({
+                            "role": {"type": "string", "enum": ["primary_model", "text_encoder", "vae"]},
+                            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                            "source": {"type": "string", "minLength": 1},
+                            "license_id": {"type": "string", "minLength": 1},
+                            "license_url": {"type": "string", "minLength": 1},
+                            "output_redistribution_status": {"type": "string", "const": "approved"},
+                        }, ["role", "sha256", "source", "license_id", "license_url", "output_redistribution_status"]),
+                    },
                 }, ["source", "license_id", "license_url", "output_redistribution_status"]),
+                "component_identity_tokens": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": True,
+                    "items": {"type": "string", "pattern": "^model:[0-9a-f]{64}$"},
+                },
                 "workflow_template_id": {
                     "type": "string",
                     "enum": _shipped_workflow_template_ids(),
@@ -477,7 +497,7 @@ def tool_schema() -> list[dict[str, Any]]:
                 "workflow_path": {"type": "string", "minLength": 1},
                 "workflow_binding": json_object,
                 "preference": {"type": "integer", "minimum": -100, "maximum": 100},
-            }, ["action", "identity_token", "confirmation"]),
+            }, ["action", "identity_token"]),
             "outputSchema": _output_schema({
                 "catalog_id": {"type": "string"},
                 "identity_token": {"type": "string"},
@@ -485,6 +505,8 @@ def tool_schema() -> list[dict[str, Any]]:
                 "scope": {"type": "string"},
                 "revoked": {"type": "boolean"},
                 "registered_workflow": json_object,
+                "component_bundle": json_object,
+                "confirmations": json_object,
             }, ["identity_token"]),
         },
         {
@@ -919,12 +941,19 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
 
     if tool["name"] == "local_gpu_set_model_trust":
         action = arguments.get("action")
-        if action in {"approve_private", "approve_public_candidate"} and "capabilities" not in arguments:
+        if action in {"inspect_workflow_binding", "approve_private", "approve_public_candidate"} and "capabilities" not in arguments:
             return tool_error(
                 "missing_argument",
                 "validation",
                 "Model approval requires declared capabilities.",
                 {"field": "capabilities"},
+            )
+        if action in {"approve_private", "approve_public_candidate", "revoke"} and "confirmation" not in arguments:
+            return tool_error(
+                "missing_argument",
+                "validation",
+                "Trust mutation requires exact confirmation.",
+                {"field": "confirmation"},
             )
         if action == "approve_public_candidate" and "public_metadata" not in arguments:
             return tool_error(
@@ -946,6 +975,20 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
                 "validation",
                 "Choose either one shipped workflow template or one imported workflow, not both.",
                 {"fields": ["workflow_template_id", "workflow_path", "workflow_binding"]},
+            )
+        has_workflow = "workflow_template_id" in arguments or "workflow_path" in arguments
+        has_components = "component_identity_tokens" in arguments
+        if has_components and not has_workflow:
+            return tool_error(
+                "invalid_component_bundle",
+                "Component identities require one reviewed workflow.",
+                {"field": "component_identity_tokens"},
+            )
+        if action == "inspect_workflow_binding" and (not has_workflow or not has_components):
+            return tool_error(
+                "invalid_component_bundle",
+                "Workflow inspection requires a reviewed workflow and selected component identities.",
+                {"fields": ["workflow_template_id", "workflow_path", "component_identity_tokens"]},
             )
 
     if tool["name"] == "local_gpu_branch_run":
@@ -1083,7 +1126,13 @@ def _discovery_call(services: Any, arguments: dict[str, Any]) -> dict[str, objec
 def _inventory_identity(services: Any, token: str) -> dict[str, object]:
     matches = []
     for record in services.discovery.inventory():
-        if isinstance(record, dict) and identity_token(record) == token:
+        if not isinstance(record, dict):
+            continue
+        try:
+            current_token = identity_token(record)
+        except AssetEngineError:
+            continue
+        if current_token == token:
             matches.append(record)
     if len(matches) != 1:
         raise AssetEngineError(
@@ -1094,12 +1143,142 @@ def _inventory_identity(services: Any, token: str) -> dict[str, object]:
     return matches[0]
 
 
+def _workflow_component_bundle(
+    services: Any,
+    record: dict[str, object],
+    graph: object,
+    registration: dict[str, object],
+    component_identity_tokens: list[str],
+) -> tuple[dict[str, object], dict[str, object]]:
+    if record.get("backend") != "filesystem" or record.get("identity_strength") != "cryptographic":
+        raise AssetEngineError(
+            "component_primary_identity_required",
+            "Component binding requires the primary cryptographic filesystem identity.",
+            "validation",
+        )
+    if (
+        not isinstance(component_identity_tokens, list)
+        or not component_identity_tokens
+        or len(set(component_identity_tokens)) != len(component_identity_tokens)
+    ):
+        raise AssetEngineError(
+            "invalid_component_bundle",
+            "Selected component identity tokens must be a non-empty unique array.",
+            "validation",
+        )
+    inventory = services.discovery.inventory()
+    selected = [_inventory_identity(services, token) for token in component_identity_tokens]
+    if any(
+        item.get("backend") != "filesystem"
+        or item.get("identity_strength") != "cryptographic"
+        or not isinstance(item.get("sha256"), str)
+        or type(item.get("byte_size")) is not int
+        for item in selected
+    ):
+        raise AssetEngineError(
+            "invalid_component_bundle",
+            "Every selected workflow component must be a cryptographic filesystem identity.",
+            "validation",
+        )
+    bindings = workflow_component_bindings(graph)
+    if len(bindings) != len(selected):
+        raise AssetEngineError(
+            "invalid_component_bundle",
+            "Selected component count does not match the reviewed workflow.",
+            "validation",
+        )
+    components: list[dict[str, object]] = []
+    primary_api: dict[str, object] | None = None
+    endpoint: str | None = None
+    for binding in bindings:
+        filesystem_matches = [
+            item
+            for item in selected
+            if _filesystem_component_name_matches(
+                str(item.get("backend_model_id", "")),
+                binding["backend_model_id"],
+            )
+        ]
+        if len(filesystem_matches) != 1:
+            raise AssetEngineError(
+                "workflow_component_binding_ambiguous",
+                "Each workflow loader must match one selected filesystem identity.",
+                "validation",
+            )
+        filesystem = filesystem_matches[0]
+        api_matches = [
+            item
+            for item in inventory
+            if isinstance(item, dict)
+            and item.get("backend") == "comfyui"
+            and item.get("backend_model_id") == binding["backend_model_id"]
+            and isinstance(item.get("metadata"), dict)
+            and item["metadata"].get("loader_class") == binding["loader_class"]
+            and item["metadata"].get("loader_input") == binding["loader_input"]
+        ]
+        if len(api_matches) != 1:
+            raise AssetEngineError(
+                "workflow_component_binding_ambiguous",
+                "Each workflow loader must match one exact current ComfyUI identity.",
+                "validation",
+            )
+        api = api_matches[0]
+        if endpoint is None:
+            endpoint = str(api["endpoint_identity"])
+        elif api.get("endpoint_identity") != endpoint:
+            raise AssetEngineError(
+                "workflow_component_endpoint_mismatch",
+                "Workflow components must belong to one ComfyUI endpoint.",
+                "validation",
+            )
+        filesystem_token = identity_token(filesystem)
+        if binding["role"] == "primary_model":
+            if filesystem_token != identity_token(record):
+                raise AssetEngineError(
+                    "component_primary_identity_mismatch",
+                    "The trust identity must be the selected primary workflow component.",
+                    "validation",
+                )
+            primary_api = api
+        components.append({
+            **binding,
+            "filesystem_identity_token": filesystem_token,
+            "sha256": filesystem["sha256"],
+            "byte_size": filesystem["byte_size"],
+        })
+    if primary_api is None:
+        raise AssetEngineError(
+            "invalid_component_bundle",
+            "Reviewed workflow does not expose one primary component.",
+            "validation",
+        )
+    bundle = build_component_bundle(
+        components,
+        {
+            "template_id": registration["template_id"],
+            "template_version": registration["template_version"],
+            "sha256": registration["workflow_sha256"],
+        },
+    )
+    return primary_api, bundle
+
+
+def _filesystem_component_name_matches(candidate: str, backend_name: str) -> bool:
+    normalized_candidate = candidate.replace("\\", "/").strip("/").casefold()
+    normalized_backend = backend_name.replace("\\", "/").strip("/").casefold()
+    return (
+        normalized_candidate == normalized_backend
+        or normalized_candidate.endswith("/" + normalized_backend)
+    )
+
+
 def _registered_workflow_binding(
     services: Any,
     record: dict[str, object],
     path: str,
     binding: dict[str, object],
-) -> tuple[dict[str, object], dict[str, object]]:
+    component_identity_tokens: list[str] | None = None,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object] | None]:
     inventory = services.discovery.inventory()
     comfy_records = [
         item for item in inventory
@@ -1122,25 +1301,35 @@ def _registered_workflow_binding(
             inputs = node.get("inputs")
             if loader_input is not None and isinstance(inputs, dict):
                 loader_bindings.append((loader_class, loader_input, inputs.get(loader_input)))
-    matches = [
-        item for item in comfy_records
-        if any(
-            item.get("backend_model_id") == model_name
-            and isinstance(item.get("metadata"), dict)
-            and item["metadata"].get("loader_class") == loader_class
-            and item["metadata"].get("loader_input") == loader_input
-            for loader_class, loader_input, model_name in loader_bindings
+    component_bundle = None
+    if component_identity_tokens is not None:
+        selected, component_bundle = _workflow_component_bundle(
+            services,
+            record,
+            graph,
+            registered,
+            component_identity_tokens,
         )
-    ]
-    if record.get("backend") == "comfyui":
-        matches = [item for item in matches if identity_token(item) == identity_token(record)]
-    if len(matches) != 1:
-        raise AssetEngineError(
-            "workflow_model_binding_ambiguous",
-            "Imported workflow must bind one exact current ComfyUI model identity.",
-            "validation",
-        )
-    selected = matches[0]
+    else:
+        matches = [
+            item for item in comfy_records
+            if any(
+                item.get("backend_model_id") == model_name
+                and isinstance(item.get("metadata"), dict)
+                and item["metadata"].get("loader_class") == loader_class
+                and item["metadata"].get("loader_input") == loader_input
+                for loader_class, loader_input, model_name in loader_bindings
+            )
+        ]
+        if record.get("backend") == "comfyui":
+            matches = [item for item in matches if identity_token(item) == identity_token(record)]
+        if len(matches) != 1:
+            raise AssetEngineError(
+                "workflow_model_binding_ambiguous",
+                "Imported workflow must bind one exact current ComfyUI model identity.",
+                "validation",
+            )
+        selected = matches[0]
     trust_binding = {
         "backend": "comfyui",
         "endpoint_identity": selected["endpoint_identity"],
@@ -1148,13 +1337,16 @@ def _registered_workflow_binding(
         "backend_identity_token": identity_token(selected),
         "template_id": registered["template_id"],
         "template_version": registered["template_version"],
+        "workflow_sha256": registered["workflow_sha256"],
     }
+    if component_bundle is not None:
+        trust_binding["component_bundle_sha256"] = component_bundle["bundle_sha256"]
     public_registration = {
         "template_id": registered["template_id"],
         "template_version": registered["template_version"],
         "workflow_sha256": registered["workflow_sha256"],
     }
-    return trust_binding, public_registration
+    return trust_binding, public_registration, component_bundle
 
 
 def _shipped_workflow_binding(
@@ -1162,11 +1354,12 @@ def _shipped_workflow_binding(
     record: dict[str, object],
     template_id: str,
     capabilities: dict[str, object],
-) -> tuple[dict[str, object], dict[str, object]]:
-    if record.get("backend") != "comfyui":
+    component_identity_tokens: list[str] | None = None,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object] | None]:
+    if record.get("backend") not in {"comfyui", "filesystem"}:
         raise AssetEngineError(
             "shipped_workflow_requires_backend_identity",
-            "A shipped workflow must bind one exact current ComfyUI API identity.",
+            "A shipped workflow must bind a current ComfyUI or cryptographic filesystem identity.",
             "validation",
         )
     operations = capabilities.get("operations") if isinstance(capabilities, dict) else None
@@ -1202,9 +1395,12 @@ def _shipped_workflow_binding(
             "Shipped workflow binding requires complete recommended settings.",
             "validation",
         ) from error
+    resolved_model_id = str(record["backend_model_id"])
+    if record.get("backend") == "filesystem":
+        resolved_model_id = resolved_model_id.replace("\\", "/").rsplit("/", 1)[-1]
     resolved = services.workflows.resolve(
         template_id,
-        str(record["backend_model_id"]),
+        resolved_model_id,
         operations[0],
         parameters,
     )
@@ -1214,34 +1410,48 @@ def _shipped_workflow_binding(
             "Shipped workflow model family does not match the declared capability boundary.",
             "validation",
         )
-    metadata = record.get("metadata")
-    loader_bindings = _workflow_loader_bindings(resolved.get("graph"))
-    expected = (
-        metadata.get("loader_class"),
-        metadata.get("loader_input"),
-        record.get("backend_model_id"),
-    ) if isinstance(metadata, dict) else (None, None, record.get("backend_model_id"))
-    if loader_bindings != [expected]:
-        raise AssetEngineError(
-            "workflow_model_binding_ambiguous",
-            "Shipped workflow must bind the exact confirmed ComfyUI loader identity.",
-            "validation",
-        )
-    trust_binding = {
-        "backend": "comfyui",
-        "endpoint_identity": record["endpoint_identity"],
-        "backend_model_id": record["backend_model_id"],
-        "backend_identity_token": identity_token(record),
-        "template_id": resolved["template_id"],
-        "template_version": resolved["template_version"],
-    }
     public_registration = {
         "source": "shipped",
         "template_id": resolved["template_id"],
         "template_version": resolved["template_version"],
         "workflow_sha256": resolved["workflow_sha256"],
     }
-    return trust_binding, public_registration
+    component_bundle = None
+    if component_identity_tokens is not None:
+        selected, component_bundle = _workflow_component_bundle(
+            services,
+            record,
+            resolved.get("graph"),
+            public_registration,
+            component_identity_tokens,
+        )
+    else:
+        metadata = record.get("metadata")
+        loader_bindings = _workflow_loader_bindings(resolved.get("graph"))
+        expected = (
+            metadata.get("loader_class"),
+            metadata.get("loader_input"),
+            record.get("backend_model_id"),
+        ) if isinstance(metadata, dict) else (None, None, record.get("backend_model_id"))
+        if loader_bindings != [expected]:
+            raise AssetEngineError(
+                "workflow_model_binding_ambiguous",
+                "Shipped workflow must bind the exact confirmed ComfyUI loader identity.",
+                "validation",
+            )
+        selected = record
+    trust_binding = {
+        "backend": "comfyui",
+        "endpoint_identity": selected["endpoint_identity"],
+        "backend_model_id": selected["backend_model_id"],
+        "backend_identity_token": identity_token(selected),
+        "template_id": resolved["template_id"],
+        "template_version": resolved["template_version"],
+        "workflow_sha256": resolved["workflow_sha256"],
+    }
+    if component_bundle is not None:
+        trust_binding["component_bundle_sha256"] = component_bundle["bundle_sha256"]
+    return trust_binding, public_registration, component_bundle
 
 
 def _workflow_loader_bindings(graph: object) -> list[tuple[object, object, object]]:
@@ -1268,44 +1478,68 @@ def _trust_call(services: Any, arguments: dict[str, Any]) -> dict[str, object]:
     record = _inventory_identity(services, token)
     workflow_binding = None
     registered_workflow = None
+    component_bundle = None
+    component_tokens = arguments.get("component_identity_tokens")
     if "workflow_template_id" in arguments:
-        workflow_binding, registered_workflow = _shipped_workflow_binding(
+        workflow_binding, registered_workflow, component_bundle = _shipped_workflow_binding(
             services,
             record,
             arguments["workflow_template_id"],
             arguments["capabilities"],
+            component_tokens,
         )
     elif "workflow_path" in arguments:
-        workflow_binding, registered_workflow = _registered_workflow_binding(
+        workflow_binding, registered_workflow, component_bundle = _registered_workflow_binding(
             services,
             record,
             arguments["workflow_path"],
             arguments["workflow_binding"],
+            component_tokens,
         )
+    if arguments["action"] == "inspect_workflow_binding":
+        if component_bundle is None:
+            raise AssetEngineError(
+                "invalid_component_bundle",
+                "Workflow inspection did not produce a component bundle.",
+                "validation",
+            )
+        return {
+            "identity_token": token,
+            "component_bundle": component_bundle,
+            "registered_workflow": registered_workflow,
+            "confirmations": {
+                action: services.trust.confirmation_value(action, record, component_bundle)
+                for action in ("approve_private", "approve_public_candidate")
+            },
+        }
     preference = arguments.get("preference", 0)
     if arguments["action"] == "approve_private":
-        approved = services.trust.approve_private(
-            record,
-            arguments["confirmation"],
-            capabilities=arguments["capabilities"],
-            workflow_binding=workflow_binding,
-            preference=preference,
-        )
+        approval_options = {
+            "capabilities": arguments["capabilities"],
+            "workflow_binding": workflow_binding,
+            "preference": preference,
+        }
+        if component_bundle is not None:
+            approval_options["component_bundle"] = component_bundle
+        approved = services.trust.approve_private(record, arguments["confirmation"], **approval_options)
     else:
-        approved = services.trust.approve_public_candidate(
-            record,
-            arguments["confirmation"],
-            metadata=arguments["public_metadata"],
-            capabilities=arguments["capabilities"],
-            workflow_binding=workflow_binding,
-            preference=preference,
-        )
+        approval_options = {
+            "metadata": arguments["public_metadata"],
+            "capabilities": arguments["capabilities"],
+            "workflow_binding": workflow_binding,
+            "preference": preference,
+        }
+        if component_bundle is not None:
+            approval_options["component_bundle"] = component_bundle
+        approved = services.trust.approve_public_candidate(record, arguments["confirmation"], **approval_options)
     result = {
         field: approved[field]
         for field in ("catalog_id", "identity_token", "identity_strength", "scope")
     }
     if registered_workflow is not None:
         result["registered_workflow"] = registered_workflow
+    if component_bundle is not None:
+        result["component_bundle"] = component_bundle
     return result
 
 

@@ -26,6 +26,23 @@ DISCOVERY_REQUIRED = frozenset({
     "metadata",
 })
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+COMPONENT_ROLES = frozenset({"primary_model", "text_encoder", "vae"})
+COMPONENT_FIELDS = frozenset({
+    "role",
+    "loader_class",
+    "loader_input",
+    "backend_model_id",
+    "filesystem_identity_token",
+    "sha256",
+    "byte_size",
+})
+BUNDLE_FIELDS = frozenset({
+    "schema_version",
+    "components",
+    "workflow",
+    "bundle_sha256",
+})
+WORKFLOW_ID_PATTERN = re.compile(r"^(?:[a-z0-9][a-z0-9-]{0,63}|imported:[0-9a-f]{64})$")
 
 
 def validate_discovery_record(value: object) -> dict[str, object]:
@@ -121,6 +138,154 @@ def identity_token(record: dict[str, object]) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return "model:" + hashlib.sha256(encoded).hexdigest()
+
+
+def build_component_bundle(
+    components: object,
+    workflow: object,
+) -> dict[str, object]:
+    normalized_components = _validate_components(components)
+    normalized_workflow = _validate_workflow_identity(workflow)
+    payload = {
+        "schema_version": 1,
+        "components": normalized_components,
+        "workflow": normalized_workflow,
+    }
+    return {
+        **payload,
+        "bundle_sha256": _canonical_hash(payload),
+    }
+
+
+def validate_component_bundle(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != BUNDLE_FIELDS:
+        raise ValidationError(
+            "invalid_component_bundle",
+            "Component bundle fields are incomplete or unexpected.",
+        )
+    if value.get("schema_version") != 1 or type(value.get("schema_version")) is not int:
+        raise ValidationError(
+            "invalid_component_bundle",
+            "Component bundle schema version is unsupported.",
+        )
+    normalized = build_component_bundle(value.get("components"), value.get("workflow"))
+    digest = value.get("bundle_sha256")
+    if not isinstance(digest, str) or SHA256_PATTERN.fullmatch(digest) is None:
+        raise ValidationError(
+            "invalid_component_bundle",
+            "Component bundle requires a lowercase SHA-256 digest.",
+        )
+    if digest != normalized["bundle_sha256"]:
+        raise ConflictError(
+            "component_bundle_mismatch",
+            "Component bundle digest does not match its canonical contents.",
+        )
+    return normalized
+
+
+def _validate_components(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or not value:
+        raise ValidationError(
+            "invalid_component_bundle",
+            "Component bundle requires at least one model component.",
+        )
+    normalized: list[dict[str, object]] = []
+    roles: set[str] = set()
+    bindings: set[tuple[str, str, str]] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != COMPONENT_FIELDS:
+            raise ValidationError(
+                "invalid_component_bundle",
+                "Component identity fields are incomplete or unexpected.",
+            )
+        role = item.get("role")
+        loader_class = item.get("loader_class")
+        loader_input = item.get("loader_input")
+        backend_model_id = item.get("backend_model_id")
+        filesystem_token = item.get("filesystem_identity_token")
+        digest = item.get("sha256")
+        byte_size = item.get("byte_size")
+        if (
+            role not in COMPONENT_ROLES
+            or not isinstance(loader_class, str)
+            or not loader_class
+            or not isinstance(loader_input, str)
+            or not loader_input
+            or not isinstance(backend_model_id, str)
+            or not backend_model_id
+            or not isinstance(filesystem_token, str)
+            or re.fullmatch(r"model:[0-9a-f]{64}", filesystem_token) is None
+            or not isinstance(digest, str)
+            or SHA256_PATTERN.fullmatch(digest) is None
+            or type(byte_size) is not int
+            or byte_size < 1
+        ):
+            raise ValidationError(
+                "invalid_component_bundle",
+                "Component identity values are invalid.",
+            )
+        binding = (loader_class, loader_input, backend_model_id)
+        if role in roles or binding in bindings:
+            raise ValidationError(
+                "invalid_component_bundle",
+                "Component roles and loader bindings must be unique.",
+            )
+        roles.add(role)
+        bindings.add(binding)
+        normalized.append(copy.deepcopy(item))
+    if "primary_model" not in roles:
+        raise ValidationError(
+            "invalid_component_bundle",
+            "Component bundle requires one primary model.",
+        )
+    normalized.sort(
+        key=lambda item: (
+            str(item["role"]),
+            str(item["loader_class"]),
+            str(item["loader_input"]),
+            str(item["backend_model_id"]),
+            str(item["filesystem_identity_token"]),
+        )
+    )
+    return normalized
+
+
+def _validate_workflow_identity(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {
+        "template_id",
+        "template_version",
+        "sha256",
+    }:
+        raise ValidationError(
+            "invalid_component_bundle",
+            "Component bundle workflow identity is incomplete.",
+        )
+    template_id = value.get("template_id")
+    version = value.get("template_version")
+    digest = value.get("sha256")
+    if (
+        not isinstance(template_id, str)
+        or WORKFLOW_ID_PATTERN.fullmatch(template_id) is None
+        or type(version) is not int
+        or version < 1
+        or not isinstance(digest, str)
+        or SHA256_PATTERN.fullmatch(digest) is None
+    ):
+        raise ValidationError(
+            "invalid_component_bundle",
+            "Component bundle workflow identity is invalid.",
+        )
+    return copy.deepcopy(value)
+
+
+def _canonical_hash(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def fingerprint_selected_file(

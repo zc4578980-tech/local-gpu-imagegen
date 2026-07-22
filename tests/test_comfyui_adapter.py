@@ -28,6 +28,8 @@ PNG_BYTES = base64.b64decode(
 )
 MODEL = "anything-v5.safetensors"
 UNET_MODEL = "z_image_turbo_nvfp4.safetensors"
+TEXT_ENCODER = "qwen_3_4b_fp4_mixed.safetensors"
+VAE = "ae.safetensors"
 
 
 class FakeClock:
@@ -62,6 +64,24 @@ class ComfyUIAdapterTests(unittest.TestCase):
                 "input": {
                     "required": {
                         "unet_name": [[UNET_MODEL], {"tooltip": "models"}],
+                    }
+                }
+            }
+        })
+        self.server.routes[("GET", "/object_info/CLIPLoader")] = FakeResponse.json({
+            "CLIPLoader": {
+                "input": {
+                    "required": {
+                        "clip_name": [[TEXT_ENCODER], {"tooltip": "models"}],
+                    }
+                }
+            }
+        })
+        self.server.routes[("GET", "/object_info/VAELoader")] = FakeResponse.json({
+            "VAELoader": {
+                "input": {
+                    "required": {
+                        "vae_name": [[VAE], {"tooltip": "models"}],
                     }
                 }
             }
@@ -176,7 +196,10 @@ class ComfyUIAdapterTests(unittest.TestCase):
     def test_discovery_uses_checkpoint_choices_without_mutation(self) -> None:
         records = self.adapter.discover()
 
-        self.assertEqual([item["backend_model_id"] for item in records], [MODEL, UNET_MODEL])
+        self.assertEqual(
+            [item["backend_model_id"] for item in records],
+            [MODEL, UNET_MODEL, TEXT_ENCODER, VAE],
+        )
         self.assertEqual(records[0]["identity_strength"], "backend_binding")
         self.assertEqual(records[0]["metadata"], {
             "loader_class": "CheckpointLoaderSimple",
@@ -185,6 +208,14 @@ class ComfyUIAdapterTests(unittest.TestCase):
         self.assertEqual(records[1]["metadata"], {
             "loader_class": "UNETLoader",
             "loader_input": "unet_name",
+        })
+        self.assertEqual(records[2]["metadata"], {
+            "loader_class": "CLIPLoader",
+            "loader_input": "clip_name",
+        })
+        self.assertEqual(records[3]["metadata"], {
+            "loader_class": "VAELoader",
+            "loader_input": "vae_name",
         })
         self.assertFalse(any(item["method"] == "POST" for item in self.server.requests))
 
@@ -197,7 +228,10 @@ class ComfyUIAdapterTests(unittest.TestCase):
 
         records = self.adapter.discover()
 
-        self.assertEqual([item["backend_model_id"] for item in records], [UNET_MODEL])
+        self.assertEqual(
+            [item["backend_model_id"] for item in records],
+            [UNET_MODEL, TEXT_ENCODER, VAE],
+        )
         self.assertEqual(records[0]["metadata"]["loader_class"], "UNETLoader")
 
     def test_generate_accepts_reviewed_unet_workflow(self) -> None:

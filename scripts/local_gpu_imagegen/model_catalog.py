@@ -7,7 +7,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .errors import AssetEngineError, ConflictError, ValidationError
-from .model_identity import identity_token, validate_discovery_record
+from .model_identity import (
+    identity_token,
+    validate_component_bundle,
+    validate_discovery_record,
+)
 from .prompt_compilers import COMPILER_VERSIONS
 
 
@@ -44,6 +48,7 @@ LOCKED_ROUTE_FIELDS = (
     "endpoint_identity",
     "workflow_template_id",
     "workflow_template_version",
+    "component_bundle_sha256",
 )
 
 
@@ -230,6 +235,8 @@ class ModelCatalog:
                 "preference": 0,
                 "workflow_template_id": None,
                 "workflow_template_version": None,
+                "component_bundle": None,
+                "component_bundle_sha256": None,
                 "public_candidate": (
                     template.get("output_redistribution_status") == "approved"
                 ),
@@ -261,6 +268,9 @@ class ModelCatalog:
             capabilities = _normalize_local_capabilities(trust.get("capabilities"))
             execution = _execution_identity(current, trust, inventory)
             if execution is None:
+                continue
+            component_bundle = _current_component_bundle(trust, inventory, execution)
+            if trust.get("component_bundle") is not None and component_bundle is None:
                 continue
             backend = str(execution["backend"])
             if backend not in ready:
@@ -294,6 +304,12 @@ class ModelCatalog:
                 "styles": [],
                 "workflow_template_id": workflow_id,
                 "workflow_template_version": workflow_version,
+                "component_bundle": copy.deepcopy(component_bundle),
+                "component_bundle_sha256": (
+                    component_bundle["bundle_sha256"]
+                    if component_bundle is not None
+                    else None
+                ),
                 "trust_scope": trust.get("scope"),
                 "public_metadata": copy.deepcopy(trust.get("public_metadata")),
                 "public_candidate": trust.get("scope") == "public_candidate",
@@ -338,6 +354,9 @@ class ModelCatalog:
         except (AttributeError, AssetEngineError):
             return None, None
         if resolved.get("template_version") != version:
+            return None, None
+        expected_workflow_sha = binding.get("workflow_sha256")
+        if expected_workflow_sha is not None and resolved.get("workflow_sha256") != expected_workflow_sha:
             return None, None
         return template_id, version
 
@@ -585,6 +604,64 @@ def _identity_fields(value: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _current_component_bundle(
+    trust: dict[str, object],
+    inventory: dict[str, dict[str, object]],
+    execution: dict[str, object],
+) -> dict[str, object] | None:
+    value = trust.get("component_bundle")
+    if value is None:
+        return None
+    try:
+        bundle = validate_component_bundle(value)
+    except AssetEngineError:
+        return None
+    binding = trust.get("workflow_binding")
+    if not isinstance(binding, dict):
+        return None
+    workflow = bundle["workflow"]
+    if (
+        binding.get("template_id") != workflow["template_id"]
+        or binding.get("template_version") != workflow["template_version"]
+        or binding.get("workflow_sha256") != workflow["sha256"]
+        or binding.get("component_bundle_sha256") != bundle["bundle_sha256"]
+    ):
+        return None
+    endpoint = execution.get("endpoint_identity")
+    backend = execution.get("backend")
+    primary_matches = 0
+    for component in bundle["components"]:
+        filesystem = inventory.get(str(component["filesystem_identity_token"]))
+        if (
+            not isinstance(filesystem, dict)
+            or filesystem.get("backend") != "filesystem"
+            or filesystem.get("identity_strength") != "cryptographic"
+            or filesystem.get("sha256") != component["sha256"]
+            or filesystem.get("byte_size") != component["byte_size"]
+        ):
+            return None
+        api_matches = [
+            item
+            for item in inventory.values()
+            if item.get("backend") == backend
+            and item.get("endpoint_identity") == endpoint
+            and item.get("backend_model_id") == component["backend_model_id"]
+            and isinstance(item.get("metadata"), dict)
+            and item["metadata"].get("loader_class") == component["loader_class"]
+            and item["metadata"].get("loader_input") == component["loader_input"]
+        ]
+        if len(api_matches) != 1:
+            return None
+        if component["role"] == "primary_model":
+            primary_matches += 1
+            if (
+                execution.get("backend_model_id") != component["backend_model_id"]
+                or execution.get("metadata") != api_matches[0].get("metadata")
+            ):
+                return None
+    return bundle if primary_matches == 1 else None
+
+
 def _trust_evidence(value: object) -> tuple[str, list[str]]:
     if not isinstance(value, list) or not value or value[0] != {"level": "declared"}:
         raise ValidationError("invalid_trust_record", "Trust evidence is invalid.")
@@ -606,6 +683,8 @@ def _public_eligible(record: dict[str, object]) -> bool:
         return False
     if record.get("source") == "local-trust-registry":
         metadata = record.get("public_metadata")
+        if record.get("backend") == "comfyui" and record.get("component_bundle") is None:
+            return False
         return (
             record.get("trust_scope") == "public_candidate"
             and isinstance(metadata, dict)

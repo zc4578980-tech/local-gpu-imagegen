@@ -11,8 +11,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .artifacts import atomic_write_json
-from .errors import ArtifactError, StateError, ValidationError
-from .model_identity import identity_token, validate_discovery_record
+from .errors import ArtifactError, ConflictError, StateError, ValidationError
+from .model_identity import (
+    identity_token,
+    validate_component_bundle,
+    validate_discovery_record,
+)
 
 
 TRUST_SCHEMA_VERSION = 1
@@ -58,10 +62,15 @@ class TrustRegistry:
         self,
         action: str,
         record: dict[str, object],
+        component_bundle: dict[str, object] | None = None,
     ) -> str:
         if action not in {"approve_private", "approve_public_candidate"}:
             raise ValidationError("invalid_trust_action", "Trust action is unsupported.")
-        return f"{action}:{identity_token(record)}"
+        suffix = ""
+        if component_bundle is not None:
+            bundle = validate_component_bundle(component_bundle)
+            suffix = f":bundle:{bundle['bundle_sha256']}"
+        return f"{action}:{identity_token(record)}{suffix}"
 
     def approve_private(
         self,
@@ -70,6 +79,7 @@ class TrustRegistry:
         *,
         capabilities: dict[str, object],
         workflow_binding: dict[str, object] | None = None,
+        component_bundle: dict[str, object] | None = None,
         preference: int = 0,
     ) -> dict[str, object]:
         return self._approve(
@@ -79,6 +89,7 @@ class TrustRegistry:
             confirmation,
             capabilities,
             workflow_binding,
+            component_bundle,
             preference,
             None,
         )
@@ -91,10 +102,25 @@ class TrustRegistry:
         metadata: dict[str, object],
         capabilities: dict[str, object] | None = None,
         workflow_binding: dict[str, object] | None = None,
+        component_bundle: dict[str, object] | None = None,
         preference: int = 0,
     ) -> dict[str, object]:
         validated = validate_discovery_record(record)
-        normalized_metadata = self._public_metadata(metadata)
+        normalized_bundle = (
+            validate_component_bundle(component_bundle)
+            if component_bundle is not None
+            else None
+        )
+        if (
+            isinstance(workflow_binding, dict)
+            and workflow_binding.get("backend") == "comfyui"
+            and normalized_bundle is None
+        ):
+            raise ValidationError(
+                "public_component_bundle_required",
+                "Public ComfyUI candidates require a complete cryptographic component bundle.",
+            )
+        normalized_metadata = self._public_metadata(metadata, normalized_bundle)
         if validated["identity_strength"] != "cryptographic":
             raise ValidationError(
                 "public_metadata_incomplete",
@@ -107,6 +133,7 @@ class TrustRegistry:
             confirmation,
             capabilities or {},
             workflow_binding,
+            normalized_bundle,
             preference,
             normalized_metadata,
         )
@@ -193,12 +220,18 @@ class TrustRegistry:
         confirmation: str,
         capabilities: dict[str, object],
         workflow_binding: dict[str, object] | None,
+        component_bundle: dict[str, object] | None,
         preference: int,
         public_metadata: dict[str, object] | None,
     ) -> dict[str, object]:
         validated = validate_discovery_record(record)
         token = identity_token(validated)
-        expected = f"{action}:{token}"
+        normalized_bundle = (
+            validate_component_bundle(component_bundle)
+            if component_bundle is not None
+            else None
+        )
+        expected = self.confirmation_value(action, validated, normalized_bundle)
         if confirmation != expected:
             raise ValidationError(
                 "trust_confirmation_mismatch",
@@ -219,6 +252,7 @@ class TrustRegistry:
             "identity_record": validated,
             "capabilities": capabilities,
             "workflow_binding": workflow_binding,
+            "component_bundle": normalized_bundle,
             "public_metadata": public_metadata,
         }
         _reject_credentials(candidate_values)
@@ -249,6 +283,7 @@ class TrustRegistry:
             "identity_record": copy.deepcopy(validated),
             "capabilities": copy.deepcopy(capabilities),
             "workflow_binding": copy.deepcopy(workflow_binding),
+            "component_bundle": copy.deepcopy(normalized_bundle),
             "preference": preference,
             "public_metadata": copy.deepcopy(public_metadata),
             "limitations": limitations,
@@ -270,14 +305,18 @@ class TrustRegistry:
         return copy.deepcopy(approved)
 
     @staticmethod
-    def _public_metadata(value: object) -> dict[str, object]:
+    def _public_metadata(
+        value: object,
+        component_bundle: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         required = {
             "source",
             "license_id",
             "license_url",
             "output_redistribution_status",
         }
-        if not isinstance(value, dict) or set(value) != required:
+        allowed = required | ({"components"} if component_bundle is not None else set())
+        if not isinstance(value, dict) or set(value) != allowed:
             raise ValidationError(
                 "public_metadata_incomplete",
                 "Public candidate metadata fields are incomplete or unexpected.",
@@ -287,6 +326,51 @@ class TrustRegistry:
                 "public_metadata_incomplete",
                 "Public candidate metadata values must be non-empty strings.",
             )
+        if value["output_redistribution_status"] != "approved":
+            raise ValidationError(
+                "public_metadata_incomplete",
+                "Public candidate output redistribution must be explicitly approved.",
+            )
+        if component_bundle is not None:
+            authorities = value.get("components")
+            if not isinstance(authorities, list):
+                raise ValidationError(
+                    "public_metadata_incomplete",
+                    "Public component authority must be an array.",
+                )
+            expected = {
+                (str(item["role"]), str(item["sha256"]))
+                for item in component_bundle["components"]
+            }
+            observed: set[tuple[str, str]] = set()
+            fields = {
+                "role",
+                "sha256",
+                "source",
+                "license_id",
+                "license_url",
+                "output_redistribution_status",
+            }
+            for item in authorities:
+                if (
+                    not isinstance(item, dict)
+                    or set(item) != fields
+                    or any(
+                        not isinstance(item[field], str) or not item[field].strip()
+                        for field in fields
+                    )
+                    or item["output_redistribution_status"] != "approved"
+                ):
+                    raise ValidationError(
+                        "public_metadata_incomplete",
+                        "Every component requires exact source, license, hash, and redistribution authority.",
+                    )
+                observed.add((item["role"], item["sha256"]))
+            if len(observed) != len(authorities) or observed != expected:
+                raise ValidationError(
+                    "public_metadata_incomplete",
+                    "Public component authority does not match the cryptographic bundle.",
+                )
         _reject_credentials(value)
         return copy.deepcopy(value)
 
@@ -324,7 +408,8 @@ def _validate_document(value: object) -> dict[str, object]:
             "corrupt_trust_registry",
             "Local trust registry has an unsupported structure.",
         )
-    records = value["records"]
+    document = copy.deepcopy(value)
+    records = document["records"]
     assert isinstance(records, list)
     seen: set[tuple[str, str]] = set()
     for record in records:
@@ -344,7 +429,9 @@ def _validate_document(value: object) -> dict[str, object]:
             "evidence",
             "approved_at",
         }
-        if set(record) != required:
+        if set(record) == required:
+            record["component_bundle"] = None
+        elif set(record) != required | {"component_bundle"}:
             raise ArtifactError("corrupt_trust_registry", "Trust record fields are invalid.")
         catalog_id = record["catalog_id"]
         token = record["identity_token"]
@@ -380,6 +467,16 @@ def _validate_document(value: object) -> dict[str, object]:
             or not isinstance(record["approved_at"], str)
         ):
             raise ArtifactError("corrupt_trust_registry", "Stored trust metadata is invalid.")
+        component_bundle = record["component_bundle"]
+        if component_bundle is not None:
+            try:
+                component_bundle = validate_component_bundle(component_bundle)
+            except (ValidationError, ConflictError) as error:
+                raise ArtifactError(
+                    "corrupt_trust_registry",
+                    "Stored component bundle is invalid.",
+                ) from error
+            record["component_bundle"] = component_bundle
         evidence = record["evidence"]
         assert isinstance(evidence, list)
         if not evidence or evidence[0] != {"level": "declared"}:
@@ -398,7 +495,7 @@ def _validate_document(value: object) -> dict[str, object]:
             if identity["identity_strength"] != "cryptographic":
                 raise ArtifactError("corrupt_trust_registry", "Public candidate identity must be cryptographic.")
             try:
-                TrustRegistry._public_metadata(record["public_metadata"])
+                TrustRegistry._public_metadata(record["public_metadata"], component_bundle)
             except ValidationError as error:
                 raise ArtifactError("corrupt_trust_registry", "Stored public metadata is invalid.") from error
         elif record["public_metadata"] is not None:
@@ -407,8 +504,8 @@ def _validate_document(value: object) -> dict[str, object]:
             _reject_credentials(record)
         except ValidationError as error:
             raise ArtifactError("corrupt_trust_registry", "Stored trust data contains credentials.") from error
-    _validate_json(value, "corrupt_trust_registry", artifact=True)
-    return copy.deepcopy(value)
+    _validate_json(document, "corrupt_trust_registry", artifact=True)
+    return document
 
 
 def _reject_credentials(value: object) -> None:

@@ -54,6 +54,8 @@ def model(model_id: str, evidence: str, **changes: object) -> dict[str, object]:
         },
         "workflow_template_id": None,
         "workflow_template_version": None,
+        "component_bundle": None,
+        "component_bundle_sha256": None,
     }
     value.update(changes)
     return value
@@ -164,6 +166,37 @@ class ModelRouterTests(unittest.TestCase):
         self.assertEqual(first["requirements"]["required_vram_gb"], 8)
         self.assertEqual(second["requirements"]["required_vram_gb"], 12)
         self.assertNotEqual(first["route_token"], second["route_token"])
+
+    def test_route_token_and_public_filter_bind_component_bundle(self) -> None:
+        bundle = {
+            "schema_version": 1,
+            "components": [],
+            "workflow": {},
+            "bundle_sha256": "f" * 64,
+        }
+        self.catalog.models = [model(
+            "model-comfy-c",
+            "observed",
+            backend="comfyui",
+            workflow_template_id="z-image-turbo-txt2img",
+            workflow_template_version=1,
+            component_bundle=bundle,
+            component_bundle_sha256="f" * 64,
+        )]
+
+        first = self.router.recommend(requirements(authorization_scope="public_evidence"))["routes"][0]
+        self.catalog.models[0]["component_bundle_sha256"] = "e" * 64
+        second = self.router.recommend(requirements(authorization_scope="public_evidence"))["routes"][0]
+
+        self.assertEqual(first["component_bundle"], bundle)
+        self.assertEqual(first["component_bundle_sha256"], "f" * 64)
+        self.assertNotEqual(first["route_token"], second["route_token"])
+
+        self.catalog.models[0]["component_bundle"] = None
+        self.assertEqual(
+            self.router.recommend(requirements(authorization_scope="public_evidence"))["routes"],
+            [],
+        )
 
     def test_confirm_is_exact_one_time_and_revalidates_current_catalog(self) -> None:
         route = self.router.recommend(requirements())["routes"][0]

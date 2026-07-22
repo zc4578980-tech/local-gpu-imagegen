@@ -10,12 +10,14 @@ All notable changes will be documented in this file.
 - User-local atomic model trust, private versus `public_evidence` scope, deterministic capability routing, frozen route tokens, prompt compilers, and identity-drift rejection.
 - A reviewed ComfyUI `sd15-txt2img-v1` template, imported-workflow allowlist validation, bounded job polling/output retrieval, and normalized adapter parity with WebUI.
 - Three MCP tools: `local_gpu_discover_models`, `local_gpu_set_model_trust`, and `local_gpu_recommend_models`; the current source surface now contains exactly fifteen tools.
+- Canonical component bundles for reviewed ComfyUI workflows, binding primary model, text encoder, VAE, workflow SHA-256, byte sizes, filesystem identities, and one bundle SHA-256 through a non-mutating trust inspection action.
 
 ### Changed
 
 - Durable runs now retain and recheck backend, endpoint, model identity, workflow, and compiler fields. Child revisions inherit the parent route and cannot override it.
 - The Agent Skill now resolves one route, displays it, obtains a new post-display confirmation, and starts without a silent model/backend/workflow switch.
 - Public evidence validates the full private route against acceptance authority, then exports a minimal cryptographic route without local endpoint, checkpoint, or path values.
+- ComfyUI public-evidence authority now requires component-by-component source, license, output-redistribution approval, and exact bundle equality; legacy monolithic WebUI evidence remains compatible.
 
 ### Security
 
@@ -26,6 +28,7 @@ All notable changes will be documented in this file.
 
 - Discovery, trust, routing, WebUI, and ComfyUI adapters are model-free contract-tested. Real ComfyUI integration evidence is not retained, and no complete real 9+3 visual-acceptance matrix, quality, performance, or VRAM claim is made.
 - No package/model/workflow/custom-node download, shared Python mutation, remote creation, push, tag, release, or publication occurred.
+- The installed Z-Image component bytes match the public Comfy-Org hashes, but that quantized repack does not declare an independent license; its public authority remains blocked and `release_ready` remains false.
 
 ## [0.5.0] - 2026-07-21
 

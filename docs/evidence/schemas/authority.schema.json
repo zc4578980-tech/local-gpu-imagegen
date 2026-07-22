@@ -4,11 +4,46 @@
   "additionalProperties": false,
   "properties": {
     "approved_at": {"type": ["string", "null"]},
-    "backend": {"type": ["object", "null"]},
+    "backend": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "additionalProperties": false,
+          "properties": {
+            "implementation": {"minLength": 1, "type": "string"},
+            "local": {"const": true},
+            "type": {"enum": ["webui", "diffusers", "comfyui"]}
+          },
+          "required": ["type", "implementation", "local"],
+          "type": "object"
+        }
+      ]
+    },
     "briefs_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
     "copyright_holder": {"type": ["string", "null"]},
     "installation_or_download": {"type": "object"},
-    "models": {"items": {"type": "object"}, "type": "array"},
+    "models": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "component_bundle_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+          "components": {"items": {"type": "object"}, "minItems": 1, "type": "array"},
+          "download_approved": {"type": "boolean"},
+          "expected_storage": {"minLength": 1, "type": "string"},
+          "id": {"minLength": 1, "type": "string"},
+          "license_id": {"minLength": 1, "type": "string"},
+          "license_url": {"minLength": 1, "type": "string"},
+          "output_redistribution_status": {"const": "approved"},
+          "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+          "source": {"minLength": 1, "type": "string"},
+          "use_approved": {"const": true},
+          "workflow": {"type": "object"}
+        },
+        "required": ["id", "source", "sha256", "license_id", "license_url", "output_redistribution_status", "expected_storage", "use_approved", "download_approved"],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "repository_license": {"enum": ["MIT", "Apache-2.0", null]},
     "schema_version": {"const": 1},
     "status": {"enum": ["approved", "unapproved"]}

@@ -11,7 +11,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from export_acceptance_evidence import EvidenceExportError, export_run  # noqa: E402
+from export_acceptance_evidence import (  # noqa: E402
+    EvidenceExportError,
+    _validate_public_route_shape,
+    export_run,
+)
 from tests.acceptance_evidence_helpers import (  # noqa: E402
     FIXTURE_PATH,
     approved_authority,
@@ -114,6 +118,17 @@ class ExportAcceptanceEvidenceTests(unittest.TestCase):
                     self.run_id,
                     None,
                 )
+
+    def test_comfyui_public_route_requires_component_bundle(self) -> None:
+        route = {
+            **_public_route(),
+            "backend": "comfyui",
+            "workflow_template_id": "z-image-turbo-txt2img",
+            "workflow_template_version": 1,
+        }
+
+        with self.assertRaisesRegex(EvidenceExportError, "route_authority_mismatch"):
+            _validate_public_route_shape(route)
 
     def test_export_redacts_private_route_and_backend_binding_values(self) -> None:
         manifest = read_json(self.run_dir / "manifest.json")
@@ -223,6 +238,8 @@ def _public_route() -> dict[str, object]:
         "workflow_template_version": None,
         "prompt_compiler_id": "sd15-tags-v1",
         "prompt_compiler_version": 1,
+        "component_bundle": None,
+        "component_bundle_sha256": None,
     }
 
 

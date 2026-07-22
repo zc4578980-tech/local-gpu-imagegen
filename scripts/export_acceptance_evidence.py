@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from validate_acceptance_evidence import (
     EvidenceError,
     _validate_package,
+    _validate_public_route,
     is_mock_marker,
     sha256_file,
     validate_authority,
@@ -41,6 +42,8 @@ PUBLIC_ROUTE_KEYS = (
     "workflow_template_version",
     "prompt_compiler_id",
     "prompt_compiler_version",
+    "component_bundle",
+    "component_bundle_sha256",
 )
 PRIVATE_EVIDENCE_KEYS = frozenset({
     "backend_model_id",
@@ -420,12 +423,18 @@ def _match_authority(
         raise EvidenceExportError("route_authority_mismatch", "Manifest route differs from acceptance authority.")
     public_route = {key: copy.deepcopy(route.get(key)) for key in PUBLIC_ROUTE_KEYS}
     _validate_public_route_shape(public_route)
+    try:
+        _validate_public_route(public_route, authority)
+    except EvidenceError as error:
+        raise EvidenceExportError(error.code, str(error)) from error
     return public_route
 
 
 def _validate_public_route_shape(route: dict[str, object]) -> None:
     workflow_id = route.get("workflow_template_id")
     workflow_version = route.get("workflow_template_version")
+    component_bundle = route.get("component_bundle")
+    component_bundle_sha = route.get("component_bundle_sha256")
     if (
         route.get("authorization_scope") != "public_evidence"
         or route.get("identity_strength") != "cryptographic"
@@ -438,6 +447,8 @@ def _validate_public_route_shape(route: dict[str, object]) -> None:
         or int(route["prompt_compiler_version"]) < 1
         or ((workflow_id is None) != (workflow_version is None))
         or (workflow_id is not None and (not isinstance(workflow_id, str) or type(workflow_version) is not int))
+        or ((component_bundle is None) != (component_bundle_sha is None))
+        or (route.get("backend") == "comfyui" and component_bundle is None)
     ):
         raise EvidenceExportError("route_authority_mismatch", "Manifest route is incomplete or invalid.")
 

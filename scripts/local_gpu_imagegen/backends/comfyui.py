@@ -16,6 +16,7 @@ from ..artifacts import PNG_SIGNATURE, validate_png
 from ..errors import ArtifactError, ConflictError, StateError, ValidationError
 from ..model_identity import identity_token, validate_discovery_record
 from ..workflow_templates import (
+    COMPONENT_LOADER_INPUTS,
     FORBIDDEN_TERMS,
     MAX_DIMENSION,
     MAX_NODES,
@@ -97,7 +98,7 @@ class ComfyUIAdapter:
 
     def discover(self) -> list[dict[str, object]]:
         records: list[dict[str, object]] = []
-        for loader_class, input_name in MODEL_LOADER_INPUTS.items():
+        for loader_class, input_name in COMPONENT_LOADER_INPUTS.items():
             info = self.client.get_json(f"/object_info/{loader_class}")
             names = _loader_choices(info, loader_class, input_name)
             for name in sorted(names):

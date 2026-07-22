@@ -1,0 +1,41 @@
+{
+  "audited_at": "2026-07-22T06:08:57Z",
+  "components": [
+    {
+      "byte_size": 4509509600,
+      "role": "primary_model",
+      "sha256": "a553c889dbcb910de4c98293237573219a37007c1074a3f04576646a088bd5c8",
+      "source": "https://huggingface.co/Comfy-Org/z_image_turbo/blob/main/split_files/diffusion_models/z_image_turbo_nvfp4.safetensors"
+    },
+    {
+      "byte_size": 3479416193,
+      "role": "text_encoder",
+      "sha256": "7ca32dcf07dfe7692945d80fff86e3a74cb83c6206b9b223ac6836b939bb85d6",
+      "source": "https://huggingface.co/Comfy-Org/z_image_turbo/blob/main/split_files/text_encoders/qwen_3_4b_fp4_mixed.safetensors"
+    },
+    {
+      "byte_size": 335304388,
+      "role": "vae",
+      "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+      "source": "https://huggingface.co/Comfy-Org/z_image_turbo/blob/main/split_files/vae/ae.safetensors"
+    }
+  ],
+  "conclusion": "blocked",
+  "original_model_license": {
+    "id": "Apache-2.0",
+    "source": "https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/raw/main/README.md",
+    "status": "observed"
+  },
+  "output_redistribution_status": "not-approved",
+  "quantized_repack_license": {
+    "source": "https://huggingface.co/Comfy-Org/z_image_turbo",
+    "status": "not-declared"
+  },
+  "reason": "The three installed files match the published Comfy-Org byte hashes, but the quantized repack repository does not declare an independent license. Original-model Apache-2.0 metadata is not silently promoted into component/output authority.",
+  "schema_version": 1,
+  "workflow": {
+    "sha256": "794a49087decf1096ae1531e4d08f0566188175071b62d3d93fe90c3eec5c93b",
+    "template_id": "z-image-turbo-txt2img",
+    "template_version": 1
+  }
+}
