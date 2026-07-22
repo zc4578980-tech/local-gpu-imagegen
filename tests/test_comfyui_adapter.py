@@ -242,6 +242,44 @@ class ComfyUIAdapterTests(unittest.TestCase):
             1,
         )
 
+    def test_poll_tolerates_history_visibility_race_after_queue_clears(self) -> None:
+        histories = iter(({}, self.completed_history()))
+
+        def delayed_history(_method: str, _path: str, _body: bytes) -> FakeResponse:
+            return FakeResponse.json(next(histories))
+
+        self.server.routes[("GET", "/history/prompt-1")] = delayed_history
+
+        result = self.adapter.generate(self.request())
+
+        self.assertEqual(result["workflow_job_id"], "prompt-1")
+        self.assertEqual(Path(result["path"]).read_bytes(), PNG_BYTES)
+        self.assertEqual(
+            [item["path"] for item in self.server.requests],
+            [
+                "/prompt",
+                "/history/prompt-1",
+                "/queue",
+                "/history/prompt-1",
+                "/view?filename=result.png&subfolder=&type=output",
+            ],
+        )
+
+    def test_poll_still_rejects_a_job_absent_beyond_the_grace_window(self) -> None:
+        self.server.routes[("GET", "/history/prompt-1")] = FakeResponse.json({})
+
+        with self.assertRaisesRegex(StateError, "comfyui_job_disappeared"):
+            self.adapter.generate(self.request())
+
+        self.assertEqual(
+            len([item for item in self.server.requests if item["path"] == "/prompt"]),
+            1,
+        )
+        self.assertEqual(
+            len([item for item in self.server.requests if item["path"] == "/history/prompt-1"]),
+            5,
+        )
+
     def test_query_and_cancel_only_delete_exact_queued_job(self) -> None:
         self.server.routes[("GET", "/history/prompt-1")] = FakeResponse.json({})
         self.server.routes[("GET", "/queue")] = FakeResponse.json({

@@ -33,6 +33,7 @@ MAX_COMFY_REQUEST_BYTES = 16 * 1024 * 1024
 JOB_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 MODES = frozenset({"txt2img", "img2img", "inpaint"})
+DISAPPEARED_GRACE_POLLS = 4
 
 
 class ComfyUIAdapter:
@@ -177,6 +178,7 @@ class ComfyUIAdapter:
 
     def _poll(self, job_id: str) -> dict[str, object]:
         started = self.clock()
+        disappeared_polls = 0
         while True:
             history = self._history(job_id)
             state = _history_state(history, job_id)
@@ -190,11 +192,15 @@ class ComfyUIAdapter:
                 )
             queue_state = self._queue_state(job_id)
             if queue_state == "disappeared" and state == "absent":
-                raise StateError(
-                    "comfyui_job_disappeared",
-                    "ComfyUI job disappeared after submission.",
-                    {"job_id": job_id},
-                )
+                disappeared_polls += 1
+                if disappeared_polls > DISAPPEARED_GRACE_POLLS:
+                    raise StateError(
+                        "comfyui_job_disappeared",
+                        "ComfyUI job disappeared after submission.",
+                        {"job_id": job_id},
+                    )
+            else:
+                disappeared_polls = 0
             if self.clock() - started >= self.timeout:
                 final_state = self._query(job_id)
                 raise StateError(
