@@ -1,0 +1,44 @@
+{
+  "demo_kind": "simulated_protocol",
+  "dimensions": {
+    "height": 405,
+    "width": 720
+  },
+  "disclaimer": "Deterministic simulated protocol demonstration. It is not model output or image-quality evidence.",
+  "frames": [
+    {
+      "label": "Brief boundaries",
+      "number": 1,
+      "state": "brief_confirmed"
+    },
+    {
+      "label": "Exact route confirmation",
+      "number": 2,
+      "state": "route_confirmed"
+    },
+    {
+      "label": "First successful round",
+      "number": 3,
+      "state": "round_retained"
+    },
+    {
+      "label": "Structured rejection and revision",
+      "number": 4,
+      "state": "revision_confirmed"
+    },
+    {
+      "label": "Candidate awaits user decision",
+      "number": 5,
+      "state": "candidate"
+    }
+  ],
+  "generator": "scripts/build_demo.py",
+  "gif": {
+    "bytes": 991306,
+    "path": "preview-loop.gif",
+    "sha256": "cb8f99a5c065407f52d6030212ca7986f802b873db1dcb08d54a6d43e7df3c37"
+  },
+  "model_output": false,
+  "quality_evidence": false,
+  "schema_version": "1.0"
+}

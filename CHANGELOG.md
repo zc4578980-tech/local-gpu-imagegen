@@ -4,8 +4,16 @@ All notable changes will be documented in this file.
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [0.6.0] - 2026-07-22
+
 ### Added
 
+- An installable, dependency-free `local-gpu-imagegen` CLI with `serve`, `doctor`, `verify`, and client `config` commands.
+- Wheel packaging for the MCP modules, immutable profiles, reviewed workflow templates, and Agent Skill, verified from outside the source checkout in an isolated virtual environment.
+- A deterministic model-free protocol GIF and manifest that are explicitly marked as simulation rather than model output or quality evidence.
+- Codex and Claude Desktop configuration-contract verification plus Windows/Ubuntu CI on Python 3.11 and 3.12.
 - Bounded `api_only`, `selected_folders`, `common_locations`, and `full_drive` discovery with displayed plans, two-stage `index` / selected `fingerprint`, cancellation, and safe link/reparse exclusions.
 - User-local atomic model trust, private versus `public_evidence` scope, deterministic capability routing, frozen route tokens, prompt compilers, and identity-drift rejection.
 - A reviewed ComfyUI `sd15-txt2img-v1` template, imported-workflow allowlist validation, bounded job polling/output retrieval, and normalized adapter parity with WebUI.
@@ -14,6 +22,8 @@ All notable changes will be documented in this file.
 
 ### Changed
 
+- The project is now MIT licensed and includes release-safe issue and pull-request templates.
+- Public documentation now leads with the installed workflow, auditable protocol loop, and exact evidence limitations.
 - Durable runs now retain and recheck backend, endpoint, model identity, workflow, and compiler fields. Child revisions inherit the parent route and cannot override it.
 - The Agent Skill now resolves one route, displays it, obtains a new post-display confirmation, and starts without a silent model/backend/workflow switch.
 - Public evidence validates the full private route against acceptance authority, then exports a minimal cryptographic route without local endpoint, checkpoint, or path values.
@@ -27,7 +37,7 @@ All notable changes will be documented in this file.
 ### Evidence Boundary
 
 - Discovery, trust, routing, WebUI, and ComfyUI adapters are model-free contract-tested. Real ComfyUI integration evidence is not retained, and no complete real 9+3 visual-acceptance matrix, quality, performance, or VRAM claim is made.
-- No package/model/workflow/custom-node download, shared Python mutation, remote creation, push, tag, release, or publication occurred.
+- No model weights, private runs, local trust records, or real image-quality acceptance package are included in the preview release.
 - The installed Z-Image component bytes match the public Comfy-Org hashes. The VAE embeds Apache-2.0 ModelSpec authority, but the NVFP4 primary model and FP4 text encoder do not bind their quantized bytes to an explicit source license, and the repack repository declares no license; public authority remains blocked and `release_ready` remains false.
 
 ## [0.5.0] - 2026-07-21

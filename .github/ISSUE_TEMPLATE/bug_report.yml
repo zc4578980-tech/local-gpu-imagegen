@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible MCP, WebUI, or Diffusers integration problem.
+description: Report a reproducible MCP, WebUI, ComfyUI, or Diffusers integration problem.
 title: "[Bug]: "
 labels: [bug]
 body:
@@ -14,7 +14,7 @@ body:
     id: backend
     attributes:
       label: Backend
-      options: [Protocol only, WebUI, Diffusers, Auto, Unknown]
+      options: [Protocol only, WebUI, ComfyUI, Diffusers, Auto, Unknown]
     validations:
       required: true
   - type: textarea

@@ -8,8 +8,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from local_gpu_imagegen.paths import resolve_resource_root
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = resolve_resource_root()
 SERVER = ROOT / "scripts" / "mcp_server.py"
 REQUIRED_COMPATIBILITY_TOOLS = {"local_gpu_imagegen_check", "local_gpu_generate_image"}
 DEFAULT_EXPECTED_TOOLS = {
@@ -54,8 +55,13 @@ def verify(
     check_readiness: bool = False,
     expected_tools: set[str] | None = None,
 ) -> dict[str, Any]:
+    server_command = (
+        [python_executable, str(SERVER)]
+        if SERVER.is_file()
+        else [python_executable, "-m", "mcp_server"]
+    )
     completed = subprocess.run(
-        [python_executable, str(SERVER)],
+        server_command,
         input=build_requests(check_readiness),
         capture_output=True,
         text=True,

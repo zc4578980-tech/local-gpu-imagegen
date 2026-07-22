@@ -9,8 +9,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from local_gpu_imagegen import __version__
 from local_gpu_imagegen.errors import AssetEngineError
 from local_gpu_imagegen.model_identity import build_component_bundle, identity_token
+from local_gpu_imagegen.paths import default_output_root, resolve_resource_root
 from local_gpu_imagegen.postprocess import SUPPORTED_MODELS
 from local_gpu_imagegen.workflow_templates import (
     MODEL_LOADER_INPUTS,
@@ -18,12 +20,12 @@ from local_gpu_imagegen.workflow_templates import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = resolve_resource_root()
 SCRIPTS = ROOT / "scripts"
 PYTHON = sys.executable
 DEFAULT_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("LOCAL_GPU_IMAGEGEN_COMMAND_TIMEOUT_SECONDS", "900"))
 MAX_PREVIEW_BASE64_CHARS = 4 * ((1024 * 1024 + 2) // 3)
-SERVER_VERSION = "0.5.0"
+SERVER_VERSION = __version__
 _asset_engine: Any | None = None
 _runtime_services: Any | None = None
 
@@ -139,7 +141,8 @@ def script_json_result(
 
 
 def run_script(script: str, args: list[str] | None = None) -> tuple[int, str, str]:
-    command = [PYTHON, str(SCRIPTS / script)]
+    script_path = SCRIPTS / script
+    command = [PYTHON, str(script_path)] if script_path.is_file() else [PYTHON, "-m", Path(script).stem]
     if args:
         command.extend(args)
     try:
@@ -253,7 +256,7 @@ def get_runtime_services() -> Any:
 
         _runtime_services = build_services(
             ROOT,
-            Path(os.environ.get("LOCAL_GPU_IMAGEGEN_OUTPUT_DIR", ROOT / "outputs")),
+            Path(os.environ.get("LOCAL_GPU_IMAGEGEN_OUTPUT_DIR", default_output_root(ROOT))),
             default_state_dir(),
             get_capabilities,
             _diffusers_runner,

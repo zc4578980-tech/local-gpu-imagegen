@@ -1,8 +1,22 @@
-# Local GPU Imagegen MCP
+# Local GPU Imagegen
 
-An Agent-native local visual-asset control plane for existing AUTOMATIC1111/Forge, ComfyUI, and Diffusers installations. Describe the outcome in natural language; the Agent resolves one inspectable local model route, confirms it, and keeps generation/review/revision state durable.
+An auditable Agent control plane for the image models you already run locally. Describe the visual outcome in natural language; the Agent resolves one trusted AUTOMATIC1111/Forge, ComfyUI, or Diffusers route, confirms the budget, and keeps review and revision state durable without silent downloads or model switches.
 
-> Version 0.5.0 is pre-release. Mocked/model-free tests cover the MCP contract, three visual Profiles, nine fixed briefs, three child revisions, discovery/routing, WebUI, and ComfyUI adapter contracts. Local Z-Image and Anima calls through the project adapter have been observed, but they do not prove visual quality and are not public 9+3 acceptance evidence. Real Codex/vision acceptance and Real-ESRGAN execution remain unverified; Codex and other clients are not verified hosts.
+![Simulated brief-to-candidate protocol loop](docs/demo/preview-loop.gif)
+
+> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. Version 0.6.0 is a preview release: model-free tests cover the protocol and backend contracts, while full named-client host acceptance, a complete real 9+3 visual matrix, and measured quality/performance remain pending.
+
+## Three-Command Quick Start
+
+Python 3.11 or 3.12 is enough to install and verify the control plane; no GPU or model is used by these commands.
+
+```shell
+python -m pip install .
+local-gpu-imagegen verify
+local-gpu-imagegen config codex
+```
+
+Use `local-gpu-imagegen config claude-desktop` for Claude Desktop, or `local-gpu-imagegen doctor` to inspect local backend readiness. The generated Codex and Claude Desktop configuration contracts and equivalent stdio launches are verified; this is not a real hosted LLM session. See [Client compatibility](docs/client-compatibility.md).
 
 ## Why This Project
 
@@ -20,7 +34,7 @@ An Agent-native local visual-asset control plane for existing AUTOMATIC1111/Forg
 - **Dependency-light MCP layer:** protocol checks and tests use the Python standard library and require no GPU.
 - **Focused scope:** image generation is kept separate from planning, memory, and unrelated agent features.
 
-## Quick Start
+## Source Checkout And Backend Setup
 
 ### 1. Verify The MCP Server
 
@@ -37,7 +51,7 @@ Expected result:
   "ok": true,
   "transport": "stdio",
   "python": "<current-python>",
-  "server": {"name": "local-gpu-imagegen", "version": "0.5.0"},
+  "server": {"name": "local-gpu-imagegen", "version": "0.6.0"},
   "protocolVersion": "2024-11-05",
   "tools": [
     "local_gpu_branch_run",
@@ -321,27 +335,32 @@ Verified:
 - three Profile contracts plus immutable preserve/change child runs and confirmed geometry/user masks
 - a fake-backend contract matrix covering nine fixed briefs and three child revisions
 - local-only Diffusers hub policy by default
+- installable `serve`, `doctor`, `verify`, and `config` CLI contracts, including an isolated wheel smoke test
+- Codex and Claude Desktop configuration-contract parsing plus equivalent exact-fifteen-tool stdio launches
 
 Pending before a `1.0` claim:
 
 - a complete retained 9+3 real host/vision acceptance matrix
 - real ComfyUI integration evidence and reviewed output
 - real Real-ESRGAN binary/GPU execution evidence
-- published compatibility matrix across named MCP clients
+- real hosted sessions in Codex, Claude Desktop, and other named MCP clients
 - measured performance or VRAM data
 
-The mocked/model-free matrix is deterministic protocol evidence, not retained real Codex/vision/GPU evidence. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No real-generation, production, performance, VRAM, image-quality, named-client compatibility, star, or popularity claim is made.
+The Mocked/model-free matrix is deterministic protocol evidence, not retained real Codex/vision/GPU evidence. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. Local Z-Image and Anima calls through the project adapter have been observed, but they are local development validation rather than public acceptance evidence. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No real-generation, production, performance, VRAM, image-quality, named-client compatibility, star, or popularity claim is made.
 
-The current branch retains no complete real 9+3 image-acceptance matrix, no real ComfyUI generation result, and no image-quality, performance, or VRAM claim. Use the readiness commands above to inspect the target environment.
+The repository retains no complete real 9+3 image-acceptance matrix or publishable real ComfyUI acceptance artifact, and makes no image-quality, performance, or VRAM claim. Use the readiness commands above to inspect the target environment.
 
 ## Documentation
 
 - [Architecture and error model](docs/architecture.md)
 - [Troubleshooting](docs/troubleshooting.md)
+- [Client compatibility](docs/client-compatibility.md)
+- [Protocol demo boundary](docs/demo/README.md)
+- [Release checklist](docs/release-checklist.md)
 - [Stable Diffusion integration notes](references/stable-diffusion-image-generation.md)
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
 
 ## License
 
-No open-source license has been selected yet. Add an approved `LICENSE` file before public release; source availability alone does not grant reuse rights.
+Released under the [MIT License](LICENSE). Model weights, backend applications, and generated outputs retain their own licenses and terms; none are relicensed by this repository.

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-gpu-imagegen"
+version = "0.6.0"
+description = "Auditable Agent control plane for trusted local image-generation backends."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Capricorn"}]
+keywords = ["mcp", "image-generation", "comfyui", "automatic1111", "local-ai"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Graphics",
+]
+dependencies = []
+
+[project.scripts]
+local-gpu-imagegen = "local_gpu_imagegen.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "scripts"}
+py-modules = [
+  "check_gpu",
+  "export_acceptance_evidence",
+  "generate_image",
+  "mcp_server",
+  "validate_acceptance_evidence",
+  "verify_client_configs",
+  "verify_mcp",
+]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["scripts"]
+include = ["local_gpu_imagegen*"]
+
+[tool.setuptools.data-files]
+"share/local-gpu-imagegen" = [".mcp.json"]
+"share/local-gpu-imagegen/profiles" = ["profiles/base.json"]
+"share/local-gpu-imagegen/profiles/models" = ["profiles/models/*.json"]
+"share/local-gpu-imagegen/profiles/schemas" = ["profiles/schemas/*.json"]
+"share/local-gpu-imagegen/profiles/styles" = ["profiles/styles/*.json"]
+"share/local-gpu-imagegen/profiles/use-cases" = ["profiles/use-cases/*.json"]
+"share/local-gpu-imagegen/workflows/comfyui" = ["workflows/comfyui/*.json"]
+"share/local-gpu-imagegen/skills/local-gpu-imagegen" = ["skills/local-gpu-imagegen/SKILL.md"]

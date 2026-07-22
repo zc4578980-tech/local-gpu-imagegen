@@ -12,7 +12,7 @@
 
 - Keep exactly fifteen MCP tools.
 - Add no model, dependency, workflow, custom node, automatic detector, or second vision model.
-- Do not install or download anything, modify shared/global Python, or touch `D:\AI\envs\pytorch-vla`.
+- Do not install or download anything, modify shared/global Python, or touch `<shared-python-env>`.
 - Do not edit, delete, retrofit, or stage `docs/evidence/runs/`.
 - Preserve the user's unstaged `subtype` changes in `scripts/mcp_server.py` and `tests/test_mcp_server.py`; use `git add -p` for both files.
 - `full_resolution_inspected` must be exactly `true`; check statuses are exactly `pass`, `fail`, `uncertain`, and `not_applicable`; observations are non-empty concise strings.
@@ -572,9 +572,9 @@ git commit -m "docs: require later user visual acceptance"
 - Modify: `docs/architecture.md:64`
 - Modify: `docs/troubleshooting.md:121`
 - Modify: `tests/test_public_docs.py`
-- Modify: `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\PROJECT_NODES.md`
-- Modify: `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\NEXT_SESSION.md`
-- Modify: `D:\CodexWorkspace\obsidian\Codex Logs\2026-07-22.md`
+- Modify: `<project-root>\PROJECT_NODES.md`
+- Modify: `<project-root>\NEXT_SESSION.md`
+- Modify: `<workspace-root>\obsidian\Codex Logs\2026-07-22.md`
 
 **Interfaces:**
 - Consumes: verified behavior and exact errors from Tasks 1-4.

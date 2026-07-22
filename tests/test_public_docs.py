@@ -195,7 +195,7 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("finalization_confirmation_mismatch", troubleshooting)
         self.assertNotIn("An ineligible nomination receives `needs_user_review`", readme)
 
-    def test_active_versions_are_v05_and_historical_versions_are_preserved(self) -> None:
+    def test_active_versions_are_v06_and_historical_versions_are_preserved(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -204,9 +204,10 @@ class PublicDocumentationTests(unittest.TestCase):
             for path in ACTIVE_VERSION_FILES
         )
 
-        self.assertEqual(plugin["version"], "0.5.0")
-        self.assertIn('"version": "0.5.0"', readme)
+        self.assertEqual(plugin["version"], "0.6.0")
+        self.assertIn('"version": "0.6.0"', readme)
         self.assertEqual(active_version_findings(active_documents), [])
+        self.assertIn("## [0.6.0] - 2026-07-22", changelog)
         self.assertIn("## [0.5.0] - 2026-07-21", changelog)
         self.assertIn("## [0.4.0] - 2026-07-21", changelog)
         self.assertIn("## [0.3.0] - 2026-07-21", changelog)

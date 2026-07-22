@@ -12,7 +12,7 @@
 
 - Keep `diffusers` as a compatibility backend; BYOM v1 expands only `webui` (AUTOMATIC1111/Forge) and `comfyui`.
 - Use standard-library-only production code and tests. Do not install packages, download models/workflows/custom nodes, or load model weights during discovery.
-- Do not modify shared/global Python or `D:\AI\envs\pytorch-vla`.
+- Do not modify shared/global Python or `<shared-python-env>`.
 - Treat loopback endpoints as local; require exact per-endpoint LAN confirmation; reject public Internet endpoints.
 - Discovery defaults to `api_only`. Broader scans require a displayed, unchanged, unexpired plan and exact confirmation.
 - Never follow symlinks, junctions, or reparse points during discovery. Treat `.ckpt` as opaque and never call `torch.load`, pickle, adjacent Python, or model tooling.
@@ -1283,8 +1283,8 @@ Before committing, use `git diff HEAD -- scripts/mcp_server.py tests/test_mcp_se
 - Modify: `tests/test_skill_contract.py`
 - Modify: `tests/test_public_docs.py`
 - Modify: `tests/test_verify_mcp.py`
-- Modify outside worktree after verification: `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\PROJECT_NODES.md`
-- Modify outside worktree after verification: `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\NEXT_SESSION.md`
+- Modify outside worktree after verification: `<project-root>\PROJECT_NODES.md`
+- Modify outside worktree after verification: `<project-root>\NEXT_SESSION.md`
 
 **Interfaces:**
 - Consumes: the exact 15-tool runtime contract and retained test evidence from Tasks 1-7.
@@ -1393,7 +1393,7 @@ git commit -m "docs: document safe byom model routing"
 
 - [ ] **Step 7: Update continuity nodes outside the worktree**
 
-Append the verified commit IDs, control flow, failure modes, exact test counts/skips, MCP 15-tool result, real backend observations, open limitations, and next step to `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\PROJECT_NODES.md`. Replace stale immediate-continuation text in `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\NEXT_SESSION.md`; preserve the one-main-agent/current-model/no-install/no-download/no-push boundaries and the true 9+3 acceptance counts.
+Append the verified commit IDs, control flow, failure modes, exact test counts/skips, MCP 15-tool result, real backend observations, open limitations, and next step to `<project-root>\PROJECT_NODES.md`. Replace stale immediate-continuation text in `<project-root>\NEXT_SESSION.md`; preserve the one-main-agent/current-model/no-install/no-download/no-push boundaries and the true 9+3 acceptance counts.
 
 - [ ] **Step 8: Final repository-state audit**
 
