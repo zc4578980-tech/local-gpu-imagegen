@@ -19,6 +19,7 @@ from local_gpu_imagegen.workflow_templates import (  # noqa: E402
 
 
 MODEL = "anything-v5.safetensors"
+SDXL_MODEL = "sd_xl_base_1.0.safetensors"
 Z_IMAGE_MODEL = "z_image_turbo_nvfp4.safetensors"
 ANIMA_MODEL = "anima-aesthetic-v1.1.safetensors"
 
@@ -115,6 +116,39 @@ class WorkflowTemplateTests(unittest.TestCase):
         self.assertEqual(resolved["graph"]["3"]["inputs"]["steps"], 24)
         self.assertEqual(resolved["graph"]["3"]["inputs"]["cfg"], 5.5)
         self.assertEqual(resolved["graph"]["5"]["inputs"]["width"], 768)
+
+    def test_reviewed_sdxl_template_renders_native_family_and_settings(self) -> None:
+        try:
+            resolved = self.registry.resolve(
+                "sdxl-txt2img",
+                SDXL_MODEL,
+                "txt2img",
+                parameters(
+                    steps=30,
+                    guidance_scale=7.0,
+                    sampler="dpmpp_2m",
+                    scheduler="karras",
+                    width=1024,
+                    height=1024,
+                ),
+            )
+        except ValidationError as error:
+            self.fail(f"Reviewed SDXL workflow is unavailable: {error}")
+
+        graph = resolved["graph"]
+        self.assertEqual(resolved["template_version"], 1)
+        self.assertEqual(resolved["model_family"], "sdxl")
+        self.assertEqual(graph["4"]["inputs"]["ckpt_name"], SDXL_MODEL)
+        self.assertEqual(graph["3"]["inputs"]["steps"], 30)
+        self.assertEqual(graph["3"]["inputs"]["cfg"], 7.0)
+        self.assertEqual(graph["3"]["inputs"]["sampler_name"], "dpmpp_2m")
+        self.assertEqual(graph["3"]["inputs"]["scheduler"], "karras")
+        self.assertEqual(graph["5"]["inputs"]["width"], 1024)
+        self.assertEqual(graph["5"]["inputs"]["height"], 1024)
+        self.assertEqual(
+            graph[resolved["output_node"]]["inputs"]["filename_prefix"],
+            "local-gpu-imagegen",
+        )
 
     def test_reviewed_split_model_templates_render_exact_model_contracts(self) -> None:
         cases = (

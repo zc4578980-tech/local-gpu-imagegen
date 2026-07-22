@@ -438,6 +438,53 @@ class ModelCatalogTests(unittest.TestCase):
                 self.assertTrue(routing_fields <= set(document))
                 self.assertEqual(document["evidence"]["level"], "declared")
 
+    def test_sdxl_repository_record_stays_disabled_until_separate_authority(self) -> None:
+        path = ROOT / "profiles" / "models" / "sdxl-base-1.0.json"
+        self.assertTrue(path.exists(), "Reviewed SDXL model record is missing.")
+
+        model = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(model["id"], "stabilityai/stable-diffusion-xl-base-1.0")
+        self.assertEqual(
+            model["sha256"],
+            "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+        )
+        self.assertEqual(model["backends"], ["comfyui"])
+        self.assertEqual(
+            model["local_discovery_names"],
+            ["sd_xl_base_1.0.safetensors"],
+        )
+        self.assertTrue(model["known_local"])
+        self.assertFalse(model["enabled"])
+        self.assertEqual(model["license_status"], "requires_user_review")
+        self.assertEqual(
+            model["output_redistribution_status"],
+            "requires_user_review",
+        )
+        self.assertEqual(model["model_family"], "sdxl")
+        self.assertEqual(model["prompt_dialect"], "natural-v1")
+        self.assertEqual(model["workflow_template_id"], "sdxl-txt2img")
+        self.assertEqual(model["workflow_template_version"], 1)
+        self.assertEqual(model["capabilities"]["operations"], ["txt2img"])
+        self.assertEqual(
+            model["recommended"],
+            {
+                "resolution": {"width": 1024, "height": 1024},
+                "steps": 30,
+                "guidance": 7.0,
+                "sampler": "dpmpp_2m",
+                "scheduler": "karras",
+            },
+        )
+        self.assertNotRegex(json.dumps(model), r"[A-Za-z]:\\")
+
+        schema = json.loads(
+            (ROOT / "profiles" / "schemas" / "model.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn("workflow_template_id", schema["properties"])
+        self.assertIn("workflow_template_version", schema["properties"])
+
 
 if __name__ == "__main__":
     unittest.main()

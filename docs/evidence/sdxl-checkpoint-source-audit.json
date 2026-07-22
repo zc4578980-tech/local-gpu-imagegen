@@ -55,8 +55,7 @@
     "response_repo_commit": "462165984030d82259a11f4367a4eed129e94a7b"
   },
   "unresolved": [
-    "The repository does not yet ship a reviewed SDXL-specific ComfyUI workflow.",
-    "The local file hash has not been bound to a project trust record through a confirmation-gated workflow inspection.",
+    "The reviewed workflow and exact component bundle have been inspected but not approved into a trust record.",
     "No public acceptance authority has approved this checkpoint identity.",
     "No generation, visual acceptance, evidence export, or publication has been performed with this checkpoint."
   ],
@@ -65,6 +64,26 @@
     "file_sha256_matches_linked_sha256": true,
     "file_size_matches_linked_size": true,
     "safetensors_header_json_parsed": true,
-    "temporary_download_files_removed": true
+    "temporary_download_files_removed": true,
+    "trust_records_unchanged_by_workflow_inspection": true,
+    "workflow_binding_inspection_passed": true
+  },
+  "workflow_inspection": {
+    "bundle_sha256": "ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62",
+    "components": [
+      {
+        "backend_model_id": "sd_xl_base_1.0.safetensors",
+        "byte_size": 6938078334,
+        "filesystem_identity_token": "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4f97a5",
+        "loader_class": "CheckpointLoaderSimple",
+        "loader_input": "ckpt_name",
+        "role": "primary_model",
+        "sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b"
+      }
+    ],
+    "scope": "read_only",
+    "template_id": "sdxl-txt2img",
+    "template_version": 1,
+    "workflow_sha256": "05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d36000e"
   }
 }

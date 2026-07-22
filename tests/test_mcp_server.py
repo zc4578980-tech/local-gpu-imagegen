@@ -160,7 +160,12 @@ class McpServerUnitTests(unittest.TestCase):
         trust_schema = tools["local_gpu_set_model_trust"]["inputSchema"]
         self.assertEqual(
             trust_schema["properties"]["workflow_template_id"]["enum"],
-            ["anima-txt2img", "sd15-txt2img", "z-image-turbo-txt2img"],
+            [
+                "anima-txt2img",
+                "sd15-txt2img",
+                "sdxl-txt2img",
+                "z-image-turbo-txt2img",
+            ],
         )
 
     def test_revision_and_mask_schemas_are_exact(self) -> None:

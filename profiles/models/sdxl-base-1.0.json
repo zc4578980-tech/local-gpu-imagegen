@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "id": "stabilityai/stable-diffusion-xl-base-1.0",
+  "kind": "model",
+  "source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
+  "sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+  "license_id": "CreativeML Open RAIL++-M",
+  "license_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md",
+  "license_status": "requires_user_review",
+  "output_redistribution_status": "requires_user_review",
+  "backends": [
+    "comfyui"
+  ],
+  "local_discovery_names": [
+    "sd_xl_base_1.0.safetensors"
+  ],
+  "strengths": [
+    "Official single-checkpoint SDXL base route with mature ComfyUI support.",
+    "Native 1024x1024 generation and natural-language prompt compatibility."
+  ],
+  "limitations": [
+    "Installed bytes and embedded metadata are verified, but trust and public authority remain unapproved.",
+    "No local generation, visual acceptance, latency, or VRAM evidence has been recorded for this route.",
+    "The base checkpoint is older and may produce lower visual quality than the private Z-Image route.",
+    "No SDXL refiner is installed or included in the reviewed workflow."
+  ],
+  "use_cases": [
+    "standalone-illustration",
+    "presentation-visual",
+    "ui-visual-asset"
+  ],
+  "styles": [
+    "anime"
+  ],
+  "recommended": {
+    "resolution": {
+      "width": 1024,
+      "height": 1024
+    },
+    "steps": 30,
+    "guidance": 7.0,
+    "sampler": "dpmpp_2m",
+    "scheduler": "karras"
+  },
+  "known_local": true,
+  "enabled": false,
+  "model_family": "sdxl",
+  "workflow_template_id": "sdxl-txt2img",
+  "workflow_template_version": 1,
+  "prompt_dialect": "natural-v1",
+  "capabilities": {
+    "operations": [
+      "txt2img"
+    ],
+    "minimum_dimension": 512,
+    "maximum_dimension": 1536,
+    "minimum_vram_gb": 10,
+    "negative_prompt": "supported"
+  },
+  "affinity": [
+    "general-illustration",
+    "environment",
+    "presentation-safe-area",
+    "ui-visual-assets"
+  ],
+  "evidence": {
+    "level": "declared",
+    "operations": [
+      "txt2img"
+    ]
+  }
+}
