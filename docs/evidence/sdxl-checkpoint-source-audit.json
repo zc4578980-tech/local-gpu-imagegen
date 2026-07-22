@@ -1,5 +1,5 @@
 {
-  "authority_effect": "none",
+  "authority_effect": "records_separate_user_approved_trust_and_acceptance_authority",
   "downloaded_at": "2026-07-22",
   "embedded_metadata": {
     "author": "StabilityAI",
@@ -24,7 +24,7 @@
     "license_id": "CreativeML Open RAIL++-M",
     "license_source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md",
     "output_terms": "The licensor claims no rights in generated output except as set forth by the license; output use remains subject to the license and its use restrictions.",
-    "status": "declared-not-yet-authorized"
+    "status": "user-authorized-for-public-evidence"
   },
   "model": {
     "official_checkpoint_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
@@ -41,11 +41,12 @@
     "identity_token": "model:bf138fd524d2b0d788281b449aca74aa1963d92a31141ca3058ab1d050cfe4a6",
     "loader_class": "CheckpointLoaderSimple",
     "loader_input": "ckpt_name",
+    "observation_stage": "pre-trust-api-identity",
     "public_evidence_eligible": false,
     "trusted": false
   },
   "schema_version": 1,
-  "status": "downloaded_untrusted",
+  "status": "public_candidate_authorized",
   "transport": {
     "actual_transport": "https://hf-mirror.com/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
     "direct_official_transport_status": "unreachable_from_current_shell",
@@ -54,9 +55,13 @@
     "response_linked_size": 6938078334,
     "response_repo_commit": "462165984030d82259a11f4367a4eed129e94a7b"
   },
+  "trust_approval": {
+    "approved_at": "2026-07-22",
+    "catalog_id": "local:1a4a27ae037d08ad44e98772",
+    "identity_strength": "cryptographic",
+    "scope": "public_candidate"
+  },
   "unresolved": [
-    "The reviewed workflow and exact component bundle have been inspected but not approved into a trust record.",
-    "No public acceptance authority has approved this checkpoint identity.",
     "No generation, visual acceptance, evidence export, or publication has been performed with this checkpoint."
   ],
   "verification": {
@@ -64,6 +69,8 @@
     "file_sha256_matches_linked_sha256": true,
     "file_size_matches_linked_size": true,
     "safetensors_header_json_parsed": true,
+    "public_candidate_trust_record_written": true,
+    "acceptance_authority_user_approved": true,
     "temporary_download_files_removed": true,
     "trust_records_unchanged_by_workflow_inspection": true,
     "workflow_binding_inspection_passed": true

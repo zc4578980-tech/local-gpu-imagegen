@@ -1,9 +1,9 @@
 {
-  "approved_at": "2026-07-21T10:59:48Z",
+  "approved_at": "2026-07-22T10:16:28Z",
   "backend": {
-    "implementation": "AUTOMATIC1111",
+    "implementation": "ComfyUI",
     "local": true,
-    "type": "webui"
+    "type": "comfyui"
   },
   "briefs_sha256": "ad4c09e44b959061c297e3b8f27ca4a110a8836d77b628e621587d48b5c1900c",
   "copyright_holder": "Capricorn",
@@ -13,15 +13,36 @@
   },
   "models": [
     {
+      "component_bundle_sha256": "ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62",
+      "components": [
+        {
+          "backend_model_id": "sd_xl_base_1.0.safetensors",
+          "byte_size": 6938078334,
+          "filesystem_identity_token": "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4f97a5",
+          "license_id": "CreativeML Open RAIL++-M",
+          "license_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md",
+          "loader_class": "CheckpointLoaderSimple",
+          "loader_input": "ckpt_name",
+          "output_redistribution_status": "approved",
+          "role": "primary_model",
+          "sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+          "source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors"
+        }
+      ],
       "download_approved": false,
-      "expected_storage": "existing local AUTOMATIC1111 checkpoint directory",
-      "id": "civitai/anything-v5@30163",
-      "license_id": "Civitai model permissions for model 9409",
-      "license_url": "https://civitai.com/models/9409?modelVersionId=30163",
+      "expected_storage": "existing local ComfyUI checkpoint directory",
+      "id": "local:1a4a27ae037d08ad44e98772",
+      "license_id": "CreativeML Open RAIL++-M",
+      "license_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md",
       "output_redistribution_status": "approved",
-      "sha256": "7f96a1a9ca9b3a3242a9ae95d19284f0d2da8d5282b42d2d974398bf7663a252",
-      "source": "https://civitai.com/models/9409?modelVersionId=30163",
-      "use_approved": true
+      "sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+      "source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
+      "use_approved": true,
+      "workflow": {
+        "sha256": "05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d36000e",
+        "template_id": "sdxl-txt2img",
+        "template_version": 1
+      }
     }
   ],
   "repository_license": "MIT",

@@ -438,7 +438,7 @@ class ModelCatalogTests(unittest.TestCase):
                 self.assertTrue(routing_fields <= set(document))
                 self.assertEqual(document["evidence"]["level"], "declared")
 
-    def test_sdxl_repository_record_stays_disabled_until_separate_authority(self) -> None:
+    def test_sdxl_repository_record_stays_disabled_as_safe_default(self) -> None:
         path = ROOT / "profiles" / "models" / "sdxl-base-1.0.json"
         self.assertTrue(path.exists(), "Reviewed SDXL model record is missing.")
 

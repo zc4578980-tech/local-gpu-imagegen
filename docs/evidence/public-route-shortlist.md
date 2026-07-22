@@ -2,7 +2,7 @@
 
 Status: read-only recommendation recorded on 2026-07-22. This document grants no download, installation, trust, generation, evidence-export, or publication authority.
 
-The separately approved first-stage transfer later completed through `hf-mirror.com` because the current shell could not reach Hugging Face directly. The retained checkpoint is exactly 6,938,078,334 bytes with SHA-256 `31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b`; its bounded safetensors header declares StabilityAI and CreativeML Open RAIL++-M. `sdxl-checkpoint-source-audit.json` records the result as `downloaded_untrusted`. No trust, generation, public authority, evidence export, or publication followed from the transfer.
+The separately approved first-stage transfer later completed through `hf-mirror.com` because the current shell could not reach Hugging Face directly. The retained checkpoint is exactly 6,938,078,334 bytes with SHA-256 `31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b`; its bounded safetensors header declares StabilityAI and CreativeML Open RAIL++-M. `sdxl-checkpoint-source-audit.json` initially recorded the result as `downloaded_untrusted`; the user later approved the exact public-candidate trust binding and SDXL/ComfyUI acceptance authority. No generation, evidence export, or publication has occurred.
 
 ## Decision Context
 

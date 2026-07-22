@@ -144,6 +144,74 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(EvidenceError, "route_authority_mismatch"):
             _validate_public_route(route, validated)
 
+    def test_repository_authority_pins_approved_sdxl_comfyui_bundle(self) -> None:
+        authority = validate_authority(
+            ROOT / "docs" / "evidence" / "acceptance-authority.json",
+            FIXTURE_PATH,
+        )
+
+        self.assertEqual(
+            authority["backend"],
+            {"type": "comfyui", "implementation": "ComfyUI", "local": True},
+        )
+        self.assertEqual(authority["repository_license"], "MIT")
+        self.assertEqual(authority["copyright_holder"], "Capricorn")
+        self.assertEqual(
+            authority["installation_or_download"],
+            {"approved": False, "items": []},
+        )
+        self.assertEqual(len(authority["models"]), 1)
+        model = authority["models"][0]
+        self.assertEqual(model["id"], "local:1a4a27ae037d08ad44e98772")
+        self.assertEqual(
+            model["source"],
+            "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
+        )
+        self.assertEqual(model["license_id"], "CreativeML Open RAIL++-M")
+        self.assertEqual(
+            model["license_url"],
+            "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md",
+        )
+        self.assertEqual(
+            model["expected_storage"],
+            "existing local ComfyUI checkpoint directory",
+        )
+        self.assertEqual(
+            model["sha256"],
+            "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+        )
+        self.assertTrue(model["use_approved"])
+        self.assertFalse(model["download_approved"])
+        self.assertEqual(model["output_redistribution_status"], "approved")
+        self.assertEqual(
+            model["workflow"],
+            {
+                "template_id": "sdxl-txt2img",
+                "template_version": 1,
+                "sha256": "05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d36000e",
+            },
+        )
+        self.assertEqual(
+            model["component_bundle_sha256"],
+            "ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62",
+        )
+        self.assertEqual(
+            model["components"],
+            [{
+                "role": "primary_model",
+                "loader_class": "CheckpointLoaderSimple",
+                "loader_input": "ckpt_name",
+                "backend_model_id": "sd_xl_base_1.0.safetensors",
+                "filesystem_identity_token": "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4f97a5",
+                "sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+                "byte_size": 6938078334,
+                "source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
+                "license_id": "CreativeML Open RAIL++-M",
+                "license_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md",
+                "output_redistribution_status": "approved",
+            }],
+        )
+
     def test_non_strict_empty_repository_is_valid_but_not_release_ready(self) -> None:
         root = self.temp_path / "evidence"
         root.mkdir()

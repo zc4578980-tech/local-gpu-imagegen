@@ -19,7 +19,7 @@
     "Native 1024x1024 generation and natural-language prompt compatibility."
   ],
   "limitations": [
-    "Installed bytes and embedded metadata are verified, but trust and public authority remain unapproved.",
+    "Repository defaults grant no trust; this host's separate public-candidate trust and acceptance authority are not inherited by other users.",
     "No local generation, visual acceptance, latency, or VRAM evidence has been recorded for this route.",
     "The base checkpoint is older and may produce lower visual quality than the private Z-Image route.",
     "No SDXL refiner is installed or included in the reviewed workflow."
