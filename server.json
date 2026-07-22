@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.zc4578980-tech/local-gpu-imagegen",
+  "title": "Local GPU Imagegen",
+  "description": "Agent control plane for trusted local image generation across ComfyUI, WebUI, and Diffusers.",
+  "version": "0.6.1",
+  "repository": {
+    "url": "https://github.com/zc4578980-tech/local-gpu-imagegen",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/zc4578980-tech/local-gpu-imagegen",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "local-gpu-imagegen",
+      "version": "0.6.1",
+      "runtimeHint": "uvx",
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

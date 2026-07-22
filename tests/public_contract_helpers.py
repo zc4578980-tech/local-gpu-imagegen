@@ -4,7 +4,10 @@ import re
 from collections.abc import Iterable
 
 
-_STALE_ACTIVE_VERSION = re.compile(r"\b(?:v|version\s*)?0\.[34](?:\.0)?\b", re.IGNORECASE)
+_STALE_ACTIVE_VERSION = re.compile(
+    r"\b(?:v|version\s*)?0\.(?:3|4|6)(?:\.0)?(?!\.\d)\b",
+    re.IGNORECASE,
+)
 _ASSERTION_BOUNDARY = re.compile(
     r"[:;.!?]+\s*(?:(?:however|nevertheless|nonetheless|still|yet)\s*,?\s*)?"
     r"|,\s*(?:and|but|or|nor|yet|however|though|although|even\s+though)\b\s*"

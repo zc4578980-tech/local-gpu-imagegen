@@ -1,4 +1,10 @@
-# Protocol Demo
+# Demo Evidence
+
+## Genuine Local-GPU Hot Revision
+
+Pending retained evidence. `docs/demo/real/` is created only after genuine SDXL root and immutable child bytes pass public authority, full-resolution review, byte-bound user finalization, sanitized export, and hash validation. Until that directory validates, the repository makes no public showcase or image-quality claim.
+
+## Simulated Protocol Demo
 
 `preview-loop.gif` is a deterministic, model-free illustration of the control protocol. It shows a brief, exact route confirmation, a bounded first round, structured rejection with a preserve/change contract, and a candidate that still waits for the user's decision.
 

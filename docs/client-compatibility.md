@@ -1,14 +1,14 @@
 # Client Compatibility
 
-## Verified boundary
+## Verified Setup Boundary
 
-The Codex and Claude Desktop configuration contracts are parsed and checked against the same installed command:
+The Codex and Claude Code official CLI setup contracts are parsed and checked against the same installed command:
 
 ```text
 local-gpu-imagegen serve
 ```
 
-For each contract, the model-free verifier launches the equivalent local stdio server, checks its server identity and protocol version, and requires the exact fifteen-tool surface. This is a **Configuration contract** and stdio-launch verification. It is not a real hosted LLM session, UI integration test, or proof that either client completed an image-generation run.
+For each contract, the model-free verifier launches the equivalent local stdio server, checks its server identity and protocol version, and requires the exact fifteen-tool surface. This is a **Configuration contract** backed by each client's official CLI setup shape plus stdio-launch verification. It is not a real hosted LLM session, UI integration test, or proof that either client completed an image-generation run.
 
 Run the checks with:
 
@@ -16,27 +16,38 @@ Run the checks with:
 python scripts/verify_client_configs.py
 ```
 
-The report deliberately returns `hosted_client_session: false`. Full named-client host acceptance remains pending until a retained session shows the client calling the server and receiving the result.
+The report deliberately returns `hosted_client_session: false`. Named-client session evidence remains pending until retained Codex and Claude Code sessions show each client calling the installed server and receiving canonical results.
 
 ## Codex
 
-Generate the TOML block after installing the package:
+Preview the exact official setup plan without changing configuration:
 
 ```shell
-local-gpu-imagegen config codex
+local-gpu-imagegen setup codex
 ```
 
-Add the emitted block to the relevant Codex configuration, then restart the client.
-
-## Claude Desktop
-
-Generate the JSON object after installing the package:
+Apply it explicitly, then remove it when no longer needed:
 
 ```shell
-local-gpu-imagegen config claude-desktop
+local-gpu-imagegen setup codex --apply
+codex mcp remove local-gpu-imagegen
 ```
 
-Merge the emitted `mcpServers` entry into the Claude Desktop configuration, then restart the client.
+## Claude Code
+
+Preview, apply, and remove the user-scoped official setup:
+
+```shell
+local-gpu-imagegen setup claude-code
+local-gpu-imagegen setup claude-code --apply
+claude mcp remove --scope user local-gpu-imagegen
+```
+
+The project delegates mutation to each client's official `mcp add` command. It does not directly edit TOML or JSON configuration files.
+
+## Legacy Claude Desktop Template
+
+`local-gpu-imagegen config claude-desktop` still renders a legacy JSON template. The verifier parses it and launches an equivalent stdio process, but it is not an official guided setup contract or a hosted-session claim.
 
 ## Unverified client templates
 

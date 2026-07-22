@@ -195,7 +195,7 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("finalization_confirmation_mismatch", troubleshooting)
         self.assertNotIn("An ineligible nomination receives `needs_user_review`", readme)
 
-    def test_active_versions_are_v06_and_historical_versions_are_preserved(self) -> None:
+    def test_active_versions_are_v061_and_historical_versions_are_preserved(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -204,9 +204,10 @@ class PublicDocumentationTests(unittest.TestCase):
             for path in ACTIVE_VERSION_FILES
         )
 
-        self.assertEqual(plugin["version"], "0.6.0")
-        self.assertIn('"version": "0.6.0"', readme)
+        self.assertEqual(plugin["version"], "0.6.1")
+        self.assertIn('"version": "0.6.1"', readme)
         self.assertEqual(active_version_findings(active_documents), [])
+        self.assertIn("## [0.6.1] - 2026-07-22", changelog)
         self.assertIn("## [0.6.0] - 2026-07-22", changelog)
         self.assertIn("## [0.5.0] - 2026-07-21", changelog)
         self.assertIn("## [0.4.0] - 2026-07-21", changelog)
@@ -278,6 +279,7 @@ class PublicDocumentationTests(unittest.TestCase):
         for stale_version in (
             "v0.3", "version 0.3", '"version": "0.3.0"',
             "v0.4", "version 0.4", '"version": "0.4.0"',
+            "v0.6", "version 0.6", '"version": "0.6.0"',
         ):
             with self.subTest(stale_version=stale_version):
                 mutated = readme + "\nActive release: " + stale_version
@@ -286,11 +288,43 @@ class PublicDocumentationTests(unittest.TestCase):
     def test_skill_stale_version_mutation_is_rejected(self) -> None:
         skill_path = ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md"
         self.assertIn(skill_path, ACTIVE_VERSION_FILES)
-        for stale_version in ("v0.3", "v0.4"):
+        for stale_version in ("v0.3", "v0.4", "v0.6"):
             mutated = skill_path.read_text(encoding="utf-8") + f"\nActive Skill release: {stale_version}"
             findings = active_version_findings((("skills/local-gpu-imagegen/SKILL.md", mutated),))
             self.assertEqual(len(findings), 1)
             self.assertIn("skills/local-gpu-imagegen/SKILL.md", findings[0])
+
+    def test_unretained_real_evidence_is_not_presented_as_complete(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        client_docs = (ROOT / "docs" / "client-compatibility.md").read_text(encoding="utf-8")
+        demo_root = ROOT / "docs" / "demo" / "real"
+        client_root = ROOT / "docs" / "evidence" / "client-sessions"
+
+        real_demo_ready = all(
+            (demo_root / name).is_file()
+            for name in ("before.png", "after.png", "showcase-manifest.json")
+        )
+        named_clients_ready = all(
+            (client_root / name).is_file()
+            for name in ("codex-v061.json", "claude-code-v061.json")
+        )
+        if real_demo_ready:
+            self.assertIn("docs/demo/real/before.png", readme)
+            self.assertIn("docs/demo/real/after.png", readme)
+            self.assertLess(
+                readme.index("docs/demo/real/after.png"),
+                readme.index("docs/demo/preview-loop.gif"),
+            )
+        else:
+            self.assertIn("Genuine local-GPU showcase: pending retained evidence", readme)
+        if named_clients_ready:
+            self.assertIn("retained named-client sessions", client_docs)
+        else:
+            self.assertIn("Named-client session evidence remains pending", client_docs)
+
+        simulated = readme.index("docs/demo/preview-loop.gif")
+        boundary = readme.index("deterministic simulated protocol demonstration")
+        self.assertLess(simulated, boundary)
 
     def test_claim_scanner_preserves_truthful_negative_boundaries(self) -> None:
         truthful_boundaries = (

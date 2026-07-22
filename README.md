@@ -1,22 +1,29 @@
 # Local GPU Imagegen
 
+<!-- mcp-name: io.github.zc4578980-tech/local-gpu-imagegen -->
+
 An auditable Agent control plane for the image models you already run locally. Describe the visual outcome in natural language; the Agent resolves one trusted AUTOMATIC1111/Forge, ComfyUI, or Diffusers route, confirms the budget, and keeps review and revision state durable without silent downloads or model switches.
+
+> **Genuine local-GPU showcase: pending retained evidence.** The release branch will add the public-rights before/after bytes here only after route, lineage, review, finalization, and artifact hashes validate.
 
 ![Simulated brief-to-candidate protocol loop](docs/demo/preview-loop.gif)
 
-> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. Version 0.6.0 is a preview release: model-free tests cover the protocol and backend contracts, while full named-client host acceptance, a complete real 9+3 visual matrix, and measured quality/performance remain pending.
+> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. Version 0.6.1 is a preview candidate: model-free tests cover the protocol and backend contracts, while the genuine showcase, named-client session evidence, a complete real 9+3 visual matrix, and measured quality/performance remain pending.
 
-## Three-Command Quick Start
+## Quick Start
 
-Python 3.11 or 3.12 is enough to install and verify the control plane; no GPU or model is used by these commands.
+After `0.6.1` is published to PyPI, Python 3.11 or 3.12 is enough to verify the control plane and request official Codex setup. Neither command generates an image or downloads a model.
 
 ```shell
-python -m pip install .
-local-gpu-imagegen verify
-local-gpu-imagegen config codex
+uvx local-gpu-imagegen verify
+uvx local-gpu-imagegen setup codex --apply
 ```
 
-Use `local-gpu-imagegen config claude-desktop` for Claude Desktop, or `local-gpu-imagegen doctor` to inspect local backend readiness. The generated Codex and Claude Desktop configuration contracts and equivalent stdio launches are verified; this is not a real hosted LLM session. See [Client compatibility](docs/client-compatibility.md).
+For Claude Code, run `uvx local-gpu-imagegen setup claude-code --apply`. Without `--apply`, setup is read-only: it reports the detected client, exact official `mcp add` and removal commands, and model-free backend readiness. The project never edits client configuration files directly.
+
+Remove the entries with `codex mcp remove local-gpu-imagegen` or `claude mcp remove --scope user local-gpu-imagegen`. Use `local-gpu-imagegen doctor` to inspect local backend readiness. The setup contracts and equivalent stdio launches are verified; retained real hosted sessions remain pending. See [Client compatibility](docs/client-compatibility.md).
+
+Before PyPI publication, install the verified wheel or a source checkout, then use the same `local-gpu-imagegen verify` and `local-gpu-imagegen setup ...` commands.
 
 ## Why This Project
 
@@ -51,7 +58,7 @@ Expected result:
   "ok": true,
   "transport": "stdio",
   "python": "<current-python>",
-  "server": {"name": "local-gpu-imagegen", "version": "0.6.0"},
+  "server": {"name": "local-gpu-imagegen", "version": "0.6.1"},
   "protocolVersion": "2024-11-05",
   "tools": [
     "local_gpu_branch_run",
@@ -335,15 +342,15 @@ Verified:
 - three Profile contracts plus immutable preserve/change child runs and confirmed geometry/user masks
 - a fake-backend contract matrix covering nine fixed briefs and three child revisions
 - local-only Diffusers hub policy by default
-- installable `serve`, `doctor`, `verify`, and `config` CLI contracts, including an isolated wheel smoke test
-- Codex and Claude Desktop configuration-contract parsing plus equivalent exact-fifteen-tool stdio launches
+- installable `serve`, `doctor`, `verify`, `config`, and read-only-by-default `setup` CLI contracts, including an isolated wheel smoke test
+- official Codex and Claude Code setup-contract parsing plus equivalent exact-fifteen-tool stdio launches; Claude Desktop remains a legacy render-only template
 
 Pending before a `1.0` claim:
 
 - a complete retained 9+3 real host/vision acceptance matrix
 - real ComfyUI integration evidence and reviewed output
 - real Real-ESRGAN binary/GPU execution evidence
-- real hosted sessions in Codex, Claude Desktop, and other named MCP clients
+- real hosted sessions in Codex, Claude Code, and other named MCP clients
 - measured performance or VRAM data
 
 The Mocked/model-free matrix is deterministic protocol evidence, not retained real Codex/vision/GPU evidence. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. Local Z-Image and Anima calls through the project adapter have been observed, but they are local development validation rather than public acceptance evidence. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No real-generation, production, performance, VRAM, image-quality, named-client compatibility, star, or popularity claim is made.

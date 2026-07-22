@@ -6,6 +6,26 @@ All notable changes will be documented in this file.
 
 No unreleased changes.
 
+## [0.6.1] - 2026-07-22
+
+### Added
+
+- Read-only-by-default guided setup for Codex and Claude Code, with explicit `--apply`, idempotent existing-entry handling, exact removal commands, and no direct client-config edits.
+- Fail-closed schemas and validators for retained named-client sessions and a genuine local-GPU immutable hot-revision showcase.
+- Public-safe export tooling for byte-bound before/after images, sanitized manifests and transcripts, hashed showcase artifacts, and optional GIF encoding through an already available local Pillow installation.
+- Prepared PyPI ownership, official MCP Registry, GitHub preview, and third-party directory metadata for the `0.6.1` release gate.
+
+### Fixed
+
+- Public CI now installs the declared `setuptools>=68` build backend before running the no-build-isolation packaging test on the four Windows/Linux Python 3.11/3.12 jobs.
+- Client CLI subprocess output is decoded as UTF-8 with replacement so Windows locale decoding cannot crash background reader threads.
+
+### Evidence Boundary
+
+- The genuine SDXL showcase and retained Codex/Claude Code sessions remain absent until their separate execution, review, finalization, sanitization, and validation gates complete.
+- PyPI, the official MCP Registry, public CI, tag, and GitHub prerelease remain unpublished until their explicit external-write gates complete.
+- Version `0.6.0` and its historical changelog section remain unchanged; no model weights, private runs, trust state, or local endpoints are included.
+
 ## [0.6.0] - 2026-07-22
 
 ### Added
