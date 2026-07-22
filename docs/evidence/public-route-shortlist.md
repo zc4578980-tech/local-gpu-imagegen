@@ -35,7 +35,7 @@ Use `stabilityai/stable-diffusion-xl-base-1.0` as the first public-evidence refe
 A later explicit approval may authorize only the following first stage:
 
 - Download the official `sd_xl_base_1.0.safetensors` checkpoint from the Stability AI Hugging Face repository.
-- Place it under the existing project-local ComfyUI deployment at `E:\AI\local-gpu-imagegen`; do not alter global/shared Python or `D:\AI\envs\pytorch-vla`.
+- Place it at `E:\AI\local-gpu-imagegen\runtime\ComfyUI_windows_portable\ComfyUI\models\checkpoints\sd_xl_base_1.0.safetensors`; do not alter global/shared Python or `D:\AI\envs\pytorch-vla`.
 - Expect approximately 6.9 GB of model storage and reserve at least 10 GB for transfer and verification headroom.
 - Do not install custom nodes or additional runtimes.
 - After download, hash and inspect the exact local bytes, bind the checkpoint and reviewed workflow, and present the resulting authority facts before any trust mutation.
@@ -51,4 +51,3 @@ A later explicit approval may authorize only the following first stage:
 - [Qwen-Image official model card](https://huggingface.co/Qwen/Qwen-Image)
 - [Qwen-Image Apache-2.0 license](https://huggingface.co/Qwen/Qwen-Image/blob/main/LICENSE)
 - [Official ComfyUI Qwen-Image tutorial](https://docs.comfy.org/tutorials/image/qwen/qwen-image)
-
