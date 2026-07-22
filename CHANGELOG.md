@@ -28,7 +28,7 @@ All notable changes will be documented in this file.
 
 - Discovery, trust, routing, WebUI, and ComfyUI adapters are model-free contract-tested. Real ComfyUI integration evidence is not retained, and no complete real 9+3 visual-acceptance matrix, quality, performance, or VRAM claim is made.
 - No package/model/workflow/custom-node download, shared Python mutation, remote creation, push, tag, release, or publication occurred.
-- The installed Z-Image component bytes match the public Comfy-Org hashes, but that quantized repack does not declare an independent license; its public authority remains blocked and `release_ready` remains false.
+- The installed Z-Image component bytes match the public Comfy-Org hashes. The VAE embeds Apache-2.0 ModelSpec authority, but the NVFP4 primary model and FP4 text encoder do not bind their quantized bytes to an explicit source license, and the repack repository declares no license; public authority remains blocked and `release_ready` remains false.
 
 ## [0.5.0] - 2026-07-21
 

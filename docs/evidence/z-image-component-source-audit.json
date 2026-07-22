@@ -1,20 +1,62 @@
 {
-  "audited_at": "2026-07-22T06:08:57Z",
+  "apache_redistribution_review": {
+    "license_source": "https://www.apache.org/licenses/LICENSE-2.0",
+    "repack_compliance_evidence": "not-established",
+    "status": "conditional",
+    "summary": "Apache-2.0 section 4 permits redistribution of derivative works subject to license-copy, modification-notice, attribution, and applicable NOTICE conditions. The Comfy-Org repository does not expose enough license or modification provenance to establish those conditions for the two quantized components."
+  },
+  "audited_at": "2026-07-22T06:35:02Z",
+  "blockers": [
+    "The NVFP4 primary model embeds quantization metadata but no source or license metadata.",
+    "The FP4 text encoder embeds no metadata that binds it to the Apache-2.0 Qwen3-4B source.",
+    "The Comfy-Org repository model card has no license field and its LICENSE path is absent.",
+    "Neither the upstream model card nor the repack repository explicitly grants generated-output redistribution authority."
+  ],
   "components": [
     {
       "byte_size": 4509509600,
+      "embedded_authority": {
+        "license_status": "not-declared",
+        "observed_metadata": [
+          "_quantization_metadata.format_version=1.0",
+          "quantized layers use nvfp4"
+        ],
+        "source_status": "not-declared"
+      },
+      "published_commit": "https://huggingface.co/Comfy-Org/z_image_turbo/commit/0382f08714102ee87ca4d28f6d87a03d4242671b",
       "role": "primary_model",
       "sha256": "a553c889dbcb910de4c98293237573219a37007c1074a3f04576646a088bd5c8",
       "source": "https://huggingface.co/Comfy-Org/z_image_turbo/blob/main/split_files/diffusion_models/z_image_turbo_nvfp4.safetensors"
     },
     {
       "byte_size": 3479416193,
+      "embedded_authority": {
+        "license_status": "not-declared",
+        "source_status": "not-declared"
+      },
+      "published_commit": "https://huggingface.co/Comfy-Org/z_image_turbo/commit/46a5866e80396fb4f5577a6a8a366013a4fd4096",
       "role": "text_encoder",
       "sha256": "7ca32dcf07dfe7692945d80fff86e3a74cb83c6206b9b223ac6836b939bb85d6",
-      "source": "https://huggingface.co/Comfy-Org/z_image_turbo/blob/main/split_files/text_encoders/qwen_3_4b_fp4_mixed.safetensors"
+      "source": "https://huggingface.co/Comfy-Org/z_image_turbo/blob/main/split_files/text_encoders/qwen_3_4b_fp4_mixed.safetensors",
+      "upstream_candidate": {
+        "license_id": "Apache-2.0",
+        "license_source": "https://huggingface.co/Qwen/Qwen3-4B/blob/main/LICENSE",
+        "model": "Qwen/Qwen3-4B",
+        "status": "observed-but-not-bound-to-repack"
+      }
     },
     {
       "byte_size": 335304388,
+      "embedded_authority": {
+        "author": "Black Forest Labs",
+        "implementation": "https://github.com/black-forest-labs/flux",
+        "license_id": "Apache-2.0",
+        "license_status": "declared",
+        "modelspec_architecture": "Flux.1-AE",
+        "modelspec_title": "Flux.1 Autoencoder",
+        "source_status": "declared"
+      },
+      "published_commit": "https://huggingface.co/Comfy-Org/z_image_turbo/commit/93fae7d7f6189cc408fdd7cec36c91447b8506a2",
       "role": "vae",
       "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
       "source": "https://huggingface.co/Comfy-Org/z_image_turbo/blob/main/split_files/vae/ae.safetensors"
@@ -23,15 +65,20 @@
   "conclusion": "blocked",
   "original_model_license": {
     "id": "Apache-2.0",
+    "license_file": "https://github.com/Tongyi-MAI/Z-Image/blob/main/LICENSE",
     "source": "https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/raw/main/README.md",
     "status": "observed"
   },
   "output_redistribution_status": "not-approved",
   "quantized_repack_license": {
+    "license_path": "https://huggingface.co/Comfy-Org/z_image_turbo/raw/main/LICENSE",
+    "license_path_status": "not-found",
+    "model_card": "https://huggingface.co/Comfy-Org/z_image_turbo/raw/main/README.md",
+    "model_card_license_field": null,
     "source": "https://huggingface.co/Comfy-Org/z_image_turbo",
     "status": "not-declared"
   },
-  "reason": "The three installed files match the published Comfy-Org byte hashes, but the quantized repack repository does not declare an independent license. Original-model Apache-2.0 metadata is not silently promoted into component/output authority.",
+  "reason": "The VAE has embedded Apache-2.0 ModelSpec authority, but the exact NVFP4 primary model and FP4 text encoder do not bind their quantized bytes to an explicit source license. Upstream Apache-2.0 records are not silently promoted into repack or generated-output authority.",
   "schema_version": 1,
   "workflow": {
     "sha256": "794a49087decf1096ae1531e4d08f0566188175071b62d3d93fe90c3eec5c93b",
