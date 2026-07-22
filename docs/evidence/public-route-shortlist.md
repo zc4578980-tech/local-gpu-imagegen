@@ -2,6 +2,8 @@
 
 Status: read-only recommendation recorded on 2026-07-22. This document grants no download, installation, trust, generation, evidence-export, or publication authority.
 
+The separately approved first-stage transfer later completed through `hf-mirror.com` because the current shell could not reach Hugging Face directly. The retained checkpoint is exactly 6,938,078,334 bytes with SHA-256 `31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b`; its bounded safetensors header declares StabilityAI and CreativeML Open RAIL++-M. `sdxl-checkpoint-source-audit.json` records the result as `downloaded_untrusted`. No trust, generation, public authority, evidence export, or publication followed from the transfer.
+
 ## Decision Context
 
 The public reference route must have an official source, complete license terms for the exact executable components, explicit enough output-use terms for retained examples, a supported local runtime, and a credible path on the verified 12 GB GPU and 31 GB system-RAM host. The private Comfy-Org Z-Image route remains the higher-quality local default, but its quantized primary model and text encoder do not have sufficient repack-bound authority for public evidence.
@@ -30,12 +32,12 @@ Use `stabilityai/stable-diffusion-xl-base-1.0` as the first public-evidence refe
 
 `Qwen/Qwen-Image` is not the first public route on this host. The official model is Apache-2.0 and has native ComfyUI support, but its 20B diffusion model plus 8.3B text encoder make the official BF16 component set larger than 50 GB. A practical 12 GB route depends on FP8 or GGUF repacks and custom loaders, recreating the component-provenance problem this work is intended to avoid.
 
-## Proposed Authorization Boundary
+## Approved Transfer Boundary
 
-A later explicit approval may authorize only the following first stage:
+The separately approved and completed first stage was limited to the following boundary:
 
 - Download the official `sd_xl_base_1.0.safetensors` checkpoint from the Stability AI Hugging Face repository.
-- Place it at `E:\AI\local-gpu-imagegen\runtime\ComfyUI_windows_portable\ComfyUI\models\checkpoints\sd_xl_base_1.0.safetensors`; do not alter global/shared Python or `D:\AI\envs\pytorch-vla`.
+- Place it under the existing project-local ComfyUI deployment at `runtime/ComfyUI_windows_portable/ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors`; do not alter shared or global Python environments.
 - Expect approximately 6.9 GB of model storage and reserve at least 10 GB for transfer and verification headroom.
 - Do not install custom nodes or additional runtimes.
 - After download, hash and inspect the exact local bytes, bind the checkpoint and reviewed workflow, and present the resulting authority facts before any trust mutation.

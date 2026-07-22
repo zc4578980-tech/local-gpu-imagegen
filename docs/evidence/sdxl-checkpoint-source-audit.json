@@ -1,0 +1,70 @@
+{
+  "authority_effect": "none",
+  "downloaded_at": "2026-07-22",
+  "embedded_metadata": {
+    "author": "StabilityAI",
+    "architecture": "stable-diffusion-xl-v1-base",
+    "implementation": "https://github.com/Stability-AI/generative-models",
+    "license": "CreativeML Open RAIL++-M License",
+    "metadata_hash_sha256": "d7a9105a900fd52748f20725fe52fe52b507fd36bee4fc107b1550a26e6ee1d7",
+    "metadata_hash_is_file_identity": false,
+    "model_spec": "1.0.0",
+    "resolution": "1024x1024",
+    "title": "Stable Diffusion XL 1.0 Base"
+  },
+  "file": {
+    "byte_size": 6938078334,
+    "deployment_relative_path": "runtime/ComfyUI_windows_portable/ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors",
+    "filename": "sd_xl_base_1.0.safetensors",
+    "safetensors_header_bytes": 402436,
+    "safetensors_tensor_entries": 2515,
+    "sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b"
+  },
+  "license_evidence": {
+    "license_id": "CreativeML Open RAIL++-M",
+    "license_source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md",
+    "output_terms": "The licensor claims no rights in generated output except as set forth by the license; output use remains subject to the license and its use restrictions.",
+    "status": "declared-not-yet-authorized"
+  },
+  "model": {
+    "official_checkpoint_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
+    "official_model_source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
+    "repository_id": "stabilityai/stable-diffusion-xl-base-1.0"
+  },
+  "runtime_observation": {
+    "backend": "comfyui",
+    "backend_model_id": "sd_xl_base_1.0.safetensors",
+    "candidate_id": "candidate:01fc564a0cb63228ffa3ff1528d534cd4e423b8603a864a9a7f1a09c29be8926",
+    "discovery_mode": "api_only",
+    "discovery_scope_hash": "8694ab3083ed71bc25727a62b5ad2f247ddac7e66a7297a4d432b4c49dda18c1",
+    "identity_strength": "backend_binding",
+    "identity_token": "model:bf138fd524d2b0d788281b449aca74aa1963d92a31141ca3058ab1d050cfe4a6",
+    "loader_class": "CheckpointLoaderSimple",
+    "loader_input": "ckpt_name",
+    "public_evidence_eligible": false,
+    "trusted": false
+  },
+  "schema_version": 1,
+  "status": "downloaded_untrusted",
+  "transport": {
+    "actual_transport": "https://hf-mirror.com/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
+    "direct_official_transport_status": "unreachable_from_current_shell",
+    "mirror_approved_by_user": true,
+    "response_linked_sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+    "response_linked_size": 6938078334,
+    "response_repo_commit": "462165984030d82259a11f4367a4eed129e94a7b"
+  },
+  "unresolved": [
+    "The repository does not yet ship a reviewed SDXL-specific ComfyUI workflow.",
+    "The local file hash has not been bound to a project trust record through a confirmation-gated workflow inspection.",
+    "No public acceptance authority has approved this checkpoint identity.",
+    "No generation, visual acceptance, evidence export, or publication has been performed with this checkpoint."
+  ],
+  "verification": {
+    "comfyui_loader_visible": true,
+    "file_sha256_matches_linked_sha256": true,
+    "file_size_matches_linked_size": true,
+    "safetensors_header_json_parsed": true,
+    "temporary_download_files_removed": true
+  }
+}
