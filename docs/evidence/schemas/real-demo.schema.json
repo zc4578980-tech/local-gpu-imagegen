@@ -1,0 +1,113 @@
+{
+  "$id": "https://local-gpu-imagegen.invalid/schemas/real-demo.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {"minimum": 1, "type": "integer"},
+          "mime_type": {"minLength": 1, "type": "string"},
+          "path": {"minLength": 1, "type": "string"},
+          "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+        },
+        "required": ["path", "sha256", "bytes", "mime_type"],
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "client_session": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {"enum": ["codex", "claude-code"], "type": "string"},
+        "path": {"minLength": 1, "type": "string"},
+        "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "version": {"minLength": 1, "type": "string"}
+      },
+      "required": ["path", "sha256", "client", "version"],
+      "type": "object"
+    },
+    "demo_kind": {"const": "real_local_gpu_hot_revision"},
+    "known_limitations": {
+      "items": {"minLength": 1, "type": "string"},
+      "minItems": 3,
+      "type": "array"
+    },
+    "model_output": {"const": true},
+    "public_rights": {
+      "additionalProperties": false,
+      "properties": {
+        "license_id": {"minLength": 1, "type": "string"},
+        "license_url": {"format": "uri", "type": "string"},
+        "output_redistribution_status": {"const": "approved"},
+        "source": {"format": "uri", "type": "string"}
+      },
+      "required": ["source", "license_id", "license_url", "output_redistribution_status"],
+      "type": "object"
+    },
+    "revision": {
+      "additionalProperties": false,
+      "properties": {
+        "change": {"items": {"type": "string"}, "minItems": 1, "type": "array"},
+        "confirmation": {"minLength": 1, "type": "string"},
+        "edit_mode": {"const": "prompt-refine"},
+        "finalization_verified": {"const": true},
+        "image_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "parent": {"type": "object"},
+        "preservation_results": {"minItems": 1, "type": "array"},
+        "preserve": {"minItems": 1, "type": "array"},
+        "quality_status": {"const": "accepted"},
+        "round_number": {"minimum": 1, "type": "integer"},
+        "run_id": {"minLength": 1, "type": "string"},
+        "seed": {"minimum": 0, "type": "integer"},
+        "visual_checks": {"type": "object"}
+      },
+      "required": ["run_id", "parent", "edit_mode", "preserve", "change", "round_number", "image_sha256", "seed", "quality_status", "confirmation", "finalization_verified", "preservation_results", "visual_checks"],
+      "type": "object"
+    },
+    "root": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation": {"minLength": 1, "type": "string"},
+        "image_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "quality_status": {"const": "candidate"},
+        "round_number": {"minimum": 1, "type": "integer"},
+        "run_id": {"minLength": 1, "type": "string"},
+        "seed": {"minimum": 0, "type": "integer"},
+        "visual_checks": {"type": "object"}
+      },
+      "required": ["run_id", "round_number", "image_sha256", "seed", "quality_status", "confirmation", "visual_checks"],
+      "type": "object"
+    },
+    "route": {
+      "additionalProperties": false,
+      "properties": {
+        "authorization_scope": {"const": "public_evidence"},
+        "backend": {"const": "comfyui"},
+        "component_bundle_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "guidance_scale": {"type": "number"},
+        "height": {"const": 720},
+        "model_id": {"minLength": 1, "type": "string"},
+        "model_identity_token": {"pattern": "^model:[0-9a-f]{64}$", "type": "string"},
+        "model_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "prompt_compiler_id": {"minLength": 1, "type": "string"},
+        "prompt_compiler_version": {"minimum": 1, "type": "integer"},
+        "sampler": {"minLength": 1, "type": "string"},
+        "scheduler": {"minLength": 1, "type": "string"},
+        "steps": {"minimum": 1, "type": "integer"},
+        "upscale_policy": {"const": "off"},
+        "width": {"const": 1280},
+        "workflow_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "workflow_template_id": {"const": "sdxl-txt2img"},
+        "workflow_template_version": {"const": 1}
+      },
+      "required": ["authorization_scope", "backend", "model_id", "model_identity_token", "model_sha256", "workflow_template_id", "workflow_template_version", "workflow_sha256", "component_bundle_sha256", "prompt_compiler_id", "prompt_compiler_version", "width", "height", "steps", "guidance_scale", "sampler", "scheduler", "upscale_policy"],
+      "type": "object"
+    },
+    "schema_version": {"const": "1.0"}
+  },
+  "required": ["schema_version", "demo_kind", "model_output", "public_rights", "route", "root", "revision", "client_session", "artifacts", "known_limitations"],
+  "title": "Local GPU Imagegen genuine hot-revision demo",
+  "type": "object"
+}
