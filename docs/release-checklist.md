@@ -4,12 +4,13 @@ This checklist covers repository release readiness. It does not grant model, wor
 
 ## Local gate
 
-- [x] All model-free tests pass on the `0.6.1` local RC tree: 539 passed, 4 expected Windows link-privilege skips, 0 failures.
+- [x] All model-free tests pass on the `0.6.1` local RC tree: 543 passed, 4 expected Windows link-privilege skips, 0 failures.
 - [x] Python sources compile.
 - [x] All 30 tracked JSON documents parse.
 - [x] The `0.6.1` wheel builds and installs under isolated Python 3.12.12 outside the checkout.
 - [x] The installed wheel exposes exactly fifteen MCP tools and both evidence schemas.
 - [x] Codex and Claude Code guided setup remains read-only without `--apply`.
+- [x] Real SDXL discovery metadata produces a 3,878-byte bounded MCP result instead of 34,116 bytes; the bounded result contains no data URI and leaves source metadata unchanged.
 - [x] The protocol demo regenerates byte-for-byte and contains no private values.
 - [x] Tracked files contain no credentials or personal absolute paths.
 - [x] `git diff --check` passes.
@@ -17,7 +18,9 @@ This checklist covers repository release readiness. It does not grant model, wor
 
 Local RC artifact: `local_gpu_imagegen-0.6.1-py3-none-any.whl`
 
-SHA-256: `d4df7de961c872568d7a33ae1a029d3544b6303050c903f9b68d4375db7bdb44`
+Size: `191674` bytes
+
+SHA-256: `33ed4bc1564a92e3252b80f79cf1a7dd91f726774045801fd617bf9d0ef02655`
 
 These local observations must be repeated at the exact final release commit after genuine demo and named-client evidence are added.
 

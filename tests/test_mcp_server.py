@@ -322,6 +322,45 @@ class McpServerUnitTests(unittest.TestCase):
         })
         services.router.recommend.assert_called_once_with(recommend)
 
+    def test_discovery_result_omits_data_uris_and_oversized_metadata_without_mutating_inventory(self) -> None:
+        thumbnail = "data:image/jpeg;base64," + ("A" * 500_000)
+        oversized_note = "B" * 20_000
+        discovery_data = {
+            "candidates": [{
+                "candidate_id": "candidate:sdxl",
+                "metadata": {
+                    "modelspec.title": "Stable Diffusion XL Base 1.0",
+                    "modelspec.thumbnail": thumbnail,
+                    "oversized_note": oversized_note,
+                },
+            }],
+            "warnings": [],
+        }
+        services = Mock()
+        services.discovery.execute.return_value = discovery_data
+
+        with patch.object(mcp_server, "get_runtime_services", return_value=services):
+            result = mcp_server.handle_tool_call({
+                "name": "local_gpu_discover_models",
+                "arguments": {
+                    "phase": "execute",
+                    "plan_id": "plan-1",
+                    "confirmation": "scan:plan-1",
+                },
+            })
+
+        serialized = json.dumps(result)
+        metadata = result["structuredContent"]["candidates"][0]["metadata"]
+        self.assertNotIn("data:image", serialized)
+        self.assertNotIn("A" * 1_000, serialized)
+        self.assertNotIn("B" * 1_000, serialized)
+        self.assertLess(len(serialized.encode("utf-8")), 16_384)
+        self.assertEqual(metadata["modelspec.title"], "Stable Diffusion XL Base 1.0")
+        self.assertIn("omitted data URI", metadata["modelspec.thumbnail"])
+        self.assertIn("omitted oversized string", metadata["oversized_note"])
+        self.assertEqual(discovery_data["candidates"][0]["metadata"]["modelspec.thumbnail"], thumbnail)
+        self.assertEqual(discovery_data["candidates"][0]["metadata"]["oversized_note"], oversized_note)
+
     def test_trust_tool_resolves_exact_current_inventory_identity(self) -> None:
         record = {
             "backend": "webui", "endpoint_identity": "endpoint:test",

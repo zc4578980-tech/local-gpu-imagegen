@@ -136,14 +136,14 @@ The Skill will not guess from a checkpoint filename or silently select a backend
 3. Call `local_gpu_list_profiles` for the intended authorization scope. Reuse known brief values and ask only for missing high-impact boundaries.
 4. Call `local_gpu_recommend_models`. It returns one exact route and at most two alternatives without weakening hard requirements.
 5. Display the exact resolved `model_choice`, backend, identity strength/hash or binding warning, workflow, compiler, dimensions, and budget. Wait for a new explicit confirmation after that display.
-6. Start the frozen route and spend at most the confirmed successful-round budget. A retained image consumes a round; a backend failure does not.
+6. Start the frozen route -> read the persisted frozen run -> construct the complete generation plan -> spend at most the confirmed successful-round budget. Copy every route, identity, workflow, compiler, policy, and budget field from that run before adding prompts and parameters. A retained image consumes a round; a backend failure does not.
 7. On a vision-capable host, display and inspect the original full-resolution image. Record the required anatomy, feet/contact, hands/objects, and text/watermark checks with the full rubric; a preview alone is insufficient. Failed or uncertain checks require refine or explore. A refine preserves the seed; an explore changes the seed.
 8. When an eligible review returns quality status `candidate`, display its limitations, image SHA-256, and exact `finalize:<run_id>:<round_number>:<image_sha256>` value, then stop. Only a later user message containing that displayed value may authorize finalization; the Agent cannot accept its own candidate.
 9. On a text-only host, retain exactly one successful round, mark `review unavailable`, report the unreviewed path, and stop. Do not invent scores or call review/finalization tools.
 
 After a reviewed or finalized candidate, the user can describe what to keep and what to change. The Skill presents an auditable preserve/change contract, asks for a separate one-to-three-round revision budget, and creates an immutable child run only after confirmation. It chooses the least destructive mode: same-seed prompt refinement, then low-strength img2img, then inpainting with explicit mask-overlay confirmation. No-mask preservation is best-effort.
 
-The adaptive sequence is discovery -> trust when needed -> scoped catalog -> brief -> exact-route recommendation -> post-display confirmation -> start -> generate -> full-resolution inspect -> review -> refine/explore or display candidate -> wait for a later user message -> finalize. The configured `max_rounds` must be from `1` through `3`, and urgency or sunk cost never extends it.
+The adaptive sequence is discovery -> trust when needed -> scoped catalog -> brief -> exact-route recommendation -> post-display confirmation -> start -> read persisted run -> construct complete plan -> generate -> full-resolution inspect -> review -> refine/explore or display candidate -> wait for a later user message -> finalize. The configured `max_rounds` must be from `1` through `3`, and urgency or sunk cost never extends it.
 
 ### Visual Profiles And Scope
 

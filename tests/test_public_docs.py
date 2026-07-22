@@ -58,6 +58,7 @@ class PublicDocumentationTests(unittest.TestCase):
             "Agent Skill Workflow",
             "Call `local_gpu_list_profiles`",
             "missing high-impact boundaries",
+            "read the persisted frozen run -> construct the complete generation plan",
             "exact resolved `model_choice`",
             "`max_rounds` must be from `1` through `3`",
             "vision-capable host",
@@ -128,6 +129,9 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("`mask_not_confirmed`", troubleshooting)
         self.assertIn("parent manifest", troubleshooting)
         self.assertIn("Mocked/model-free", changelog)
+        self.assertIn("omits embedded data URIs and oversized metadata strings", changelog)
+        self.assertIn("complete frozen generation plan", changelog)
+        self.assertIn("fresh-process public-route recovery", changelog)
         self.assertIn("## [0.5.0] - 2026-07-21", changelog)
         self.assertIn("## [0.4.0] - 2026-07-21", changelog)
         self.assertIn("## [0.3.0]", changelog)
@@ -180,6 +184,26 @@ class PublicDocumentationTests(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, public)
+
+    def test_docs_define_fresh_process_public_route_recovery_without_identity_downgrade(self) -> None:
+        architecture = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+        troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8")
+        for required in (
+            "Fresh-process public route recovery",
+            "`selected_folders` `index`",
+            "exact `explicit_includes`",
+            "`cost_warning`",
+            "exactly one candidate",
+            "filename and byte size",
+            "`selected_candidates`",
+            "full SHA-256",
+            "`api_only` ComfyUI `index`",
+            "exact `public_evidence` route",
+            "Do not downgrade to `backend_binding` or `private`",
+            "Do not scan unrelated roots",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, architecture + "\n" + troubleshooting)
 
     def test_docs_describe_candidate_and_user_bound_confirmation(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

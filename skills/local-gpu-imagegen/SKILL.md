@@ -16,6 +16,19 @@ The plugin exposes exactly fifteen MCP tools: `local_gpu_imagegen_check`, `local
 1. Extract known values first.
 2. Call `local_gpu_discover_models` with `api_only` when current backend inventory is unknown. A broader `selected_folders`, `common_locations`, or `full_drive` scan must first return and display an unchanged plan, then receive its exact scan confirmation. Discovery indexes metadata without loading weights; run `fingerprint` only for explicitly selected candidates. Never infer trust from discovery.
 3. If a discovered identity needs trust, display its exact backend, endpoint class, backend-visible model name, identity strength, capabilities, scope, and workflow binding before calling `local_gpu_set_model_trust`. For a split ComfyUI workflow, fingerprint every selected primary model, text encoder, and VAE, then call the same tool with `inspect_workflow_binding`. Display the returned component roles, names, byte sizes, SHA-256 values, reviewed workflow SHA-256, bundle SHA-256, and exact confirmation before any mutating call. Inspection never writes trust. A `backend_binding` identity is `private` only. `public_evidence` requires a complete cryptographic bundle plus exact source, license, and redistribution metadata for every component; this candidate status still does not replace acceptance authority. Receive a new exact trust confirmation after displaying those facts.
+
+When a fresh MCP process must recover a previously confirmed cryptographic public candidate, follow this exact order:
+
+1. Plan `selected_folders/index` for one already confirmed model root and the exact `explicit_includes` path. Do not scan unrelated roots.
+2. Display the unchanged plan, scope, expiration, and `cost_warning`. State the estimated local file I/O and hashing cost: indexing reads bounded metadata, while the later fingerprint reads every byte of the selected file. Wait for the exact scan confirmation, then execute that unchanged index plan.
+3. Select exactly one expected candidate. Verify its filename and byte size against the previously confirmed checkpoint; stop on zero, multiple, or mismatched candidates.
+4. Plan `selected_folders/fingerprint` with `selected_candidates` containing only that candidate. Display its full-file read cost and the new exact confirmation, wait for that confirmation, then execute the unchanged fingerprint plan.
+5. Verify the returned filesystem identity token, full SHA-256, and byte size against the expected public candidate.
+6. Run `api_only/index` for ComfyUI so the current backend-visible loader binding is present in the same process.
+7. Call `local_gpu_recommend_models` and verify the exact `public_evidence` route matches the expected model, endpoint, cryptographic identity, workflow, bundle when applicable, and compiler before displaying it for confirmation.
+
+Never downgrade this recovery to `backend_binding` or `private` identity. Do not recommend until both filesystem and API identities are present. A mismatch requires a new bounded discovery decision, not a broader scan or a weaker route.
+
 4. Call `local_gpu_list_profiles` with the intended `private` or `public_evidence` scope before proposing a run. Select a Profile, optional style, compatible backend, and an approved non-empty `model_choice` from its merged catalog. The model must be registered, enabled, and license-approved. If none exists, state a clear unavailable-model boundary and stop. Do not invent a model ID, enable a candidate, download a model, or call `local_gpu_start_run`.
 5. Ask only for missing high-impact boundaries:
    - intended use/subtype;
@@ -66,12 +79,26 @@ Follow this order exactly:
 
 ```text
 `local_gpu_list_profiles` -> brief -> `local_gpu_recommend_models` -> confirm -> `local_gpu_start_run`
+-> `local_gpu_get_run` -> construct the complete frozen plan
 -> `local_gpu_generate_round(action=initial)` -> inspect preview
 -> `local_gpu_record_review` -> `local_gpu_generate_round(action=refine|explore)`
 -> inspect preview -> `local_gpu_record_review` -> `local_gpu_finalize_run`
 ```
 
-The second generation/review pair is conditional: repeat it only while the confirmed budget remains and improvement is worthwhile. `local_gpu_get_run` is for recovery or state checks. Use `local_gpu_cleanup_run` only for the scope the user authorized; deleting a whole run requires the tool's exact confirmation. Do not bypass the adaptive run with `local_gpu_generate_image`.
+Immediately after `local_gpu_start_run`, call `local_gpu_get_run` with the returned run ID. Treat its persisted `request` and `route` as authoritative and copy the frozen boundary exactly into every `local_gpu_generate_round` plan. Do not construct a prompt-only plan. The complete plan contains exactly these fields:
+
+```text
+`profile`, `style`, `intent`, `positive_prompt`, `negative_prompt`,
+`constraints`, `parameters`, `max_rounds`, `upscale_policy`,
+`authorization_scope`, `route_token`, `model_choice`, `backend`,
+`endpoint_identity`, `model_identity_token`, `identity_strength`,
+`workflow_template_id`, `workflow_template_version`,
+`prompt_compiler_id`, `prompt_compiler_version`
+```
+
+Copy `profile`, `style`, `intent`, `constraints`, `max_rounds`, `upscale_policy`, `authorization_scope`, `route_token`, `model_choice`, and `backend` from the persisted request. Copy the endpoint, model identity, workflow, and compiler values from its frozen route, mapping route `identity_token` to plan `model_identity_token`. Add only the compiled `positive_prompt`, `negative_prompt`, and profile-compatible `parameters`; never guess or omit a frozen field. On later rounds, fetch the current run again when process memory or route state is uncertain, then preserve the same frozen boundary.
+
+The second generation/review pair is conditional: repeat it only while the confirmed budget remains and improvement is worthwhile. `local_gpu_get_run` also serves recovery and state checks. Use `local_gpu_cleanup_run` only for the scope the user authorized; deleting a whole run requires the tool's exact confirmation. Do not bypass the adaptive run with `local_gpu_generate_image`.
 
 For each generation, use a unique idempotency key and a plan bound to the confirmed summary. The first action is `initial`. After each review:
 

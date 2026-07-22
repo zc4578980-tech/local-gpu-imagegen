@@ -191,6 +191,32 @@ class SkillContractTests(unittest.TestCase):
             with self.subTest(boundary=boundary):
                 self.assertIn(boundary, self.text)
 
+    def test_fresh_process_public_route_recovery_requires_one_exact_file_fingerprint(self) -> None:
+        section = _section(self.text, "## Adaptive Brief", "## Confirmation Gate")
+        _assert_ordered(section, (
+            "fresh MCP process",
+            "`selected_folders/index`",
+            "one already confirmed model root",
+            "exact `explicit_includes`",
+            "local file I/O and hashing cost",
+            "exact scan confirmation",
+            "exactly one expected candidate",
+            "filename and byte size",
+            "`selected_folders/fingerprint`",
+            "only that candidate",
+            "filesystem identity token, full SHA-256, and byte size",
+            "`api_only/index` for ComfyUI",
+            "`local_gpu_recommend_models`",
+            "exact `public_evidence` route",
+        ))
+        for boundary in (
+            "Never downgrade this recovery to `backend_binding` or `private` identity",
+            "Do not scan unrelated roots",
+            "Do not recommend until both filesystem and API identities are present",
+        ):
+            with self.subTest(boundary=boundary):
+                self.assertIn(boundary, section)
+
     def test_confirmation_resolves_the_exact_model_and_round_cap(self) -> None:
         for required_text in (
             "Do not ask the user to repeat or reconfirm known values",
@@ -271,6 +297,28 @@ class SkillContractTests(unittest.TestCase):
         ):
             with self.subTest(tool=tool):
                 self.assertIn(f"`{tool}`", self.text)
+
+    def test_generation_round_reconstructs_the_complete_frozen_plan_from_the_persisted_run(self) -> None:
+        section = _section(self.text, "## Run Sequence", "## Hot Revision")
+        _assert_ordered(section, (
+            "`local_gpu_start_run`",
+            "`local_gpu_get_run`",
+            "persisted `request` and `route`",
+            "`local_gpu_generate_round`",
+        ))
+        required_plan_fields = (
+            "profile", "style", "intent", "positive_prompt", "negative_prompt",
+            "constraints", "parameters", "max_rounds", "upscale_policy",
+            "authorization_scope", "route_token", "model_choice", "backend",
+            "endpoint_identity", "model_identity_token", "identity_strength",
+            "workflow_template_id", "workflow_template_version",
+            "prompt_compiler_id", "prompt_compiler_version",
+        )
+        for field in required_plan_fields:
+            with self.subTest(field=field):
+                self.assertIn(f"`{field}`", section)
+        self.assertIn("copy the frozen boundary exactly", section)
+        self.assertIn("Do not construct a prompt-only plan", section)
 
     def test_hot_revision_requires_auditable_preserve_change_contract(self) -> None:
         for required_text in (

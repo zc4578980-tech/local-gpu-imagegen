@@ -25,6 +25,7 @@ SCRIPTS = ROOT / "scripts"
 PYTHON = sys.executable
 DEFAULT_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("LOCAL_GPU_IMAGEGEN_COMMAND_TIMEOUT_SECONDS", "900"))
 MAX_PREVIEW_BASE64_CHARS = 4 * ((1024 * 1024 + 2) // 3)
+MAX_DISCOVERY_METADATA_STRING_CHARS = 4096
 SERVER_VERSION = __version__
 _asset_engine: Any | None = None
 _runtime_services: Any | None = None
@@ -1090,6 +1091,23 @@ def _successful_engine_data(value: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _bounded_discovery_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _bounded_discovery_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_bounded_discovery_value(item) for item in value]
+    if isinstance(value, str):
+        if value.lstrip().lower().startswith("data:"):
+            return f"[omitted data URI; original_chars={len(value)}]"
+        if len(value) > MAX_DISCOVERY_METADATA_STRING_CHARS:
+            return f"[omitted oversized string; original_chars={len(value)}]"
+    return value
+
+
+def _bounded_discovery_data(value: dict[str, Any]) -> dict[str, Any]:
+    return _bounded_discovery_value(value)
+
+
 def _preview_block(preview: object) -> dict[str, str] | None:
     data = getattr(preview, "data_base64", None)
     mime_type = getattr(preview, "mime_type", None)
@@ -1625,7 +1643,8 @@ def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
         }:
             services = get_runtime_services()
             if name == "local_gpu_discover_models":
-                return tool_success(_successful_engine_data(_discovery_call(services, arguments)))
+                data = _successful_engine_data(_discovery_call(services, arguments))
+                return tool_success(_bounded_discovery_data(data))
             if name == "local_gpu_set_model_trust":
                 return tool_success(_successful_engine_data(_trust_call(services, arguments)))
             return tool_success(_successful_engine_data(services.router.recommend(arguments)))

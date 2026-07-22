@@ -48,6 +48,19 @@ Checks:
 
 The four scan modes are `api_only`, `selected_folders`, `common_locations`, and `full_drive`. `index` is metadata-only; `fingerprint` hashes only explicitly selected indexed candidates. If a scan is canceled, the result is `incomplete: true` and its inventory remains untrusted. Resume with a new plan instead of treating partial results as trusted.
 
+## A Fresh Process Cannot Recover A Public Route
+
+A fresh MCP process has no discovery inventory even though user-local trust still exists. Do not begin with recommendation or accept a private fallback. Rebuild the current evidence in this order:
+
+1. Plan `selected_folders` `index` for one previously confirmed model root and the exact `explicit_includes` file.
+2. Display the unchanged scope, `cost_warning`, expiration, local metadata-read cost, and exact confirmation; execute only after that confirmation.
+3. Require exactly one candidate and verify its filename and byte size.
+4. Plan `selected_folders` `fingerprint` with `selected_candidates` containing only that candidate. Display that hashing reads the full file, obtain the new exact confirmation, and execute it.
+5. Verify the filesystem identity token, full SHA-256, and byte size against the expected checkpoint.
+6. Run an `api_only` ComfyUI `index` in the same process, then recommend and verify the exact `public_evidence` route.
+
+Do not downgrade to `backend_binding` or `private` identity. Do not scan unrelated roots, reuse an expired plan, omit the full-file cost warning, or recommend before both filesystem and API identities are current.
+
 ## LAN Or Public Endpoint Is Rejected
 
 Loopback is local. A LAN WebUI/ComfyUI endpoint requires the exact displayed transmission confirmation; otherwise discovery returns `network_scan_confirmation_required`. Public internet endpoints return `public_endpoint_rejected`. Do not work around either result with a DNS alias, credentials in a URL, HTTPS downgrade, port forwarding, or a broader scan.

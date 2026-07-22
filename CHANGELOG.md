@@ -19,6 +19,9 @@ No unreleased changes.
 
 - Public CI now installs the declared `setuptools>=68` build backend before running the no-build-isolation packaging test on the four Windows/Linux Python 3.11/3.12 jobs.
 - Client CLI subprocess output is decoded as UTF-8 with replacement so Windows locale decoding cannot crash background reader threads.
+- Discovery MCP output now omits embedded data URIs and oversized metadata strings at the presentation boundary without changing internal inventory or identity inputs.
+- The Agent Skill now reconstructs the complete frozen generation plan from the persisted run instead of permitting prompt-only round requests.
+- The Agent Skill and troubleshooting docs now define fresh-process public-route recovery through one exact selected-file fingerprint, current ComfyUI API identity, and no private identity downgrade.
 
 ### Evidence Boundary
 
