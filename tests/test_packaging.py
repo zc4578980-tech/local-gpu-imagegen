@@ -107,12 +107,14 @@ class PackagingTests(unittest.TestCase):
         required_suffixes = {
             "mcp_server.py",
             "verify_mcp.py",
+            "validate_client_sessions.py",
             "check_gpu.py",
             "generate_image.py",
             "share/local-gpu-imagegen/profiles/base.json",
             "share/local-gpu-imagegen/profiles/use-cases/standalone-illustration.json",
             "share/local-gpu-imagegen/workflows/comfyui/sdxl-txt2img-v1.json",
             "share/local-gpu-imagegen/skills/local-gpu-imagegen/SKILL.md",
+            "share/local-gpu-imagegen/evidence/schemas/client-session.schema.json",
         }
         for suffix in required_suffixes:
             with self.subTest(suffix=suffix):

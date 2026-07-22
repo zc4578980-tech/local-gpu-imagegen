@@ -1,0 +1,156 @@
+{
+  "$id": "https://local-gpu-imagegen.invalid/schemas/client-session.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "client": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "enum": [
+            "codex",
+            "claude-code"
+          ],
+          "type": "string"
+        },
+        "session_mode": {
+          "enum": [
+            "ephemeral",
+            "no_session_persistence"
+          ],
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "session_mode"
+      ],
+      "type": "object"
+    },
+    "completed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "evidence_class": {
+      "const": "named_client_session"
+    },
+    "hosted_client_session": {
+      "const": true
+    },
+    "installed_wheel": {
+      "const": true
+    },
+    "sanitization": {
+      "additionalProperties": false,
+      "properties": {
+        "account_identifiers_omitted": {
+          "const": true
+        },
+        "credentials_omitted": {
+          "const": true
+        },
+        "machine_paths_omitted": {
+          "const": true
+        },
+        "prompts_omitted": {
+          "const": true
+        },
+        "raw_transcript_retained": {
+          "const": false
+        }
+      },
+      "required": [
+        "prompts_omitted",
+        "account_identifiers_omitted",
+        "credentials_omitted",
+        "machine_paths_omitted",
+        "raw_transcript_retained"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "1.0"
+    },
+    "server": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "local-gpu-imagegen"
+        },
+        "protocol_version": {
+          "const": "2024-11-05"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "wheel_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "protocol_version",
+        "wheel_sha256"
+      ],
+      "type": "object"
+    },
+    "started_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "tool_calls": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "pattern": "^local_gpu_[a-z_]+$",
+            "type": "string"
+          },
+          "result": {
+            "type": "object"
+          },
+          "result_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sequence",
+          "name",
+          "result",
+          "result_sha256"
+        ],
+        "type": "object"
+      },
+      "minItems": 2,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "evidence_class",
+    "client",
+    "installed_wheel",
+    "hosted_client_session",
+    "server",
+    "started_at",
+    "completed_at",
+    "tool_calls",
+    "sanitization"
+  ],
+  "title": "Local GPU Imagegen named-client session evidence",
+  "type": "object"
+}

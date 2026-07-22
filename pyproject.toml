@@ -33,6 +33,7 @@ py-modules = [
   "generate_image",
   "mcp_server",
   "validate_acceptance_evidence",
+  "validate_client_sessions",
   "verify_client_configs",
   "verify_mcp",
 ]
@@ -51,3 +52,4 @@ include = ["local_gpu_imagegen*"]
 "share/local-gpu-imagegen/profiles/use-cases" = ["profiles/use-cases/*.json"]
 "share/local-gpu-imagegen/workflows/comfyui" = ["workflows/comfyui/*.json"]
 "share/local-gpu-imagegen/skills/local-gpu-imagegen" = ["skills/local-gpu-imagegen/SKILL.md"]
+"share/local-gpu-imagegen/evidence/schemas" = ["docs/evidence/schemas/*.json"]
