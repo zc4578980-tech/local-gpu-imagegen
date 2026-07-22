@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import tomllib
 import unittest
 from pathlib import Path
 
@@ -14,13 +13,27 @@ sys.path.insert(0, str(SCRIPTS))
 
 
 class ClientConfigTests(unittest.TestCase):
-    def test_named_configs_resolve_to_the_same_installed_command(self) -> None:
+    def test_named_setup_contracts_resolve_to_the_same_installed_command(self) -> None:
+        from local_gpu_imagegen.client_setup import setup_contract
+
+        codex = setup_contract("codex")
+        claude = setup_contract("claude-code")
+        self.assertEqual(codex["server"], claude["server"])
+        self.assertEqual(
+            codex["server"],
+            {
+                "name": "local-gpu-imagegen",
+                "command": ["local-gpu-imagegen", "serve"],
+            },
+        )
+        self.assertEqual(codex["add_args"][:3], ["mcp", "add", "local-gpu-imagegen"])
+        self.assertEqual(claude["add_args"][:5], ["mcp", "add", "--scope", "user", "local-gpu-imagegen"])
+
+    def test_claude_desktop_remains_a_legacy_render_only_template(self) -> None:
         from local_gpu_imagegen.cli import render_client_config
 
-        codex = tomllib.loads(render_client_config("codex"))["mcp_servers"]["local-gpu-imagegen"]
         claude = json.loads(render_client_config("claude-desktop"))["mcpServers"]["local-gpu-imagegen"]
-        self.assertEqual(codex, claude)
-        self.assertEqual(codex, {"command": "local-gpu-imagegen", "args": ["serve"]})
+        self.assertEqual(claude, {"command": "local-gpu-imagegen", "args": ["serve"]})
 
     def test_verifier_checks_both_contracts_and_exact_stdio_surface(self) -> None:
         import verify_client_configs
@@ -29,11 +42,17 @@ class ClientConfigTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["verification_scope"], "configuration_contract_and_stdio_launch")
         self.assertFalse(report["hosted_client_session"])
-        self.assertEqual(set(report["clients"]), {"codex", "claude-desktop"})
+        self.assertEqual(set(report["clients"]), {"codex", "claude-code"})
+        self.assertEqual(set(report["legacy_templates"]), {"claude-desktop"})
         for client in report["clients"].values():
             self.assertTrue(client["config_valid"])
+            self.assertEqual(client["configuration_kind"], "official_cli_setup_contract")
             self.assertEqual(client["server"]["name"], "local-gpu-imagegen")
             self.assertEqual(len(client["tools"]), 15)
+        self.assertEqual(
+            report["legacy_templates"]["claude-desktop"]["configuration_kind"],
+            "render_only_template",
+        )
 
     def test_verifier_script_returns_machine_readable_report(self) -> None:
         completed = subprocess.run(

@@ -8,10 +8,15 @@ import tomllib
 from typing import Any
 
 from local_gpu_imagegen.cli import render_client_config
+from local_gpu_imagegen.client_setup import setup_contract
 from verify_mcp import verify
 
 
 EXPECTED_COMMAND = {"command": "local-gpu-imagegen", "args": ["serve"]}
+EXPECTED_SETUP_SERVER = {
+    "name": "local-gpu-imagegen",
+    "command": ["local-gpu-imagegen", "serve"],
+}
 
 
 def _parse_client_config(client: str) -> dict[str, Any]:
@@ -29,10 +34,21 @@ def _parse_client_config(client: str) -> dict[str, Any]:
     return {"format": config_format, "command": command}
 
 
+def _parse_setup_contract(client: str) -> dict[str, Any]:
+    contract = setup_contract(client)
+    if contract["server"] != EXPECTED_SETUP_SERVER:
+        raise RuntimeError(f"{client} setup does not resolve to the installed stdio command.")
+    return {
+        "configuration_kind": "official_cli_setup_contract",
+        "format": "official_cli",
+        "setup": contract,
+    }
+
+
 def verify_client_configs() -> dict[str, Any]:
     clients: dict[str, Any] = {}
-    for client in ("codex", "claude-desktop"):
-        config = _parse_client_config(client)
+    for client in ("codex", "claude-code"):
+        config = _parse_setup_contract(client)
         stdio = verify()
         clients[client] = {
             **config,
@@ -41,15 +57,23 @@ def verify_client_configs() -> dict[str, Any]:
             "protocol_version": stdio["protocolVersion"],
             "tools": stdio["tools"],
         }
-    if clients["codex"]["server"] != clients["claude-desktop"]["server"]:
+    if clients["codex"]["server"] != clients["claude-code"]["server"]:
         raise RuntimeError("Named configurations did not resolve to the same MCP server identity.")
-    if clients["codex"]["tools"] != clients["claude-desktop"]["tools"]:
+    if clients["codex"]["tools"] != clients["claude-code"]["tools"]:
         raise RuntimeError("Named configurations did not expose the same MCP tool contract.")
+    legacy = _parse_client_config("claude-desktop")
     return {
         "ok": True,
         "verification_scope": "configuration_contract_and_stdio_launch",
         "hosted_client_session": False,
         "clients": clients,
+        "legacy_templates": {
+            "claude-desktop": {
+                **legacy,
+                "configuration_kind": "render_only_template",
+                "config_valid": True,
+            }
+        },
     }
 
 

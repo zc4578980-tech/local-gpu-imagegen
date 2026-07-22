@@ -15,6 +15,31 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def write_fake_client(directory: Path, name: str, marker: Path) -> None:
+    if os.name == "nt":
+        script = directory / f"{name}.cmd"
+        script.write_text(
+            "@echo off\n"
+            "if \"%1\"==\"--version\" (echo codex-cli test& exit /b 0)\n"
+            "if \"%1\"==\"mcp\" if \"%2\"==\"get\" exit /b 1\n"
+            f"if \"%1\"==\"mcp\" if \"%2\"==\"add\" (echo called>\"{marker}\"& exit /b 0)\n"
+            "exit /b 2\n",
+            encoding="utf-8",
+        )
+        return
+
+    script = directory / name
+    script.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--version\" ]; then echo 'codex-cli test'; exit 0; fi\n"
+        "if [ \"$1\" = \"mcp\" ] && [ \"$2\" = \"get\" ]; then exit 1; fi\n"
+        f"if [ \"$1\" = \"mcp\" ] && [ \"$2\" = \"add\" ]; then echo called > '{marker}'; exit 0; fi\n"
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+
+
 class PackagingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -44,6 +69,23 @@ class PackagingTests(unittest.TestCase):
         if len(wheels) != 1:
             raise AssertionError(f"expected one wheel, found: {wheels}")
         cls.wheel = wheels[0]
+        cls.environment_dir = cls.temp / "venv"
+        venv.EnvBuilder(with_pip=True).create(cls.environment_dir)
+        cls.python = cls.environment_dir / (
+            "Scripts/python.exe" if os.name == "nt" else "bin/python"
+        )
+        cls.cli = cls.environment_dir / (
+            "Scripts/local-gpu-imagegen.exe"
+            if os.name == "nt"
+            else "bin/local-gpu-imagegen"
+        )
+        subprocess.run(
+            [str(cls.python), "-m", "pip", "install", str(cls.wheel), "--no-deps"],
+            cwd=cls.temp,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -78,21 +120,10 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse(any("outputs/" in name or name.endswith(".safetensors") for name in names))
 
     def test_installed_wheel_verifies_from_outside_checkout(self) -> None:
-        environment_dir = self.temp / "venv"
-        venv.EnvBuilder(with_pip=True).create(environment_dir)
-        python = environment_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        cli = environment_dir / ("Scripts/local-gpu-imagegen.exe" if os.name == "nt" else "bin/local-gpu-imagegen")
-        subprocess.run(
-            [str(python), "-m", "pip", "install", str(self.wheel), "--no-deps"],
-            cwd=self.temp,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
         environment = dict(os.environ)
         environment.pop("PYTHONPATH", None)
         completed = subprocess.run(
-            [str(cli), "verify"],
+            [str(self.cli), "verify"],
             cwd=self.temp,
             env=environment,
             capture_output=True,
@@ -103,6 +134,34 @@ class PackagingTests(unittest.TestCase):
         report = json.loads(completed.stdout)
         self.assertTrue(report["ok"])
         self.assertEqual(len(report["tools"]), 15)
+
+    def test_installed_wheel_exposes_read_only_setup_outside_checkout(self) -> None:
+        fake_bin = self.temp / "fake-bin"
+        fake_bin.mkdir(exist_ok=True)
+        marker = fake_bin / "add-called"
+        write_fake_client(fake_bin, "codex", marker)
+        environment = dict(os.environ)
+        environment.pop("PYTHONPATH", None)
+        environment["PATH"] = str(fake_bin) + os.pathsep + environment.get("PATH", "")
+
+        completed = subprocess.run(
+            [str(self.cli), "setup", "codex"],
+            cwd=self.temp,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+
+        report = json.loads(completed.stdout)
+        self.assertEqual(report["status"], "planned")
+        self.assertFalse(report["applied"])
+        self.assertEqual(
+            report["server"]["command"],
+            ["local-gpu-imagegen", "serve"],
+        )
+        self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

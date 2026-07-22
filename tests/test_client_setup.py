@@ -94,6 +94,34 @@ class RecordingRunner:
 
 
 class ClientSetupTests(unittest.TestCase):
+    def test_static_contract_omits_executable_and_preserves_official_commands(self) -> None:
+        from local_gpu_imagegen.client_setup import setup_contract
+
+        contract = setup_contract("claude-code")
+
+        self.assertEqual(contract["binary"], "claude")
+        self.assertEqual(
+            contract["server"],
+            {
+                "name": "local-gpu-imagegen",
+                "command": ["local-gpu-imagegen", "serve"],
+            },
+        )
+        self.assertEqual(
+            contract["add_args"],
+            [
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "local-gpu-imagegen",
+                "--",
+                "local-gpu-imagegen",
+                "serve",
+            ],
+        )
+        self.assertNotIn("executable", contract)
+
     def test_codex_plan_is_read_only_and_exact(self) -> None:
         from local_gpu_imagegen.client_setup import build_setup_plan
 

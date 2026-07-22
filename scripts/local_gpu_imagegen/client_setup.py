@@ -49,10 +49,32 @@ def _run(runner: Runner, argv: Sequence[str]) -> subprocess.CompletedProcess[str
     )
 
 
-def _command(executable: str, value: object) -> list[str]:
+def _arguments(value: object) -> list[str]:
     if not isinstance(value, tuple) or not all(isinstance(item, str) for item in value):
         raise RuntimeError("invalid_client_setup_definition")
-    return [executable, *value]
+    return list(value)
+
+
+def _command(executable: str, value: object) -> list[str]:
+    return [executable, *_arguments(value)]
+
+
+def setup_contract(client: str) -> dict[str, object]:
+    definition = CLIENTS.get(client)
+    if definition is None:
+        raise ValueError(f"unsupported_client:{client}")
+    binary = definition["binary"]
+    if not isinstance(binary, str):
+        raise RuntimeError("invalid_client_setup_definition")
+    add_args = _arguments(definition["add"])
+    remove_args = _arguments(definition["remove"])
+    return {
+        "client": client,
+        "binary": binary,
+        "server": {"name": SERVER_NAME, "command": list(SERVER_COMMAND)},
+        "add_args": add_args,
+        "remove_args": remove_args,
+    }
 
 
 def build_setup_plan(
