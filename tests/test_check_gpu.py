@@ -33,6 +33,29 @@ class FakeCuda:
 
 
 class CheckGpuTests(unittest.TestCase):
+    def test_collect_report_returns_readiness_without_printing(self) -> None:
+        output = io.StringIO()
+        with (
+            patch.object(check_gpu, "module_available", return_value=False),
+            patch.object(
+                check_gpu,
+                "check_webui",
+                return_value={"url": "local-webui", "available": False, "model": None, "api_error": "stopped"},
+            ),
+            patch.object(
+                check_gpu,
+                "check_comfyui",
+                return_value={"url": "local-comfyui", "available": True, "api_error": None},
+            ),
+            redirect_stdout(output),
+        ):
+            report = check_gpu.collect_report()
+
+        self.assertEqual(output.getvalue(), "")
+        self.assertTrue(report["ready"])
+        self.assertTrue(report["comfyui_ready"])
+        self.assertFalse(report["webui_ready"])
+
     def test_ready_webui_does_not_probe_optional_torch_runtime(self) -> None:
         fake_cuda = FakeCuda()
         fake_torch = ModuleType("torch")

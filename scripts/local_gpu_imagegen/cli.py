@@ -44,6 +44,13 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--check-readiness", action="store_true", help="Also call the readiness tool.")
     config = subparsers.add_parser("config", help="Print an installed-command client configuration.")
     config.add_argument("client", choices=("codex", "claude-desktop"))
+    setup = subparsers.add_parser("setup", help="Plan or apply official MCP client setup.")
+    setup.add_argument("client", choices=("codex", "claude-code"))
+    setup.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply the displayed plan through the client's official mcp add command.",
+    )
     return parser
 
 
@@ -59,6 +66,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         return check_gpu.main()
     if args.command == "config":
         print(render_client_config(args.client))
+        return 0
+    if args.command == "setup":
+        import check_gpu
+
+        from local_gpu_imagegen.client_setup import apply_setup_plan, build_setup_plan
+
+        try:
+            plan = build_setup_plan(args.client)
+            result = apply_setup_plan(plan) if args.apply else plan
+            report = {
+                "ok": True,
+                **result,
+                "backend_readiness": check_gpu.collect_report(),
+            }
+        except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
+            return 1
+        print(json.dumps(report, indent=2))
         return 0
     if args.command == "verify":
         import verify_mcp

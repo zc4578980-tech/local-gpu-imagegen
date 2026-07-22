@@ -55,7 +55,7 @@ def check_comfyui() -> dict[str, object]:
         }
 
 
-def main() -> int:
+def collect_report() -> dict[str, object]:
     report: dict[str, object] = {
         "python": {
             "executable": sys.executable,
@@ -111,8 +111,13 @@ def main() -> int:
     report["webui_ready"] = webui_ready
     report["comfyui_ready"] = comfyui_ready
     report["ready"] = ready
+    return report
+
+
+def main() -> int:
+    report = collect_report()
     print(json.dumps(report, indent=2))
-    return 0 if ready else 1
+    return 0 if report["ready"] else 1
 
 
 if __name__ == "__main__":
