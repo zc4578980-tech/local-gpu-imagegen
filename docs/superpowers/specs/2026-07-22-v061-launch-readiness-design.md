@@ -1,6 +1,6 @@
 # v0.6.1 Launch Readiness Design
 
-**Status:** Approved approach; written specification awaiting user review
+**Status:** Approved by the user on 2026-07-22
 **Date:** 2026-07-22
 **Target:** A defensible preview release with the evidence and distribution needed to pursue 800+ GitHub stars. Star count is a market outcome, not a release claim or guarantee.
 
