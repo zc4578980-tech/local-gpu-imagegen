@@ -107,7 +107,7 @@ class McpServerUnitTests(unittest.TestCase):
                 "affinity_tags", "required_vram_gb", "preferred_model_id",
             },
             "local_gpu_start_run": {
-                "intent", "profile", "style", "constraints", "model_choice", "backend",
+                "intent", "profile", "subtype", "style", "constraints", "model_choice", "backend",
                 "authorization_scope", "route_token", "max_rounds", "upscale_policy",
             },
             "local_gpu_get_run": {"run_id"},
@@ -238,7 +238,7 @@ class McpServerUnitTests(unittest.TestCase):
         invalid_calls = (
             ("local_gpu_start_run", {}),
             ("local_gpu_start_run", {
-                "intent": "valid", "profile": "missing-profile", "style": None, "constraints": {},
+                "intent": "valid", "profile": "missing-profile", "subtype": "character", "style": None, "constraints": {},
                 "model_choice": "stabilityai/sd-turbo", "backend": "webui", "max_rounds": 3,
                 "upscale_policy": "auto", "authorization_scope": "private", "route_token": "route:test",
             }),
@@ -343,6 +343,7 @@ class McpServerUnitTests(unittest.TestCase):
         arguments = {
             "intent": " ",
             "profile": "standalone-illustration",
+            "subtype": "character",
             "style": None,
             "constraints": {},
             "model_choice": "stabilityai/sd-turbo",
@@ -361,6 +362,7 @@ class McpServerUnitTests(unittest.TestCase):
         base = {
             "intent": "A calm coast at dawn.",
             "profile": "standalone-illustration",
+            "subtype": "character",
             "style": None,
             "constraints": {},
             "backend": "webui",
@@ -390,6 +392,7 @@ class McpServerUnitTests(unittest.TestCase):
         arguments = {
             "intent": "A calm coast at dawn.",
             "profile": "standalone-illustration",
+            "subtype": "character",
             "style": None,
             "constraints": {},
             "model_choice": "test/approved-anime",

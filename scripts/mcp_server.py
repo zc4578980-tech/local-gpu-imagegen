@@ -524,6 +524,7 @@ def tool_schema() -> list[dict[str, Any]]:
             "inputSchema": _object_schema({
                 "intent": {"type": "string", "minLength": 1},
                 "profile": {"type": "string", "enum": _registered_profile_ids()},
+                "subtype": {"type": "string", "enum": _registered_subtype_ids()},
                 "style": {"type": ["string", "null"], "enum": [None, *_registered_style_ids()]},
                 "constraints": json_object,
                 "model_choice": {"type": "string", "minLength": 1},
@@ -533,7 +534,7 @@ def tool_schema() -> list[dict[str, Any]]:
                 "max_rounds": {"type": "integer", "minimum": 1, "maximum": 3},
                 "upscale_policy": {"type": "string", "enum": ["auto", "off"]},
             }, [
-                "intent", "profile", "style", "constraints", "model_choice", "backend",
+                "intent", "profile", "subtype", "style", "constraints", "model_choice", "backend",
                 "authorization_scope", "route_token", "max_rounds", "upscale_policy",
             ]),
             "outputSchema": _output_schema({
@@ -696,6 +697,16 @@ def _registered_profile_ids() -> list[str]:
 def _registered_style_ids() -> list[str]:
     return sorted(path.stem for path in (ROOT / "profiles" / "styles").glob("*.json"))
 
+
+
+def _registered_subtype_ids() -> list[str]:
+    subtypes: set[str] = set()
+    for path in (ROOT / "profiles" / "use-cases").glob("*.json"):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        values = document.get("subtypes") if isinstance(document, dict) else None
+        if isinstance(values, list):
+            subtypes.update(value for value in values if isinstance(value, str) and value)
+    return sorted(subtypes)
 
 
 def _approved_model_ids() -> list[str]:
