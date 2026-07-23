@@ -232,6 +232,36 @@ class SkillContractTests(unittest.TestCase):
     def test_confirmation_gate_enforces_post_display_temporal_order(self) -> None:
         _assert_confirmation_contract(self.text)
 
+    def test_regional_route_requires_displayed_geometry_conditioning_and_later_confirmation(self) -> None:
+        required = (
+            "copy-subject-v1",
+            "copy_region",
+            "subject_region",
+            "initial_regional_conditioning",
+            "copy_prompt",
+            "subject_prompt",
+            "copy_strength",
+            "subject_strength",
+            "regional_layout_unavailable",
+            "sdxl-regional-txt2img",
+        )
+        for phrase in required:
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.text)
+        section = _section(self.text, "## Regional Copy-Subject Route", "## Run Sequence")
+        _assert_ordered(section, (
+            "display normalized decimals and percentages",
+            "before asking the user to confirm",
+            "later explicit confirmation",
+            "geometry remains frozen",
+        ))
+
+    def test_regional_skill_forbids_prompt_only_fallback_and_geometry_hot_mutation(self) -> None:
+        self.assertIn("Never fall back to `sdxl-txt2img`", self.text)
+        self.assertIn("new root or child revision", self.text)
+        self.assertIn("change only regional prompts or strengths", self.text)
+        self.assertIn("explicit_constraint_violation", self.text)
+
     def test_confirmation_gate_rejects_permissive_or_reordered_mutations(self) -> None:
         valid = self.text
         mutations = (

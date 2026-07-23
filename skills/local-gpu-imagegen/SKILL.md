@@ -73,6 +73,22 @@ early `use defaults and start` -> intent only
 
 Do not call `local_gpu_start_run` before that post-display confirmation.
 
+## Regional Copy-Subject Route
+
+Use `copy-subject-v1` when the user requires one copy-safe region and one separated subject region. Follow this order:
+
+1. Ask only for missing copy side/size, subject side/size, regional prompt intent, `copy_strength`, `subject_strength`, and round budget.
+2. Normalize exactly one `copy_region` and one `subject_region`. Reject overlap, ambiguity, out-of-bounds geometry, or any additional region.
+3. Call `local_gpu_recommend_models` with the normalized `regional_layout`. The route must use ComfyUI and the reviewed `sdxl-regional-txt2img` workflow. If the result is `regional_layout_unavailable`, stop. Never fall back to `sdxl-txt2img` or a prompt-only approximation.
+4. First display normalized decimals and percentages; do this before asking the user to confirm. The displayed summary contains both rectangles, `copy_prompt`, `subject_prompt`, `copy_strength`, `subject_strength`, the exact route/model/bundle/workflow/compiler/dimensions, policies, and successful-round budget.
+5. Wait for a later explicit confirmation of that displayed regional summary. Earlier intent, defaults, or confirmation of a different geometry does not authorize the run.
+6. Call `local_gpu_start_run` with the same `constraints.regional_layout` and exact `initial_regional_conditioning`.
+7. Call `local_gpu_get_run`, then construct the existing exact 20-field plan. Copy the persisted layout into plan `constraints` and the confirmed conditioning into `parameters.regional_conditioning` for the initial round.
+8. On refine or explore, change only regional prompts or strengths unless the user explicitly selects another parameter already allowed by the Profile. The geometry remains frozen for the confirmed run.
+9. A geometry change requires a newly displayed and confirmed new root or child revision. It never mutates an existing run in place.
+
+A successful backend round that violates the confirmed copy/subject relation is retained, reviewed with `explicit_constraint_violation`, and consumes one successful-round budget slot.
+
 ## Run Sequence
 
 Follow this order exactly:
