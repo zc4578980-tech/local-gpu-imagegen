@@ -27,6 +27,9 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("LOCAL_GPU_IMAGEGEN_COMMAND
 MAX_PREVIEW_BASE64_CHARS = 4 * ((1024 * 1024 + 2) // 3)
 MAX_DISCOVERY_METADATA_STRING_CHARS = 4096
 SERVER_VERSION = __version__
+PACKAGED_PENDING_RUNTIME_WORKFLOW_TEMPLATE_IDS = frozenset({
+    "sdxl-two-stage-copy-subject",
+})
 _asset_engine: Any | None = None
 _runtime_services: Any | None = None
 
@@ -756,9 +759,17 @@ def _shipped_workflow_template_ids() -> list[str]:
     for path in (ROOT / "workflows" / "comfyui").glob("*.json"):
         document = json.loads(path.read_text(encoding="utf-8"))
         template_id = document.get("template_id") if isinstance(document, dict) else None
-        if isinstance(template_id, str) and template_id:
+        if _workflow_template_is_public(template_id):
             template_ids.append(template_id)
     return sorted(template_ids)
+
+
+def _workflow_template_is_public(template_id: object) -> bool:
+    return (
+        isinstance(template_id, str)
+        and bool(template_id)
+        and template_id not in PACKAGED_PENDING_RUNTIME_WORKFLOW_TEMPLATE_IDS
+    )
 
 
 def _approved_model_ids() -> list[str]:

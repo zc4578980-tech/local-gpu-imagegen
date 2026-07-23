@@ -807,7 +807,13 @@ def _validate_two_stage_graph(
             for field, value in node["inputs"].items()
             if not isinstance(value, list)
         }
-        if actual_scalars != TWO_STAGE_TEMPLATE_SCALARS:
+        if (
+            set(actual_scalars) != set(TWO_STAGE_TEMPLATE_SCALARS)
+            or any(
+                not _same_typed_scalar(actual_scalars[key], expected)
+                for key, expected in TWO_STAGE_TEMPLATE_SCALARS.items()
+            )
+        ):
             raise _unsafe("Two-stage workflow template scalars drifted.")
     _validate_edges(normalized)
     _enforce_resource_limits(normalized)
@@ -853,7 +859,7 @@ def _validate_rendered_two_stage_workflow(
         ("21", "filename_prefix"): "local-gpu-imagegen",
     }
     if any(
-        inputs[node_id][field] != expected
+        not _same_typed_scalar(inputs[node_id][field], expected)
         for (node_id, field), expected in static_values.items()
     ):
         raise _unsafe("Two-stage workflow static values drifted.")
@@ -1484,6 +1490,10 @@ def _valid_families(value: object) -> bool:
 
 def _number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _same_typed_scalar(value: object, expected: object) -> bool:
+    return type(value) is type(expected) and value == expected
 
 
 def _finite_number(value: object) -> bool:

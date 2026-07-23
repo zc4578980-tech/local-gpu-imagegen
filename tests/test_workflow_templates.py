@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from local_gpu_imagegen.errors import ArtifactError, ConflictError, ValidationError  # noqa: E402
 from local_gpu_imagegen.workflow_templates import (  # noqa: E402
     WorkflowTemplateRegistry,
+    _validate_rendered_two_stage_workflow,
     validate_imported_workflow,
     workflow_component_bindings,
 )
@@ -271,6 +272,8 @@ class WorkflowTemplateTests(unittest.TestCase):
             lambda graph: graph.pop("20"),
             lambda graph: graph["15"]["inputs"].update(seed=9),
             lambda graph: graph["17"]["inputs"].update(resize_source=True),
+            lambda graph: graph["17"]["inputs"].update(resize_source=0),
+            lambda graph: graph["9"]["inputs"].update(value=0),
             lambda graph: graph["13"]["inputs"].update(source=["10", 0]),
             lambda graph: graph.update({"22": copy.deepcopy(graph["21"])}),
         )
@@ -280,6 +283,18 @@ class WorkflowTemplateTests(unittest.TestCase):
                 "invalid_workflow_template|unsafe_comfy_workflow",
             ):
                 self.load_mutated_two_stage(mutate)
+
+    def test_two_stage_rendered_graph_rejects_numeric_zero_for_boolean(self) -> None:
+        source = ROOT / "workflows" / "comfyui" / "sdxl-two-stage-copy-subject-v1.json"
+        graph = json.loads(source.read_text(encoding="utf-8"))["graph"]
+        graph["17"]["inputs"]["resize_source"] = 0
+
+        with self.assertRaisesRegex(ValidationError, "unsafe_comfy_workflow"):
+            _validate_rendered_two_stage_workflow(
+                graph,
+                SDXL_MODEL,
+                two_stage_layout=approved_two_stage_layout(),
+            )
 
     def test_existing_sdxl_workflow_files_remain_byte_identical(self) -> None:
         expected = {

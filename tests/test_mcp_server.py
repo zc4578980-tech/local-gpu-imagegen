@@ -173,6 +173,27 @@ class McpServerUnitTests(unittest.TestCase):
             ],
         )
 
+    def test_two_stage_workflow_is_packaged_but_not_publicly_advertised(self) -> None:
+        source = ROOT / "workflows" / "comfyui" / "sdxl-two-stage-copy-subject-v1.json"
+        document = json.loads(source.read_text(encoding="utf-8"))
+
+        self.assertEqual(document["template_id"], "sdxl-two-stage-copy-subject")
+        self.assertEqual(
+            mcp_server.PACKAGED_PENDING_RUNTIME_WORKFLOW_TEMPLATE_IDS,
+            frozenset({document["template_id"]}),
+        )
+        self.assertNotIn(
+            document["template_id"],
+            mcp_server._shipped_workflow_template_ids(),
+        )
+        tools = mcp_server.tool_schema()
+        self.assertEqual(len(tools), 15)
+        trust = next(tool for tool in tools if tool["name"] == "local_gpu_set_model_trust")
+        self.assertNotIn(
+            document["template_id"],
+            trust["inputSchema"]["properties"]["workflow_template_id"]["enum"],
+        )
+
     def test_revision_and_mask_schemas_are_exact(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
         branch = tools["local_gpu_branch_run"]["inputSchema"]
