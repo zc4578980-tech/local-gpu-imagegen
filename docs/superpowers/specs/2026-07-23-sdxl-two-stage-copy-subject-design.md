@@ -37,6 +37,8 @@ The installed implementation confirms two important semantics:
 - a smaller source mask can be placed at an exact integer offset inside a full-canvas destination mask; and
 - `ImageCompositeMasked` clones the destination and changes only pixels selected by the supplied mask.
 
+The approved `FeatherMask` semantics are also bound to the installed built-in implementation. For a requested side width `f > 0`, its first `f` pixels are multiplied by `(distance + 1) / f`, starting at the outer edge. `SaveImage` then clips `255 * value` and truncates it to unsigned 8-bit RGB. A 32-pixel feather therefore normally saves side-edge values beginning at `7`, while corner products may truncate to `0`. Positive saved outer-edge values are expected runtime output and must not be rejected as leakage.
+
 `VAEEncodeForInpaint` alone is not accepted as proof that unmasked pixels remain identical. It performs a VAE encode/decode path. The final pixel-space composite and a post-output pixel comparison are both required.
 
 ## 3. Approved Decisions
@@ -51,6 +53,7 @@ The installed implementation confirms two important semantics:
 - Store the subject-stage prompt, negative prompt, and denoise value under `parameters.two_stage_conditioning`.
 - Freeze canvas, protected copy rectangle, subject mask rectangle, feather width, and VAE mask growth in `constraints.two_stage_layout`.
 - Generate the mask inside the reviewed workflow. Do not accept a user mask path or revision `mask_id` for this route.
+- Validate the saved mask against the installed `FeatherMask` ramp and `SaveImage` quantization semantics; do not replace the reviewed 21-node graph to manufacture zero-valued subject borders.
 - Retain exactly one base image, one mask image, and one final image for every technically successful round.
 - Permit only the final image to become a finalization candidate.
 - Retain the old single-pass route for compatibility, but do not recommend it as the new public-evidence control route and never use it as fallback.
@@ -64,7 +67,7 @@ The installed implementation confirms two important semantics:
 - Automatic subject detection, automatic visual-quality scoring, or automatic finalization.
 - Pixel-perfect subject placement within the mask.
 - A claim that the installed SDXL Base checkpoint is an inpainting-specific model.
-- Changes to shared/global Python or `<local-ai-root>\envs\pytorch-vla`.
+- Changes to shared/global Python or the separately managed learning environment.
 - Extending, finalizing, exporting, or modifying any exhausted historical run.
 - Push, tag, GitHub release, PyPI upload, MCP Registry publication, or public visual-quality claims.
 
@@ -293,15 +296,16 @@ The example seeds demonstrate the fixed `S` and `S + 1` relationship. Real value
 
 After all three PNGs are downloaded and structurally validated, the Engine decodes the base, mask, and final PNGs with a bounded standard-library path. This gate must not add Pillow or another runtime dependency.
 
-The decoder supports the exact non-interlaced 8-bit RGB/RGBA PNG shape produced by the confirmed ComfyUI route. Unsupported color modes, interlacing, decompression overflow, invalid filters, or dimension mismatch fail closed.
+The decoder supports the exact non-interlaced 8-bit RGB/RGBA PNG shape produced by the confirmed ComfyUI route. Unsupported color modes, interlacing, decompression overflow, invalid filters, invalid PNG chunk reserved bits, dimension mismatch, or `tRNS` transparency fail closed. RGB plus `tRNS` is not silently treated as opaque RGB.
 
 The Engine compares base and final pixels:
 
 - every pixel in `copy_protected_rect` must be identical;
 - every pixel outside the hard `subject_mask_rect` must be identical; and
+- comparisons include every decoded channel, including RGBA alpha; and
 - the recorded mismatch count for both checks must be zero.
 
-The saved mask must also match the reviewed soft-mask geometry: zero outside the subject rectangle, nonzero only inside it, and feathered inward at the four edges. The project does not infer mask correctness from an image filename.
+The saved mask must also match the reviewed mask geometry. RGB channels must be equal, every RGB value outside the subject rectangle and in the protected copy rectangle must be zero, and the strict subject interior must contain a positive value. For `feather_pixels > 0`, every row across both left/right feather widths and every column across both top/bottom feather widths must be nondecreasing inward and must end positive. Widths greater than one must rise across the requested feather; width one legitimately quantizes to an unchanged hard edge because its only multiplier is `1/1`. The subject's saved outer edge may be positive after runtime quantization; corner products may be zero. For `feather_pixels = 0`, a positive hard perimeter with a positive strict interior is valid. The project does not infer mask correctness from an image filename.
 
 If any technical invariant fails, the final output cannot become a successful round. The failed attempt records hashes and a structured error, and automatic generation on that run stops.
 

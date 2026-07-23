@@ -96,7 +96,6 @@ def validate_saved_soft_mask(mask_path: Path, layout: object) -> dict[str, objec
     copy_rect = normalized["copy_protected_rect"]
     outside_nonzero = 0
     copy_nonzero = 0
-    border_nonzero = 0
     interior_positive = 0
 
     for y in range(height):
@@ -112,19 +111,15 @@ def validate_saved_soft_mask(mask_path: Path, layout: object) -> dict[str, objec
                 copy_nonzero += 1
             if not inside_subject:
                 continue
-            if _on_outer_border(subject, x, y):
-                border_nonzero += int(value != 0)
-            elif value:
+            if value and _strictly_inside(subject, x, y):
                 interior_positive += 1
 
-    feather_samples = _feather_samples(mask, subject, normalized["feather_pixels"])
-    monotonic = all(_monotonic_inward(sample) for sample in feather_samples.values())
+    feather = normalized["feather_pixels"]
+    edge_profiles_checked = _validate_complete_feather_edges(mask_path, mask, subject, feather)
     if (
         outside_nonzero
         or copy_nonzero
-        or border_nonzero
         or interior_positive == 0
-        or not monotonic
     ):
         raise _invalid_mask(
             mask_path,
@@ -132,9 +127,7 @@ def validate_saved_soft_mask(mask_path: Path, layout: object) -> dict[str, objec
             {
                 "outside_nonzero_pixels": outside_nonzero,
                 "copy_nonzero_pixels": copy_nonzero,
-                "outer_border_nonzero_pixels": border_nonzero,
                 "interior_positive_pixels": interior_positive,
-                "feather_monotonic": monotonic,
             },
         )
     return {
@@ -142,11 +135,12 @@ def validate_saved_soft_mask(mask_path: Path, layout: object) -> dict[str, objec
         "width": width,
         "height": height,
         "channels": mask.channels,
+        "feather_pixels": feather,
         "outside_nonzero_pixels": outside_nonzero,
         "copy_nonzero_pixels": copy_nonzero,
-        "outer_border_nonzero_pixels": border_nonzero,
         "interior_positive_pixels": interior_positive,
-        "feather_monotonic": monotonic,
+        "edge_profiles_checked": edge_profiles_checked,
+        "feather_monotonic": True,
     }
 
 
@@ -172,6 +166,8 @@ def _parse_exact_png_chunks(data: bytes) -> tuple[tuple[int, int, int, int, int,
             raise _PngPixelFailure("png_chunk_too_large")
         if not all(65 <= value <= 90 or 97 <= value <= 122 for value in chunk_type):
             raise _PngPixelFailure("invalid_png_chunk_type")
+        if not 65 <= chunk_type[2] <= 90:
+            raise _PngPixelFailure("invalid_png_reserved_bit")
         chunk_end = offset + length
         crc_end = chunk_end + 4
         if crc_end > len(data):
@@ -205,6 +201,8 @@ def _parse_exact_png_chunks(data: bytes) -> tuple[tuple[int, int, int, int, int,
                 raise _PngPixelFailure("invalid_iend")
             saw_iend = True
             break
+        elif chunk_type == b"tRNS":
+            raise _PngPixelFailure("unsupported_png_transparency")
         else:
             if ihdr is None or chunk_type[0] & 0x20 == 0:
                 raise _PngPixelFailure("unsupported_critical_png_chunk")
@@ -292,35 +290,50 @@ def _contains(rect: dict[str, int], x: int, y: int) -> bool:
     )
 
 
-def _on_outer_border(rect: dict[str, int], x: int, y: int) -> bool:
+def _strictly_inside(rect: dict[str, int], x: int, y: int) -> bool:
     return (
-        x == rect["x"]
-        or x == rect["x"] + rect["width"] - 1
-        or y == rect["y"]
-        or y == rect["y"] + rect["height"] - 1
+        rect["x"] < x < rect["x"] + rect["width"] - 1
+        and rect["y"] < y < rect["y"] + rect["height"] - 1
     )
 
 
-def _feather_samples(
+def _validate_complete_feather_edges(
+    mask_path: Path,
     mask: DecodedPng,
     subject: dict[str, int],
     feather: int,
-) -> dict[str, list[int]]:
-    center_x = subject["x"] + subject["width"] // 2
-    center_y = subject["y"] + subject["height"] // 2
+) -> int:
     last_x = subject["x"] + subject["width"] - 1
     last_y = subject["y"] + subject["height"] - 1
-    return {
-        "left": [_pixel(mask, subject["x"] + distance, center_y)[0] for distance in range(feather + 1)],
-        "right": [_pixel(mask, last_x - distance, center_y)[0] for distance in range(feather + 1)],
-        "top": [_pixel(mask, center_x, subject["y"] + distance)[0] for distance in range(feather + 1)],
-        "bottom": [_pixel(mask, center_x, last_y - distance)[0] for distance in range(feather + 1)],
-    }
+    checked = 0
+    for y in range(subject["y"], last_y + 1):
+        profiles = (
+            [_pixel(mask, subject["x"] + distance, y)[0] for distance in range(feather + 1)],
+            [_pixel(mask, last_x - distance, y)[0] for distance in range(feather + 1)],
+        )
+        for samples in profiles:
+            if not _valid_inward_profile(samples, feather):
+                raise _invalid_mask(mask_path, "invalid_feather_direction")
+            checked += 1
+    for x in range(subject["x"], last_x + 1):
+        profiles = (
+            [_pixel(mask, x, subject["y"] + distance)[0] for distance in range(feather + 1)],
+            [_pixel(mask, x, last_y - distance)[0] for distance in range(feather + 1)],
+        )
+        for samples in profiles:
+            if not _valid_inward_profile(samples, feather):
+                raise _invalid_mask(mask_path, "invalid_feather_direction")
+            checked += 1
+    return checked
 
 
-def _monotonic_inward(samples: list[int]) -> bool:
-    return all(left <= right for left, right in zip(samples, samples[1:])) and (
-        len(samples) == 1 or samples[-1] > 0
+def _valid_inward_profile(samples: list[int], feather: int) -> bool:
+    if feather == 0:
+        return samples[0] > 0
+    return (
+        samples[-1] > 0
+        and (feather == 1 or samples[0] < samples[-1])
+        and all(left <= right for left, right in zip(samples, samples[1:]))
     )
 
 

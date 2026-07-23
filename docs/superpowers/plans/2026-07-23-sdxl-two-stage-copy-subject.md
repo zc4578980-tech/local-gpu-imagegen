@@ -13,7 +13,7 @@
 - Work only in `.worktrees/v061-launch-readiness` on `feature/v061-launch-readiness`; do not modify `main`.
 - Treat `docs/superpowers/specs/2026-07-23-sdxl-two-stage-copy-subject-design.md` at commit `d373134` as authoritative.
 - Do not download a model, ControlNet, custom node, workflow, Python package, or dependency.
-- Do not modify shared/global Python or `<local-ai-root>\envs\pytorch-vla`.
+- Do not modify shared/global Python or the separately managed learning environment.
 - Keep exactly 15 MCP tools and exactly 20 top-level generation-plan fields.
 - Keep `sdxl-txt2img-v1.json` and `sdxl-regional-txt2img-v1.json` byte-for-byte unchanged.
 - Keep `dist/local_gpu_imagegen-0.6.1-py3-none-any.whl` unchanged at SHA-256 `33ed4bc1564a92e3252b80f79cf1a7dd91f726774045801fd617bf9d0ef02655`.
@@ -57,7 +57,7 @@
 - `skills/local-gpu-imagegen/SKILL.md`: gather, display, confirm, execute, review, and stop on the new route.
 - `README.md`, `docs/architecture.md`, `docs/troubleshooting.md`, `CHANGELOG.md`: document the experimental route and negative single-pass evidence truthfully.
 - Focused tests for every modified module plus packaging, public-doc, Skill, and MCP-surface regressions.
-- `<codex-workspace>\projects\plugins\local-gpu-imagegen\PROJECT_NODES.md` and `<codex-workspace>\projects\plugins\local-gpu-imagegen\NEXT_SESSION.md`: update the project-root, Git-ignored continuity records after the verified milestone.
+- `<project-root>/PROJECT_NODES.md` and `<project-root>/NEXT_SESSION.md`: update the project-root, Git-ignored continuity records after the verified milestone.
 
 ## Task 1: Add The Pure Two-Stage Contract
 
@@ -353,7 +353,7 @@ def decode_png_pixels(path: Path, expected_width: int, expected_height: int) -> 
     return DecodedPng(width, height, channels, b"".join(rows))
 ```
 
-`_unfilter_rows` must implement PNG filters 0 through 4 exactly, use byte modulo 256, use the prior unfiltered row, and reject all other filter values. Reuse the existing PNG chunk/CRC/size safety limits instead of accepting looser files.
+`_unfilter_rows` must implement PNG filters 0 through 4 exactly, use byte modulo 256, use the prior unfiltered row, and reject all other filter values. Reuse the existing PNG chunk/CRC/size safety limits instead of accepting looser files. Enforce the PNG chunk-type reserved bit, and reject `tRNS` rather than discarding transparency semantics from an otherwise supported RGB image.
 
 - [ ] **Step 4: Implement preservation and mask checks**
 
@@ -378,7 +378,7 @@ def compare_protected_pixels(base_path: Path, final_path: Path, layout: object) 
             if not outside_subject:
                 continue
             checked += 1
-            changed = _pixel(base, x, y) != _pixel(final, x, y)
+            changed = _pixel(base, x, y) != _pixel(final, x, y)  # Includes RGBA alpha.
             mismatch += int(changed)
             copy_mismatch += int(changed and inside_copy)
     return {
@@ -389,7 +389,7 @@ def compare_protected_pixels(base_path: Path, final_path: Path, layout: object) 
     }
 ```
 
-`validate_saved_soft_mask` must require equal RGB channels, zero RGB outside the subject rectangle, a positive interior, zero-valued outer border pixels, monotonic inward feather samples across all four edges, and no nonzero pixel in the protected copy rectangle.
+`validate_saved_soft_mask` must require equal RGB channels, zero RGB outside the subject rectangle, a positive strict interior, and no nonzero pixel in the protected copy rectangle. Preserve the approved installed `FeatherMask` semantics: for `f > 0`, each side's first `f` pixels use `(distance + 1) / f`, corner factors multiply, and `SaveImage` truncates `255 * value` to 8-bit RGB. Positive outer-edge values are therefore valid and corner values may quantize to zero. Validate nondecreasing inward direction across every row on the left/right edges and every column on the top/bottom edges. Require a positive rise when `f > 1`; `f = 1` is a valid unchanged hard edge because its only multiplier is `1/1`. For `f = 0`, accept a positive hard perimeter with a positive strict interior.
 
 - [ ] **Step 5: Run focused artifact regressions**
 
@@ -1050,8 +1050,8 @@ git commit -m "docs: add two-stage SDXL control flow"
 ## Task 10: Run The Complete Model-Free Gate And Derive Exact Identities
 
 **Files:**
-- Modify outside the linked worktree: `<codex-workspace>\projects\plugins\local-gpu-imagegen\PROJECT_NODES.md`
-- Modify outside the linked worktree: `<codex-workspace>\projects\plugins\local-gpu-imagegen\NEXT_SESSION.md`
+- Modify outside the linked worktree: `<project-root>/PROJECT_NODES.md`
+- Modify outside the linked worktree: `<project-root>/NEXT_SESSION.md`
 - Modify only already-planned release metadata if tests prove packaged version/resource drift.
 
 **Interfaces:**
@@ -1131,7 +1131,7 @@ Replace the project-root `NEXT_SESSION.md` instructions with the exact later rou
 
 ```powershell
 git status --short --branch
-git -C <codex-workspace>\projects\plugins\local-gpu-imagegen status --short --branch
+git -C ..\.. status --short --branch
 ```
 
 Expected: clean `feature/v061-launch-readiness` implementation worktree. The project root retains its pre-existing ignored/untracked local evidence state; only the two intended continuity files change outside Git tracking.
