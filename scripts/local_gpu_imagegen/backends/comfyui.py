@@ -479,13 +479,13 @@ def _validate_request(value: object, endpoint_identity: str) -> dict[str, object
                 "Two-stage ComfyUI output paths are invalid.",
             )
         identities = {
-            str(Path(output_paths[role]).resolve())
+            _resolved_path_identity(output_paths[role])
             for role in ("base", "mask", "final")
         }
         if (
             len(identities) != 3
-            or Path(str(value["output_path"])).resolve()
-            != Path(output_paths["final"]).resolve()
+            or _resolved_path_identity(str(value["output_path"]))
+            != _resolved_path_identity(output_paths["final"])
         ):
             raise ValidationError(
                 "invalid_backend_request",
@@ -496,6 +496,10 @@ def _validate_request(value: object, endpoint_identity: str) -> dict[str, object
             for role in ("base", "mask", "final")
         }
     return result
+
+
+def _resolved_path_identity(value: str) -> str:
+    return os.path.normcase(os.fspath(Path(value).resolve()))
 
 
 def _validate_resolved_workflow(

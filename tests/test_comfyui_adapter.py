@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -449,6 +450,25 @@ class ComfyUIAdapterTests(unittest.TestCase):
         self.assertTrue(Path(result["stage_outputs"]["base"]["path"]).is_file())
         self.assertTrue(Path(result["mask_output"]["path"]).is_file())
         self.assertTrue(Path(result["stage_outputs"]["final"]["path"]).is_file())
+
+    def test_two_stage_case_aliased_output_paths_fail_before_backend_work(self) -> None:
+        request = self.two_stage_request()
+        base_path = Path(self.temporary_directory.name) / "Role.pending.png"
+        mask_path = Path(self.temporary_directory.name) / "role.pending.png"
+        request["output_paths"].update({
+            "base": str(base_path),
+            "mask": str(mask_path),
+        })
+
+        with patch(
+            "local_gpu_imagegen.backends.comfyui.os.path.normcase",
+            side_effect=lambda value: str(value).casefold(),
+        ), self.assertRaisesRegex(ValidationError, "invalid_backend_request"):
+            self.adapter.generate(request)
+
+        self.assertEqual(self.server.requests, [])
+        self.assertFalse(base_path.exists())
+        self.assertFalse(mask_path.exists())
 
     def test_two_stage_history_rejects_missing_extra_duplicate_or_unsafe_roles(self) -> None:
         self.install_two_stage_object_info()
