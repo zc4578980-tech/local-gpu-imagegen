@@ -147,6 +147,15 @@ class FakeTrustRegistry:
 
 
 class FakeWorkflows:
+    def inspect_shipped(
+        self,
+        template_id: str,
+        model_id: str,
+        operation: str,
+        parameters: dict[str, object],
+    ) -> dict[str, object]:
+        return self.resolve(template_id, model_id, operation, parameters)
+
     def resolve(
         self,
         template_id: str,
@@ -232,6 +241,26 @@ class ModelCatalogTests(unittest.TestCase):
         crypto = self.catalog.resolve("local:crypto", "private")
         self.assertEqual(crypto["evidence_level"], "observed")
         self.assertNotEqual(crypto["evidence_level"], "benchmarked")
+
+    def test_trusted_capabilities_normalize_optional_regional_modes(self) -> None:
+        self.trust.records[0]["capabilities"]["regional_layout_modes"] = [
+            "copy-subject-v1"
+        ]
+
+        regional = self.catalog.resolve("local:backend-bound", "private")
+        legacy = self.catalog.resolve("local:crypto", "private")
+
+        self.assertEqual(
+            regional["capabilities"]["regional_layout_modes"],
+            ["copy-subject-v1"],
+        )
+        self.assertEqual(legacy["capabilities"]["regional_layout_modes"], [])
+
+        self.trust.records[0]["capabilities"]["regional_layout_modes"] = [
+            "arbitrary-regions"
+        ]
+        with self.assertRaisesRegex(ValidationError, "invalid_model_capabilities"):
+            self.catalog.list_models("private")
 
     def test_unready_or_untrusted_inventory_is_not_eligible(self) -> None:
         self.readiness["available_backends"] = []

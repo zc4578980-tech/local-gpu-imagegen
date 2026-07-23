@@ -6,8 +6,12 @@ import json
 import time
 from collections.abc import Callable
 
-from .errors import ConflictError, ValidationError
+from .errors import AssetEngineError, ConflictError, ValidationError
 from .prompt_compilers import PromptCompilerRegistry
+from .regional_layout import (
+    REGIONAL_TEMPLATE_ID,
+    validate_regional_layout,
+)
 
 
 AUTHORIZATION_SCOPES = frozenset({"private", "public_evidence"})
@@ -24,6 +28,7 @@ REQUIREMENT_FIELDS = frozenset({
     "required_vram_gb",
     "preferred_model_id",
 })
+OPTIONAL_REQUIREMENT_FIELDS = frozenset({"regional_layout"})
 
 
 class CapabilityRouter:
@@ -32,6 +37,7 @@ class CapabilityRouter:
         catalog: object,
         compilers: PromptCompilerRegistry,
         *,
+        regional_capability_provider: Callable[[str], dict[str, object]] | None = None,
         clock: Callable[[], float] = time.time,
         ttl_seconds: float = 300,
     ) -> None:
@@ -41,7 +47,11 @@ class CapabilityRouter:
                 "Capability router requires a prompt compiler registry.",
             )
         if (
-            not callable(clock)
+            (
+                regional_capability_provider is not None
+                and not callable(regional_capability_provider)
+            )
+            or not callable(clock)
             or not isinstance(ttl_seconds, (int, float))
             or isinstance(ttl_seconds, bool)
             or ttl_seconds <= 0
@@ -52,17 +62,35 @@ class CapabilityRouter:
             )
         self.catalog = catalog
         self.compilers = compilers
+        self.regional_capability_provider = regional_capability_provider
         self.clock = clock
         self.ttl_seconds = float(ttl_seconds)
         self._issued: dict[str, dict[str, object]] = {}
 
     def recommend(self, requirements: dict[str, object]) -> dict[str, object]:
         normalized = _normalize_requirements(requirements)
+        regional_capability = None
+        regional_layout = normalized.get("regional_layout")
+        if isinstance(regional_layout, dict):
+            regional_capability = self._regional_capability(
+                str(regional_layout["mode"])
+            )
+            if regional_capability["available"] is not True:
+                return {
+                    "requirements": normalized,
+                    "routes": [],
+                    "reason": "regional_layout_unavailable",
+                }
         available = self.catalog.list_models(normalized["authorization_scope"])
         eligible = [
             model
             for model in available
-            if _hard_match(model, normalized, self.compilers)
+            if _hard_match(
+                model,
+                normalized,
+                self.compilers,
+                regional_capability,
+            )
         ]
         ranked = sorted(
             (_score_model(model, normalized) for model in eligible),
@@ -79,6 +107,52 @@ class CapabilityRouter:
             "routes": routes,
             "reason": None if routes else "no_eligible_model",
         }
+
+    def _regional_capability(self, mode: str) -> dict[str, object]:
+        provider = self.regional_capability_provider
+        if provider is None:
+            return {
+                "mode": mode,
+                "available": False,
+                "endpoint_identity": None,
+                "reason": "regional_layout_unavailable",
+            }
+        try:
+            result = provider(mode)
+        except AssetEngineError as error:
+            return {
+                "mode": mode,
+                "available": False,
+                "endpoint_identity": None,
+                "reason": error.code,
+            }
+        endpoint = result.get("endpoint_identity") if isinstance(result, dict) else None
+        reason = result.get("reason") if isinstance(result, dict) else None
+        available = result.get("available") if isinstance(result, dict) else None
+        if (
+            not isinstance(result, dict)
+            or set(result)
+            != {"mode", "available", "endpoint_identity", "reason"}
+            or result.get("mode") != mode
+            or type(available) is not bool
+            or (endpoint is not None and not isinstance(endpoint, str))
+            or (reason is not None and not isinstance(reason, str))
+            or (
+                available is True
+                and (
+                    not isinstance(endpoint, str)
+                    or not endpoint
+                    or reason is not None
+                )
+            )
+        ):
+            return {
+                "mode": mode,
+                "available": False,
+                "endpoint_identity": None,
+                "reason": "regional_layout_unavailable",
+            }
+        return copy.deepcopy(result)
 
     def confirm(self, route_token: str, model_id: str) -> dict[str, object]:
         route = self._issued.get(route_token)
@@ -148,7 +222,10 @@ class CapabilityRouter:
 
 
 def _normalize_requirements(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != REQUIREMENT_FIELDS:
+    if not isinstance(value, dict) or set(value) not in (
+        REQUIREMENT_FIELDS,
+        REQUIREMENT_FIELDS | OPTIONAL_REQUIREMENT_FIELDS,
+    ):
         raise _invalid_requirements("Route requirement fields are incomplete or unexpected.")
     scope = value["authorization_scope"]
     operation = value["operation"]
@@ -191,6 +268,10 @@ def _normalize_requirements(value: object) -> dict[str, object]:
     normalized["preferred_model_id"] = (
         preferred.strip() if isinstance(preferred, str) else None
     )
+    if "regional_layout" in value:
+        normalized["regional_layout"] = validate_regional_layout(
+            value["regional_layout"]
+        )
     return normalized
 
 
@@ -198,6 +279,7 @@ def _hard_match(
     model: object,
     requirements: dict[str, object],
     compilers: PromptCompilerRegistry,
+    regional_capability: dict[str, object] | None,
 ) -> bool:
     if not isinstance(model, dict):
         return False
@@ -242,6 +324,22 @@ def _hard_match(
     ):
         return False
     if model.get("backend") == "comfyui" and not model.get("workflow_template_id"):
+        return False
+    regional_layout = requirements.get("regional_layout")
+    if isinstance(regional_layout, dict):
+        modes = capabilities.get("regional_layout_modes")
+        if (
+            regional_capability is None
+            or regional_capability.get("available") is not True
+            or model.get("backend") != "comfyui"
+            or model.get("endpoint_identity")
+            != regional_capability.get("endpoint_identity")
+            or model.get("workflow_template_id") != REGIONAL_TEMPLATE_ID
+            or not isinstance(modes, list)
+            or regional_layout["mode"] not in modes
+        ):
+            return False
+    elif model.get("workflow_template_id") == REGIONAL_TEMPLATE_ID:
         return False
     return True
 

@@ -107,7 +107,7 @@ class McpServerUnitTests(unittest.TestCase):
             },
             "local_gpu_recommend_models": {
                 "authorization_scope", "operation", "profile", "style", "width", "height",
-                "affinity_tags", "required_vram_gb", "preferred_model_id",
+                "affinity_tags", "required_vram_gb", "preferred_model_id", "regional_layout",
             },
             "local_gpu_start_run": {
                 "intent", "profile", "subtype", "style", "constraints", "model_choice", "backend",
@@ -149,6 +149,7 @@ class McpServerUnitTests(unittest.TestCase):
                         "workflow_path", "workflow_binding", "preference", "component_identity_tokens",
                         "catalog_id",
                     },
+                    "local_gpu_recommend_models": {"regional_layout"},
                     "local_gpu_branch_run": {"denoising_strength"},
                     "local_gpu_prepare_mask": {"user_mask_path", "geometry", "feather_pixels"},
                     "local_gpu_generate_round": {"mask_id"},
@@ -311,6 +312,11 @@ class McpServerUnitTests(unittest.TestCase):
             "authorization_scope": "private", "operation": "txt2img",
             "profile": "standalone-illustration", "style": None, "width": 512, "height": 512,
             "affinity_tags": [], "required_vram_gb": None, "preferred_model_id": None,
+            "regional_layout": {
+                "mode": "copy-subject-v1",
+                "copy_region": {"x": 0.0, "y": 0.0, "width": 0.45, "height": 1.0},
+                "subject_region": {"x": 0.68, "y": 0.0, "width": 0.30, "height": 1.0},
+            },
         }
 
         with patch.object(mcp_server, "get_runtime_services", return_value=services):

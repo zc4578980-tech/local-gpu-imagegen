@@ -13,6 +13,7 @@ from .model_identity import (
     validate_discovery_record,
 )
 from .prompt_compilers import COMPILER_VERSIONS
+from .regional_layout import LAYOUT_MODE
 
 
 AUTHORIZATION_SCOPES = frozenset({"private", "public_evidence"})
@@ -335,7 +336,7 @@ class ModelCatalog:
         operation = capabilities["capabilities"]["operations"][0]
         recommended = capabilities["recommended"]
         try:
-            resolved = self.workflows.resolve(
+            resolved = self.workflows.inspect_shipped(
                 template_id,
                 str(current["backend_model_id"]),
                 operation,
@@ -436,12 +437,19 @@ def _normalize_local_capabilities(value: object) -> dict[str, object]:
         "affinity",
         "recommended",
     }
-    if set(value) != required or value["prompt_dialect"] not in COMPILER_VERSIONS:
+    if (
+        set(value)
+        not in (
+            required,
+            required | {"regional_layout_modes"},
+        )
+        or value["prompt_dialect"] not in COMPILER_VERSIONS
+    ):
         raise ValidationError(
             "invalid_model_capabilities",
             "Trusted model capability fields are invalid.",
         )
-    capabilities = _validate_capabilities({
+    capability_document = {
         key: value[key]
         for key in (
             "operations",
@@ -450,7 +458,12 @@ def _normalize_local_capabilities(value: object) -> dict[str, object]:
             "minimum_vram_gb",
             "negative_prompt",
         )
-    })
+    }
+    if "regional_layout_modes" in value:
+        capability_document["regional_layout_modes"] = value[
+            "regional_layout_modes"
+        ]
+    capabilities = _validate_capabilities(capability_document)
     if not isinstance(value["model_family"], str) or not value["model_family"].strip():
         raise ValidationError("invalid_model_capabilities", "Model family is invalid.")
     if not _string_list(value["affinity"]):
@@ -472,7 +485,8 @@ def _validate_capabilities(value: object) -> dict[str, object]:
         "minimum_vram_gb",
         "negative_prompt",
     }
-    if not isinstance(value, dict) or set(value) != fields:
+    allowed_fields = (fields, fields | {"regional_layout_modes"})
+    if not isinstance(value, dict) or set(value) not in allowed_fields:
         raise ValidationError(
             "invalid_model_capabilities",
             "Model capability fields are invalid.",
@@ -480,6 +494,7 @@ def _validate_capabilities(value: object) -> dict[str, object]:
     minimum = value["minimum_dimension"]
     maximum = value["maximum_dimension"]
     vram = value["minimum_vram_gb"]
+    regional_modes = value.get("regional_layout_modes", [])
     if (
         not _operations(value["operations"])
         or type(minimum) is not int
@@ -489,12 +504,18 @@ def _validate_capabilities(value: object) -> dict[str, object]:
         or isinstance(vram, bool)
         or vram < 0
         or value["negative_prompt"] not in {"supported", "ignored", "unsupported"}
+        or not isinstance(regional_modes, list)
+        or any(not isinstance(mode, str) for mode in regional_modes)
+        or len(set(regional_modes)) != len(regional_modes)
+        or any(mode != LAYOUT_MODE for mode in regional_modes)
     ):
         raise ValidationError(
             "invalid_model_capabilities",
             "Model capabilities are outside supported limits.",
         )
-    return copy.deepcopy(value)
+    normalized = copy.deepcopy(value)
+    normalized["regional_layout_modes"] = copy.deepcopy(regional_modes)
+    return normalized
 
 
 def _validate_recommended(value: object) -> dict[str, object]:

@@ -530,6 +530,7 @@ def tool_schema() -> list[dict[str, Any]]:
                 "affinity_tags": {"type": "array", "items": {"type": "string"}},
                 "required_vram_gb": {"type": ["number", "null"]},
                 "preferred_model_id": {"type": ["string", "null"]},
+                "regional_layout": {"type": "object"},
             }, [
                 "authorization_scope", "operation", "profile", "style", "width", "height",
                 "affinity_tags", "required_vram_gb", "preferred_model_id",

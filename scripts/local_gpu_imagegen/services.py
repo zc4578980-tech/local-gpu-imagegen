@@ -67,7 +67,11 @@ def build_services(
         workflows,
     )
     compilers = PromptCompilerRegistry()
-    router = CapabilityRouter(catalog, compilers)
+    router = CapabilityRouter(
+        catalog,
+        compilers,
+        regional_capability_provider=backends.regional_layout_capability,
+    )
     engine = AssetRunEngine(
         ProfileRegistry(root / "profiles"),
         RunStore(output_root),

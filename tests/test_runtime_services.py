@@ -41,6 +41,10 @@ class RuntimeServicesTests(unittest.TestCase):
         self.assertIs(services.engine.router, services.router)
         self.assertIs(services.engine.compilers, services.router.compilers)
         self.assertIs(services.discovery.adapters, services.backends)
+        self.assertIs(
+            services.router.regional_capability_provider.__self__,
+            services.backends,
+        )
 
 
 if __name__ == "__main__":
