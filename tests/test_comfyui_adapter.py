@@ -288,6 +288,7 @@ class ComfyUIAdapterTests(unittest.TestCase):
         )
         return self.request(
             workflow=workflow,
+            component_bundle_sha256="b" * 64,
             two_stage_layout=layout,
             two_stage_conditioning=conditioning,
             output_path=self.two_stage_outputs["final"],
@@ -446,6 +447,7 @@ class ComfyUIAdapterTests(unittest.TestCase):
             result["control_sha256"],
             request["workflow"]["control_sha256"],
         )
+        self.assertEqual(result["component_bundle_sha256"], "b" * 64)
         self.assertEqual(result["path"], result["stage_outputs"]["final"]["path"])
         self.assertTrue(Path(result["stage_outputs"]["base"]["path"]).is_file())
         self.assertTrue(Path(result["mask_output"]["path"]).is_file())
@@ -733,6 +735,45 @@ class ComfyUIAdapterTests(unittest.TestCase):
         self.assertEqual(
             len([item for item in self.server.requests if item["path"] == "/prompt"]),
             1,
+        )
+
+    def test_submitted_job_is_reported_before_first_history_poll(self) -> None:
+        reported: list[str] = []
+        self.server.routes[("GET", "/history/prompt-1")] = FakeResponse.json({})
+        self.server.routes[("GET", "/queue")] = FakeResponse.json({
+            "queue_running": [],
+            "queue_pending": [[1, "prompt-1", {}, {}, []]],
+        })
+        adapter = ComfyUIAdapter(
+            self.server.url,
+            poll_interval=0,
+            timeout=0,
+            clock=FakeClock([0, 1]),
+            sleep=lambda _seconds: None,
+        )
+
+        with self.assertRaisesRegex(StateError, "comfyui_job_timed_out"):
+            adapter.generate(self.request(backend_job_callback=reported.append))
+
+        self.assertEqual(reported, ["prompt-1"])
+        paths = [item["path"] for item in self.server.requests]
+        self.assertLess(paths.index("/prompt"), paths.index("/history/prompt-1"))
+
+    def test_exact_job_recovery_skips_prompt_submission(self) -> None:
+        self.server.routes[("GET", "/history/prompt-1")] = FakeResponse.json(
+            self.completed_history()
+        )
+
+        result = self.adapter.generate(self.request(recovery_job_id="prompt-1"))
+
+        self.assertEqual(result["workflow_job_id"], "prompt-1")
+        self.assertFalse(any(item["path"] == "/prompt" for item in self.server.requests))
+        self.assertEqual(
+            [item["path"] for item in self.server.requests],
+            [
+                "/history/prompt-1",
+                "/view?filename=result.png&subfolder=&type=output",
+            ],
         )
 
     def test_poll_tolerates_history_visibility_race_after_queue_clears(self) -> None:

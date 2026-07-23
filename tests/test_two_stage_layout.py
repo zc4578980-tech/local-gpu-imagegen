@@ -135,12 +135,68 @@ class TwoStageLayoutTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertRegex(first, r"^[0-9a-f]{64}$")
 
+    def test_control_digest_has_golden_identity_and_rejects_or_changes_every_input(self) -> None:
+        golden = build_control_identity(self.layout, "a" * 64, "base-subject-v1")
+        self.assertEqual(
+            golden,
+            "6e3830417a1f917cb9455df891024cdb8e0505b8f0d7db38622b9fdc855e1080",
+        )
+        variants = []
+        for section, field, value in (
+            (None, "feather_pixels", 24),
+            (None, "vae_grow_mask_by", 16),
+            ("copy_protected_rect", "width", 568),
+            ("subject_mask_rect", "x", 712),
+            ("subject_mask_rect", "y", 32),
+        ):
+            changed = copy.deepcopy(self.layout)
+            if section is None:
+                changed[field] = value
+            else:
+                changed[section][field] = value
+            variants.append(changed)
+        for changed in variants:
+            with self.subTest(layout=changed):
+                self.assertNotEqual(
+                    build_control_identity(changed, "a" * 64, "base-subject-v1"),
+                    golden,
+                )
+        self.assertNotEqual(
+            build_control_identity(self.layout, "b" * 64, "base-subject-v1"),
+            golden,
+        )
+        with self.assertRaisesRegex(ValidationError, "invalid_two_stage_control"):
+            build_control_identity(self.layout, "a" * 64, "base-subject-v2")
+
     def test_live_node_signatures_require_exact_required_types_and_mask_add(self) -> None:
         validate_two_stage_node_info(exact_node_info())
         changed = exact_node_info()
         changed["MaskComposite"]["input"]["required"]["operation"][1]["options"] = ["subtract"]
         with self.assertRaisesRegex(ValidationError, "two_stage_layout_unavailable"):
             validate_two_stage_node_info(changed)
+
+    def test_every_live_node_rejects_required_input_signature_mutations(self) -> None:
+        exact = exact_node_info()
+        for class_name, node in exact.items():
+            required = node["input"]["required"]
+            original_name = next(iter(required))
+            for mutation in ("missing", "renamed", "retyped", "newly_required"):
+                changed = copy.deepcopy(exact)
+                changed_required = changed[class_name]["input"]["required"]
+                if mutation == "missing":
+                    del changed_required[original_name]
+                elif mutation == "renamed":
+                    specification = changed_required.pop(original_name)
+                    changed_required[f"{original_name}_renamed"] = specification
+                elif mutation == "retyped":
+                    changed_required[original_name][0] = "STRING"
+                else:
+                    changed_required["newly_required_input"] = ["INT", {}]
+                with self.subTest(class_name=class_name, mutation=mutation), self.assertRaisesRegex(
+                    ValidationError,
+                    "two_stage_layout_unavailable",
+                ):
+                    validate_two_stage_node_info(changed)
 
 
 if __name__ == "__main__":

@@ -70,7 +70,7 @@ TWO_STAGE_ROUND_EVIDENCE_KEYS = {
     "base",
     "mask",
     "final",
-    "control_sha256",
+    "control_sha256", "component_bundle_sha256",
     "subject_seed",
     "pixel_preservation",
 }
@@ -632,6 +632,29 @@ def _validate_all_two_stage_evidence(
             "Two-stage budget does not match retained successful stages.",
         )
 
+    reviews = manifest.get("reviews")
+    if not isinstance(reviews, list):
+        raise EvidenceError("invalid_review_evidence", "Two-stage reviews are missing.")
+    for round_value in retained_rounds:
+        round_number = round_value.get("round_number")
+        round_reviews = [
+            item
+            for item in reviews
+            if isinstance(item, dict) and item.get("round_number") == round_number
+        ]
+        if len(round_reviews) != 1:
+            raise EvidenceError(
+                "invalid_review_evidence",
+                "Every retained two-stage round requires exactly one stage review.",
+            )
+        try:
+            validate_stage_checks(round_reviews[0].get("stage_checks"))
+        except AssetEngineError as error:
+            raise EvidenceError(
+                "invalid_review_evidence",
+                "Every retained two-stage round requires structurally valid stage checks.",
+            ) from error
+
     selected_number = selected.get("round_number")
     selected_report = selected.get("pixel_preservation")
     if (
@@ -737,6 +760,7 @@ def _validate_two_stage_round_evidence(
         )
 
     control_sha256 = value.get("control_sha256")
+    component_bundle_sha256 = value.get("component_bundle_sha256")
     subject_seed = value.get("subject_seed")
     base_seed = round_value.get("seed")
     if (
@@ -744,6 +768,9 @@ def _validate_two_stage_round_evidence(
         or control_sha256 != expected_control
         or control_sha256 != route.get("control_sha256")
         or control_sha256 != backend_result.get("control_sha256")
+        or not _valid_sha(component_bundle_sha256)
+        or component_bundle_sha256 != route.get("component_bundle_sha256")
+        or component_bundle_sha256 != backend_result.get("component_bundle_sha256")
         or type(base_seed) is not int
         or not 0 <= base_seed <= 2**64 - 1
         or stages[0].get("seed") != base_seed
@@ -770,6 +797,14 @@ def _validate_two_stage_round_evidence(
         or value.get("pixel_preservation") != report
     ):
         raise EvidenceError("pixel_report_mismatch", "Exported pixel report differs from its retained round.")
+    if (
+        report.get("mismatched_pixels") != 0
+        or report.get("copy_mismatched_pixels") != 0
+    ):
+        raise EvidenceError(
+            "nonzero_pixel_mismatch",
+            "Every retained two-stage round requires zero protected-pixel mismatches.",
+        )
     try:
         recomputed = compare_protected_pixels(package / paths["base"], package / paths["final"], layout)
     except AssetEngineError as error:

@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from local_gpu_imagegen.engine import AssetRunEngine  # noqa: E402
 import local_gpu_imagegen.engine as engine_module  # noqa: E402
 from local_gpu_imagegen.artifacts import validate_png  # noqa: E402
-from local_gpu_imagegen.errors import AssetEngineError, ConflictError, ValidationError  # noqa: E402
+from local_gpu_imagegen.errors import AssetEngineError, ConflictError, StateError, ValidationError  # noqa: E402
 from local_gpu_imagegen.preview import MAX_PREVIEW_BYTES, PreviewResult  # noqa: E402
 from local_gpu_imagegen.profile_registry import ProfileRegistry  # noqa: E402
 from local_gpu_imagegen.prompt_compilers import PromptCompilerRegistry  # noqa: E402
@@ -215,7 +215,27 @@ class TwoStageBackendRunner:
             "mask_output": {"path": str(mask_path)},
             "subject_seed": derive_subject_seed(request["seed"]),
             "control_sha256": workflow["control_sha256"],
+            "component_bundle_sha256": request["component_bundle_sha256"],
         }
+
+
+class RecoveringTwoStageBackendRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.delegate = TwoStageBackendRunner()
+
+    def __call__(self, request: dict[str, object]) -> dict[str, object]:
+        self.calls.append(copy.deepcopy(request))
+        if "recovery_job_id" not in request:
+            callback = request.get("backend_job_callback")
+            assert callable(callback)
+            callback("job-two-stage-timeout")
+            raise StateError(
+                "comfyui_job_timed_out",
+                "ComfyUI job did not finish within the confirmed timeout.",
+                {"job_id": "job-two-stage-timeout", "state": "running"},
+            )
+        return self.delegate(request)
 
 
 class FakeCatalog:
@@ -566,6 +586,7 @@ class AssetRunEngineTests(unittest.TestCase):
                 inspected["workflow_sha256"],
                 "base-subject-v1",
             ),
+            "component_bundle_sha256": "b" * 64,
         })
         self.router.routes[str(route["route_token"])] = copy.deepcopy(route)
         arguments["route_token"] = route["route_token"]
@@ -878,6 +899,10 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertTrue(all(Path(path).parent == self.engine.store.run_root(run_id) for path in output_paths.values()))
         self.assertEqual(request["subject_seed"], 0)
         self.assertEqual(request["workflow"]["control_sha256"], request["control_sha256"])
+        self.assertEqual(
+            request["component_bundle_sha256"],
+            self.engine.get_run({"run_id": run_id})["request"]["route"]["component_bundle_sha256"],
+        )
 
         manifest = self.engine.get_run({"run_id": run_id})
         self.assertEqual(len(manifest["rounds"]), 1)
@@ -905,6 +930,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "prompt_compiler_id": "natural-v1",
             "prompt_compiler_version": 1,
             "control_sha256": "c" * 64,
+            "component_bundle_sha256": "b" * 64,
         }
         model = {"backend_model_id": "actual-loaded-model"}
         result = {
@@ -918,6 +944,7 @@ class AssetRunEngineTests(unittest.TestCase):
             "prompt_compiler_version": 1,
             "model": "actual-loaded-model",
             "control_sha256": "d" * 64,
+            "component_bundle_sha256": "b" * 64,
         }
 
         with self.assertRaises(AssetEngineError) as raised:
@@ -925,6 +952,55 @@ class AssetRunEngineTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "invalid_backend_result")
         self.assertEqual(raised.exception.details, {"field": "control_sha256"})
+
+        result["control_sha256"] = "c" * 64
+        result["component_bundle_sha256"] = "e" * 64
+        with self.assertRaises(AssetEngineError) as bundle_raised:
+            engine_module._validate_locked_backend_result(result, route, model)
+        self.assertEqual(bundle_raised.exception.details, {"field": "component_bundle_sha256"})
+
+    def test_two_stage_timeout_recovers_exact_job_without_resubmission(self) -> None:
+        runner = RecoveringTwoStageBackendRunner()
+        self.engine.backend_runner = runner
+        started = self.engine.start_run(self.two_stage_start_arguments())
+        run_id = str(started["run_id"])
+        route = self.engine.get_run({"run_id": run_id})["request"]["route"]
+        arguments = {
+            "run_id": run_id,
+            "idempotency_key": "two-stage-timeout-recovery",
+            "action": "initial",
+            "edit_mode": "txt2img",
+            "seed": 42,
+            "change_summary": "Recover the exact submitted backend job.",
+            "plan": self.two_stage_plan(route),
+        }
+
+        with self.assertRaisesRegex(StateError, "comfyui_job_timed_out"):
+            self.engine.generate_round(arguments)
+
+        unresolved = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(unresolved["state"], "unresolved")
+        self.assertEqual(unresolved["attempts"][-1]["status"], "unresolved")
+        self.assertEqual(
+            unresolved["attempts"][-1]["backend_job"],
+            {"backend": "comfyui", "job_id": "job-two-stage-timeout"},
+        )
+        self.assertEqual(
+            engine_module.recoverable_next_actions(unresolved),
+            ["get_run", "generate_round:recover"],
+        )
+
+        changed_key = copy.deepcopy(arguments)
+        changed_key["idempotency_key"] = "two-stage-duplicate-submit"
+        with self.assertRaisesRegex(StateError, "backend_job_unresolved"):
+            self.engine.generate_round(changed_key)
+        self.assertEqual(len(runner.calls), 1)
+
+        result, _ = self.engine.generate_round(arguments)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(runner.calls), 2)
+        self.assertEqual(runner.calls[1]["recovery_job_id"], "job-two-stage-timeout")
+        self.assertEqual(self.engine.get_run({"run_id": run_id})["state"], "generated")
 
     def test_two_stage_base_only_failure_records_one_retained_stage(self) -> None:
         runner = TwoStageBackendRunner(failure="base_only")

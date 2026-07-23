@@ -16,6 +16,7 @@ BACKEND_RESULT_REQUIRED = {
 }
 TWO_STAGE_RESULT_FIELDS = frozenset({
     "stage_outputs", "mask_output", "subject_seed", "control_sha256",
+    "component_bundle_sha256",
 })
 
 
@@ -152,16 +153,20 @@ def _validate_two_stage_result(value: dict[str, object], expected_seed: int | No
             "invalid_backend_result",
             "Two-stage subject seed does not match the derived seed.",
         )
-    digest = value["control_sha256"]
-    if (
-        not isinstance(digest, str)
-        or len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
+    for field, label in (
+        ("control_sha256", "control"),
+        ("component_bundle_sha256", "component bundle"),
     ):
-        raise ArtifactError(
-            "invalid_backend_result",
-            "Two-stage control digest must be lowercase SHA-256.",
-        )
+        digest = value[field]
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ArtifactError(
+                "invalid_backend_result",
+                f"Two-stage {label} digest must be lowercase SHA-256.",
+            )
 
 
 def _is_safe_output(value: object) -> bool:

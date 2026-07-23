@@ -467,6 +467,7 @@ def _build_two_stage_round_evidence(round_value: object) -> dict[str, object]:
         or type(backend_result.get("subject_seed")) is not int
         or not 0 <= backend_result["subject_seed"] <= 2**64 - 1
         or not _valid_sha256(backend_result.get("control_sha256"))
+        or not _valid_sha256(backend_result.get("component_bundle_sha256"))
     ):
         raise EvidenceExportError("invalid_two_stage_evidence", "Two-stage round provenance is incomplete or unsafe.")
     base = _artifact_reference(stages[0].get("image"))
@@ -489,6 +490,7 @@ def _build_two_stage_round_evidence(round_value: object) -> dict[str, object]:
         "mask": mask_reference,
         "final": stage_final,
         "control_sha256": backend_result["control_sha256"],
+        "component_bundle_sha256": backend_result["component_bundle_sha256"],
         "subject_seed": backend_result["subject_seed"],
         "pixel_preservation": copy.deepcopy(pixel_report),
     }

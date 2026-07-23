@@ -113,6 +113,7 @@
             "additionalProperties": false,
             "properties": {
               "base": {"$ref": "#/$defs/stageArtifact"},
+              "component_bundle_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
               "control_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
               "final": {"$ref": "#/$defs/stageArtifact"},
               "mask": {"$ref": "#/$defs/stageArtifact"},
@@ -120,7 +121,7 @@
               "round_number": {"maximum": 3, "minimum": 1, "type": "integer"},
               "subject_seed": {"maximum": 18446744073709551615, "minimum": 0, "type": "integer"}
             },
-            "required": ["round_number", "base", "mask", "final", "control_sha256", "subject_seed", "pixel_preservation"],
+            "required": ["round_number", "base", "mask", "final", "control_sha256", "component_bundle_sha256", "subject_seed", "pixel_preservation"],
             "type": "object"
           },
           "maxItems": 3,

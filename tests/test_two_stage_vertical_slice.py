@@ -198,6 +198,7 @@ class DeterministicTwoStageBackend:
             "mask_output": {"path": str(mask_path)},
             "subject_seed": request["subject_seed"],
             "control_sha256": workflow["control_sha256"],
+            "component_bundle_sha256": request["component_bundle_sha256"],
         }
 
 

@@ -68,6 +68,7 @@ def two_stage_backend_result(**changes: object) -> dict[str, object]:
         mask_output={"path": "C:/runs/mask.pending.png"},
         subject_seed=2026072304,
         control_sha256="c" * 64,
+        component_bundle_sha256="b" * 64,
     )
     value.update(changes)
     return value
@@ -140,6 +141,7 @@ class BackendContractTests(unittest.TestCase):
         self.assertEqual(validated["subject_seed"], 2026072304)
         self.assertEqual(set(validated["stage_outputs"]), {"base", "final"})
         self.assertEqual(validated["control_sha256"], "c" * 64)
+        self.assertEqual(validated["component_bundle_sha256"], "b" * 64)
         self.assertEqual(validated, original)
         self.assertIsNot(validated, original)
 
@@ -159,6 +161,8 @@ class BackendContractTests(unittest.TestCase):
             "unsafe-path": two_stage_backend_result(mask_output={"path": ""}),
             "uppercase-digest": two_stage_backend_result(control_sha256="C" * 64),
             "short-digest": two_stage_backend_result(control_sha256="c" * 63),
+            "uppercase-bundle": two_stage_backend_result(component_bundle_sha256="B" * 64),
+            "short-bundle": two_stage_backend_result(component_bundle_sha256="b" * 63),
         }
         for name, value in cases.items():
             with self.subTest(name=name), self.assertRaisesRegex(
@@ -175,7 +179,10 @@ class BackendContractTests(unittest.TestCase):
                 )
 
     def test_non_two_stage_results_reject_two_stage_metadata(self) -> None:
-        for field in ("stage_outputs", "mask_output", "subject_seed", "control_sha256"):
+        for field in (
+            "stage_outputs", "mask_output", "subject_seed", "control_sha256",
+            "component_bundle_sha256",
+        ):
             value = result()
             value[field] = two_stage_backend_result()[field]
             with self.subTest(field=field), self.assertRaisesRegex(

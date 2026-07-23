@@ -292,6 +292,12 @@ class AssetRunEngine:
                     output_paths=stage_pending_paths if two_stage else None,
                     subject_seed=subject_seed,
                 )
+                if two_stage:
+                    backend_request["backend_job_callback"] = lambda job_id: (
+                        self.store.mark_attempt_backend_job(handle, "comfyui", job_id)
+                    )
+                    if handle.status == "recover_backend":
+                        backend_request["recovery_job_id"] = _existing_backend_job_id(handle)
                 backend_result = validate_backend_result(
                     self.backend_runner(backend_request),
                     mode,
@@ -381,7 +387,26 @@ class AssetRunEngine:
                 **({"pixel_preservation": pixel_preservation} if two_stage else {}),
             })
         except Exception as error:
-            if two_stage:
+            if (
+                two_stage
+                and isinstance(error, StateError)
+                and error.code == "comfyui_job_timed_out"
+            ):
+                try:
+                    self.store.mark_attempt_unresolved(handle, _attempt_error(error))
+                except Exception:
+                    self._recover_two_stage_attempt(
+                        handle,
+                        run_root,
+                        stage_pending_paths,
+                        stage_final_paths,
+                        width,
+                        height,
+                        seed,
+                        subject_seed,
+                        error,
+                    )
+            elif two_stage:
                 self._recover_two_stage_attempt(
                     handle,
                     run_root,
@@ -859,6 +884,8 @@ def recoverable_next_actions(manifest: dict[str, object]) -> list[str]:
         return ["generate_round"]
     if state == "generating":
         return ["get_run", "generate_round"]
+    if state == "unresolved":
+        return ["get_run", "generate_round:recover"]
     if state == "generated":
         return ["record_review"]
     if state == "finalized":
@@ -1258,6 +1285,7 @@ def _backend_request(
                 },
                 "subject_seed": subject_seed,
                 "compiled_subject_prompt": copy.deepcopy(compiled_subject_prompt),
+                "component_bundle_sha256": route.get("component_bundle_sha256"),
             })
         request["workflow"] = workflows.resolve(
             template_id,
@@ -1301,6 +1329,7 @@ def _validate_locked_backend_result(
     }
     if route.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID:
         expected["control_sha256"] = route.get("control_sha256")
+        expected["component_bundle_sha256"] = route.get("component_bundle_sha256")
     for field, value in expected.items():
         if result.get(field) != value:
             raise ArtifactError(
@@ -1468,6 +1497,18 @@ def _existing_backend_result(
         raise ArtifactError("corrupt_manifest", "Confirmed model route is missing.")
     _validate_locked_backend_result(result, route, model)
     return result
+
+
+def _existing_backend_job_id(handle: AttemptHandle) -> str:
+    existing = handle.existing_round
+    backend_job = existing.get("backend_job") if isinstance(existing, dict) else None
+    job_id = backend_job.get("job_id") if isinstance(backend_job, dict) else None
+    if not isinstance(job_id, str) or not job_id:
+        raise ArtifactError(
+            "corrupt_manifest",
+            "Backend recovery requires the exact persisted job ID.",
+        )
+    return job_id
 
 
 def _backend_round_fields(result: dict[str, object]) -> dict[str, object]:

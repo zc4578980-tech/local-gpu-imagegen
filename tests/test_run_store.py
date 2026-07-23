@@ -1248,6 +1248,26 @@ class RunStoreTransitionTests(unittest.TestCase):
         self.assertIsNone(recovered["active_attempt"])
         self.assertEqual(recovered["attempts"][-1]["status"], "interrupted")
 
+    def test_stale_attempt_with_submitted_job_remains_recovery_only(self) -> None:
+        run_id, handle = self.started_two_stage_attempt(key="two-stage-stale-job")
+        self.store.mark_attempt_backend_job(handle, "comfyui", "prompt-stale-1")
+
+        with patch("local_gpu_imagegen.run_store.is_process_alive", return_value=False):
+            recovered = self.store.get(run_id)
+
+        self.assertEqual(recovered["state"], "unresolved")
+        self.assertEqual(recovered["attempts"][-1]["status"], "unresolved")
+        self.assertEqual(
+            recovered["attempts"][-1]["backend_job"],
+            {"backend": "comfyui", "job_id": "prompt-stale-1"},
+        )
+        with self.assertRaisesRegex(StateError, "backend_job_unresolved"):
+            self.store.begin_attempt(run_id, "different-key", INITIAL)
+
+        resumed = self.store.begin_attempt(run_id, "two-stage-stale-job", INITIAL)
+        self.assertEqual(resumed.status, "recover_backend")
+        self.assertEqual(resumed.existing_round["backend_job"]["job_id"], "prompt-stale-1")
+
     def test_attempt_lock_is_retained_until_completion(self) -> None:
         handle = self.store.begin_attempt(self.manifest["run_id"], "initial-lock", INITIAL)
         lock_path = Path(self.temp.name) / "runs" / self.manifest["run_id"] / ".run.lock"

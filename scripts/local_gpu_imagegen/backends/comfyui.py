@@ -193,28 +193,35 @@ class ComfyUIAdapter:
     def generate(self, request: dict[str, object]) -> dict[str, object]:
         normalized = _validate_request(request, self.endpoint_identity)
         layout_mode = normalized["workflow"].get("layout_mode")
-        if layout_mode == LAYOUT_MODE:
+        recovery_job_id = normalized.get("recovery_job_id")
+        if recovery_job_id is None and layout_mode == LAYOUT_MODE:
             capability = self.layout_capability(LAYOUT_MODE)
             if capability["available"] is not True:
                 raise ConflictError(
                     "regional_layout_drifted",
                     "Required ComfyUI regional nodes changed before submission.",
                 )
-        elif layout_mode == TWO_STAGE_LAYOUT_MODE:
+        elif recovery_job_id is None and layout_mode == TWO_STAGE_LAYOUT_MODE:
             capability = self.layout_capability(TWO_STAGE_LAYOUT_MODE)
             if capability["available"] is not True:
                 raise ConflictError(
                     "two_stage_layout_drifted",
                     "Required ComfyUI two-stage nodes changed before submission.",
                 )
-        submitted = self.client.post_json(
-            "/prompt",
-            {
-                "prompt": normalized["workflow"]["graph"],
-                "client_id": normalized["idempotency_key"],
-            },
-        )
-        job_id = _require_job_id(submitted)
+        if recovery_job_id is None:
+            submitted = self.client.post_json(
+                "/prompt",
+                {
+                    "prompt": normalized["workflow"]["graph"],
+                    "client_id": normalized["idempotency_key"],
+                },
+            )
+            job_id = _require_job_id(submitted)
+            callback = normalized.get("backend_job_callback")
+            if callable(callback):
+                callback(job_id)
+        else:
+            job_id = _validate_job_id(recovery_job_id)
         history = self._poll(job_id)
         model = normalized["model"]
         workflow = normalized["workflow"]
@@ -260,6 +267,7 @@ class ComfyUIAdapter:
                 "mask_output": written["mask"],
                 "subject_seed": derive_subject_seed(normalized["seed"]),
                 "control_sha256": workflow["control_sha256"],
+                "component_bundle_sha256": normalized["component_bundle_sha256"],
             })
             return result
 
@@ -465,6 +473,9 @@ def _validate_request(value: object, endpoint_identity: str) -> dict[str, object
     result["workflow"] = workflow
     if workflow.get("layout_mode") == TWO_STAGE_LAYOUT_MODE:
         output_paths = value.get("output_paths")
+        component_bundle_sha256 = value.get("component_bundle_sha256")
+        backend_job_callback = value.get("backend_job_callback")
+        recovery_job_id = value.get("recovery_job_id")
         if (
             not isinstance(output_paths, dict)
             or set(output_paths) != {"base", "mask", "final"}
@@ -478,6 +489,21 @@ def _validate_request(value: object, endpoint_identity: str) -> dict[str, object
                 "invalid_backend_request",
                 "Two-stage ComfyUI output paths are invalid.",
             )
+        if (
+            not isinstance(component_bundle_sha256, str)
+            or SHA256_PATTERN.fullmatch(component_bundle_sha256) is None
+        ):
+            raise ValidationError(
+                "invalid_backend_request",
+                "Two-stage ComfyUI component bundle digest is invalid.",
+            )
+        if backend_job_callback is not None and not callable(backend_job_callback):
+            raise ValidationError(
+                "invalid_backend_request",
+                "Two-stage backend job callback is invalid.",
+            )
+        if recovery_job_id is not None:
+            result["recovery_job_id"] = _validate_job_id(recovery_job_id)
         identities = {
             _resolved_path_identity(output_paths[role])
             for role in ("base", "mask", "final")

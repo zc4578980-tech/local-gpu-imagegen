@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.model_identity import build_component_bundle  # noqa: E402
+from local_gpu_imagegen.png_pixels import compare_protected_pixels  # noqa: E402
 from validate_acceptance_evidence import (  # noqa: E402
     EvidenceError,
     _validate_public_route,
@@ -88,6 +89,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
                 "mask": artifact_reference(selected["mask_artifact"]),
                 "final": artifact_reference(selected["stages"][1]["image"]),
                 "control_sha256": selected["backend_result"]["control_sha256"],
+                "component_bundle_sha256": selected["backend_result"]["component_bundle_sha256"],
                 "subject_seed": selected["backend_result"]["subject_seed"],
                 "pixel_preservation": selected["pixel_preservation"],
             }
@@ -159,6 +161,60 @@ class AcceptanceEvidenceTests(unittest.TestCase):
             path.write_bytes(b"tampered unselected evidence")
 
             with self.subTest(role=role), self.assertRaisesRegex(EvidenceError, "artifact_hash_mismatch"):
+                validate_evidence(root, FIXTURE_PATH, strict=False)
+            shutil.rmtree(root)
+
+    def test_rejects_consistent_nonzero_pixel_report_on_unselected_round(self) -> None:
+        root, package = self.build_two_stage_package(rounds=2)
+        manifest = read_json(package / "manifest.json")
+        evidence = read_json(package / "evidence.json")
+        layout = manifest["request"]["constraints"]["two_stage_layout"]
+        width = int(layout["canvas"]["width"])
+        height = int(layout["canvas"]["height"])
+        final_path = package / "round-01.png"
+        pixels = bytearray(b"\x18\x30\x48" * (width * height))
+        subject = layout["subject_mask_rect"]
+        for y in range(subject["y"], subject["y"] + subject["height"]):
+            for x in range(subject["x"], subject["x"] + subject["width"]):
+                offset = (y * width + x) * 3
+                pixels[offset:offset + 3] = b"\xa0\x70\x38"
+        pixels[0:3] = b"\xff\x00\x00"
+        final_path.write_bytes(rgb_png_bytes(width, height, bytes(pixels)))
+        changed_hash = sha256_file(final_path)
+        report = compare_protected_pixels(
+            package / "round-01-base.png",
+            final_path,
+            layout,
+        )
+        self.assertEqual(report["mismatched_pixels"], 1)
+        self.assertEqual(report["copy_mismatched_pixels"], 1)
+        manifest["rounds"][0]["image"]["sha256"] = changed_hash
+        manifest["rounds"][0]["stages"][1]["image"]["sha256"] = changed_hash
+        manifest["rounds"][0]["pixel_preservation"] = report
+        evidence["two_stage"]["rounds"][0]["final"]["sha256"] = changed_hash
+        evidence["two_stage"]["rounds"][0]["pixel_preservation"] = report
+        write_json(package / "manifest.json", manifest)
+        write_json(package / "evidence.json", evidence)
+
+        with self.assertRaisesRegex(EvidenceError, "nonzero_pixel_mismatch"):
+            validate_evidence(root, FIXTURE_PATH, strict=False)
+
+    def test_every_two_stage_round_requires_exactly_one_structural_stage_review(self) -> None:
+        for case in ("missing", "duplicate", "malformed"):
+            root, package = self.build_two_stage_package(rounds=2)
+            manifest = read_json(package / "manifest.json")
+            if case == "missing":
+                manifest["reviews"] = [manifest["reviews"][1]]
+            elif case == "duplicate":
+                manifest["reviews"].append(copy.deepcopy(manifest["reviews"][0]))
+            else:
+                del manifest["reviews"][0]["stage_checks"]["feather_transition"]
+            write_json(package / "manifest.json", manifest)
+
+            with self.subTest(case=case), self.assertRaisesRegex(
+                EvidenceError,
+                "invalid_review_evidence",
+            ):
                 validate_evidence(root, FIXTURE_PATH, strict=False)
             shutil.rmtree(root)
 
@@ -371,9 +427,22 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         self.assertFalse(round_schema["additionalProperties"])
         self.assertEqual(set(round_schema["required"]), {
             "round_number", "base", "mask", "final", "control_sha256",
-            "subject_seed", "pixel_preservation",
+            "component_bundle_sha256", "subject_seed", "pixel_preservation",
         })
         self.assertIn("control_sha256", schema["properties"]["route"]["properties"])
+
+    def test_two_stage_validator_binds_each_round_to_route_component_bundle(self) -> None:
+        root, package = self.build_two_stage_package()
+        manifest = read_json(package / "manifest.json")
+        evidence = read_json(package / "evidence.json")
+        changed = "f" * 64
+        manifest["rounds"][0]["backend_result"]["component_bundle_sha256"] = changed
+        evidence["two_stage"]["rounds"][0]["component_bundle_sha256"] = changed
+        write_json(package / "manifest.json", manifest)
+        write_json(package / "evidence.json", evidence)
+
+        with self.assertRaisesRegex(EvidenceError, "invalid_two_stage_evidence"):
+            validate_evidence(root, FIXTURE_PATH, strict=False)
 
     def test_rejects_mock_marker(self) -> None:
         root = build_complete_matrix(self.temp_path)

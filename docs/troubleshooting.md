@@ -95,7 +95,9 @@ A partial result stops the run. Do not record a visual review, reuse an unconsum
 
 ## ComfyUI Job Times Out Or Disappears
 
-`comfyui_submission_rejected`, `comfyui_job_timed_out`, `comfyui_job_disappeared`, `comfyui_job_rejected`, and `comfyui_job_canceled` are distinct outcomes. A timeout queries the exact known job before returning. Query that job and inspect ComfyUI logs; cancellation deletes only an exact queued job, and a running job is never interrupted globally. Do not resubmit blindly with the same idempotency key.
+`comfyui_submission_rejected`, `comfyui_job_timed_out`, `comfyui_job_disappeared`, `comfyui_job_rejected`, and `comfyui_job_canceled` are distinct outcomes. After ComfyUI accepts a two-stage job, its exact job ID is committed to the active attempt before the first history poll. An unknown timeout archives that attempt as `unresolved`; `local_gpu_get_run` exposes `generate_round:recover` and blocks every different idempotency key.
+
+Recover by calling `local_gpu_generate_round` again with the same `idempotency_key` and the same request. This recovery queries and polls only the persisted job ID and does not submit a second `/prompt`. If the exact job is still queued or running, another bounded timeout keeps the run `unresolved`. A completed job proceeds through the normal owned-output, PNG, mask, pixel, and provenance gates. A rejected, canceled, or disappeared exact job resolves the unknown state as its distinct terminal failure. Cancellation deletes only an exact queued job, and a running job is never interrupted globally.
 
 ## VRAM Or Model Loading Fails
 

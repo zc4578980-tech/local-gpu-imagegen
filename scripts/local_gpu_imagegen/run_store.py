@@ -31,6 +31,7 @@ from .visual_review import (
 
 RUN_ID_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+BACKEND_JOB_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +257,12 @@ class RunStore:
                 )
             if status == "busy":
                 return AttemptHandle(run_id, idempotency_key, request_hash_value, "busy")
+        self._require_unresolved_recovery(
+            manifest,
+            idempotency_key,
+            request_hash_value,
+            legacy_request_hash_value,
+        )
 
         active_attempt = manifest.get("active_attempt")
         if isinstance(active_attempt, dict) and active_attempt.get("status") == "running":
@@ -278,6 +285,12 @@ class RunStore:
             )
             if raced is not None:
                 return self._attempt_handle(run_id, idempotency_key, request_hash_value, raced)
+            self._require_unresolved_recovery(
+                current,
+                idempotency_key,
+                request_hash_value,
+                legacy_request_hash_value,
+            )
             raise
 
         retain_lock = False
@@ -296,6 +309,12 @@ class RunStore:
                 raise ConflictError("run_busy", "Run already has a live generation attempt.", {"run_id": run_id})
             self._validate_attempt_transition(current, normalized_request)
             resumable = self._find_resumable_attempt(
+                current,
+                idempotency_key,
+                request_hash_value,
+                legacy_request_hash_value,
+            )
+            unresolved = self._find_unresolved_attempt(
                 current,
                 idempotency_key,
                 request_hash_value,
@@ -331,6 +350,11 @@ class RunStore:
                 }
                 if "backend_result" in active:
                     existing_round["backend_result"] = copy.deepcopy(active["backend_result"])
+            elif unresolved is not None:
+                backend_job = copy.deepcopy(unresolved["backend_job"])
+                active["backend_job"] = backend_job
+                status = "recover_backend"
+                existing_round = {"backend_job": backend_job}
 
             current["active_attempt"] = active
             current["state"] = "generating"
@@ -465,6 +489,72 @@ class RunStore:
         active["backend_result"] = copy.deepcopy(backend_result)
         manifest["active_attempt"] = active
         return self._save_manifest(handle.run_id, manifest)
+
+    def mark_attempt_backend_job(
+        self,
+        handle: AttemptHandle,
+        backend: str,
+        job_id: str,
+    ) -> dict[str, object]:
+        if backend != "comfyui" or BACKEND_JOB_ID_PATTERN.fullmatch(job_id or "") is None:
+            raise ValidationError(
+                "invalid_backend_job",
+                "Backend job identity must be an exact ComfyUI job ID.",
+            )
+        manifest, active = self._owned_attempt(handle)
+        if not self._is_two_stage_manifest(manifest):
+            raise StateError(
+                "two_stage_run_required",
+                "Backend job recovery applies only to the reviewed two-stage workflow.",
+            )
+        backend_job = {"backend": backend, "job_id": job_id}
+        existing = active.get("backend_job")
+        if existing is not None and existing != backend_job:
+            raise ConflictError(
+                "backend_job_changed",
+                "Active attempt backend job identity cannot change.",
+            )
+        active["backend_job"] = backend_job
+        manifest["active_attempt"] = active
+        return self._save_manifest(handle.run_id, manifest)
+
+    def mark_attempt_unresolved(
+        self,
+        handle: AttemptHandle,
+        error: dict[str, object],
+    ) -> dict[str, object]:
+        self._require_attempt_handle(handle)
+        if not isinstance(error, dict):
+            raise ValidationError("invalid_attempt_error", "Attempt error must be an object.")
+        validate_json_serializable(error)
+        lock_path = self._lock_path(handle.run_id)
+        completed = False
+        try:
+            manifest, active = self._owned_attempt(handle)
+            backend_job = active.get("backend_job")
+            if (
+                not isinstance(backend_job, dict)
+                or set(backend_job) != {"backend", "job_id"}
+                or backend_job.get("backend") != "comfyui"
+                or BACKEND_JOB_ID_PATTERN.fullmatch(str(backend_job.get("job_id", ""))) is None
+            ):
+                raise StateError(
+                    "backend_job_not_tracked",
+                    "Unknown backend timeout cannot be persisted without the exact job ID.",
+                )
+            archived = copy.deepcopy(active)
+            archived["status"] = "unresolved"
+            archived["unresolved_at"] = utc_now()
+            archived["error"] = copy.deepcopy(error)
+            self._attempts(manifest).append(archived)
+            manifest["active_attempt"] = None
+            manifest["state"] = "unresolved"
+            saved = self._save_manifest(handle.run_id, manifest)
+            completed = True
+            return saved
+        finally:
+            if completed and handle.owner_token is not None:
+                self._release_lock(lock_path, handle.owner_token)
 
     def record_partial_attempt(
         self,
@@ -1015,6 +1105,64 @@ class RunStore:
             return attempt
         return None
 
+    def _find_unresolved_attempt(
+        self,
+        manifest: dict[str, object],
+        idempotency_key: str,
+        request_hash_value: str,
+        legacy_request_hash_value: str,
+    ) -> dict[str, object] | None:
+        attempts = self._attempts(manifest)
+        attempt = attempts[-1] if attempts else None
+        if not isinstance(attempt, dict) or attempt.get("status") != "unresolved":
+            return None
+        if attempt.get("idempotency_key") != idempotency_key:
+            return None
+        if not self._attempt_request_hash_matches(
+            attempt,
+            request_hash_value,
+            legacy_request_hash_value,
+        ):
+            raise ConflictError(
+                "idempotency_conflict",
+                "Idempotency key was already used for a different request.",
+                {"idempotency_key": idempotency_key},
+            )
+        if not isinstance(attempt.get("backend_job"), dict):
+            raise ArtifactError(
+                "corrupt_manifest",
+                "Unresolved attempt is missing its exact backend job identity.",
+            )
+        return attempt
+
+    def _require_unresolved_recovery(
+        self,
+        manifest: dict[str, object],
+        idempotency_key: str,
+        request_hash_value: str,
+        legacy_request_hash_value: str,
+    ) -> None:
+        attempts = self._attempts(manifest)
+        unresolved = attempts[-1] if attempts else None
+        if not isinstance(unresolved, dict) or unresolved.get("status") != "unresolved":
+            return
+        if unresolved.get("idempotency_key") != idempotency_key:
+            raise StateError(
+                "backend_job_unresolved",
+                "The exact submitted backend job must be recovered before another submission.",
+                {"idempotency_key": unresolved.get("idempotency_key")},
+            )
+        if not self._attempt_request_hash_matches(
+            unresolved,
+            request_hash_value,
+            legacy_request_hash_value,
+        ):
+            raise ConflictError(
+                "idempotency_conflict",
+                "Idempotency key was already used for a different request.",
+                {"idempotency_key": idempotency_key},
+            )
+
     @staticmethod
     def _attempt_request_hash_matches(
         attempt: dict[str, object],
@@ -1554,8 +1702,13 @@ class RunStore:
             if not isinstance(active, dict) or active.get("status") != "running":
                 return copy.deepcopy(current)
             interrupted = copy.deepcopy(active)
-            interrupted["status"] = "interrupted"
-            interrupted["interrupted_at"] = utc_now()
+            backend_job = interrupted.get("backend_job")
+            if isinstance(backend_job, dict):
+                interrupted["status"] = "unresolved"
+                interrupted["unresolved_at"] = utc_now()
+            else:
+                interrupted["status"] = "interrupted"
+                interrupted["interrupted_at"] = utc_now()
             self._attempts(current).append(interrupted)
             current["active_attempt"] = None
             stages = interrupted.get("stages")
@@ -1564,6 +1717,8 @@ class RunStore:
                 interrupted["stage_units"] = len(stages)
                 current["state"] = "partial"
                 current["last_stable_state"] = "partial"
+            elif isinstance(backend_job, dict):
+                current["state"] = "unresolved"
             else:
                 current["state"] = current.get("last_stable_state", "created")
             warnings = current.get("warnings")

@@ -256,6 +256,7 @@ def build_two_stage_run_source(
             "path": "round-01.png",
             "subject_seed": 43,
             "control_sha256": control_sha256,
+            "component_bundle_sha256": bundle["bundle_sha256"],
         },
         "image": stage_final,
         "stages": [
@@ -347,6 +348,7 @@ def add_second_two_stage_round(run_dir: Path) -> None:
     )
     validate_saved_soft_mask(run_dir / "round-02-mask.png", layout)
     control_sha256 = manifest["request"]["route"]["control_sha256"]
+    component_bundle_sha256 = manifest["request"]["route"]["component_bundle_sha256"]
 
     manifest["rounds"].append({
         "round_number": 2,
@@ -359,6 +361,7 @@ def add_second_two_stage_round(run_dir: Path) -> None:
             "path": "round-02.png",
             "subject_seed": subject_seed,
             "control_sha256": control_sha256,
+            "component_bundle_sha256": component_bundle_sha256,
         },
         "image": stage_final,
         "preview": preview,

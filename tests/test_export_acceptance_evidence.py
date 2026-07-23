@@ -104,6 +104,10 @@ class ExportAcceptanceEvidenceTests(unittest.TestCase):
             round_evidence["control_sha256"],
             source_manifest["request"]["route"]["control_sha256"],
         )
+        self.assertEqual(
+            round_evidence["component_bundle_sha256"],
+            source_manifest["request"]["route"]["component_bundle_sha256"],
+        )
         self.assertEqual(round_evidence["subject_seed"], 43)
         self.assertEqual(two_stage["stage_budget"], {"maximum": 4, "consumed": 2})
         self.assertEqual(round_evidence["pixel_preservation"]["mismatched_pixels"], 0)
