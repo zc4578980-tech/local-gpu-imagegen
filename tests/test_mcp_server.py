@@ -103,7 +103,7 @@ class McpServerUnitTests(unittest.TestCase):
             "local_gpu_set_model_trust": {
                 "action", "identity_token", "confirmation", "capabilities", "public_metadata",
                 "workflow_template_id", "workflow_path", "workflow_binding", "preference",
-                "component_identity_tokens",
+                "component_identity_tokens", "catalog_id",
             },
             "local_gpu_recommend_models": {
                 "authorization_scope", "operation", "profile", "style", "width", "height",
@@ -147,6 +147,7 @@ class McpServerUnitTests(unittest.TestCase):
                     "local_gpu_set_model_trust": {
                         "confirmation", "capabilities", "public_metadata", "workflow_template_id",
                         "workflow_path", "workflow_binding", "preference", "component_identity_tokens",
+                        "catalog_id",
                     },
                     "local_gpu_branch_run": {"denoising_strength"},
                     "local_gpu_prepare_mask": {"user_mask_path", "geometry", "feather_pixels"},
@@ -163,6 +164,7 @@ class McpServerUnitTests(unittest.TestCase):
             [
                 "anima-txt2img",
                 "sd15-txt2img",
+                "sdxl-regional-txt2img",
                 "sdxl-txt2img",
                 "z-image-turbo-txt2img",
             ],
@@ -397,6 +399,42 @@ class McpServerUnitTests(unittest.TestCase):
             preference=0,
         )
 
+    def test_trust_revoke_forwards_optional_exact_catalog_variant(self) -> None:
+        token = "model:" + "a" * 64
+        catalog_id = "local:" + "b" * 24
+        for supplied in (None, catalog_id):
+            services = Mock()
+            services.trust.revoke.return_value = {
+                "catalog_id": catalog_id,
+                "identity_token": token,
+                "revoked": True,
+            }
+            arguments = {
+                "action": "revoke",
+                "identity_token": token,
+                "confirmation": f"revoke:{catalog_id}:{token}",
+            }
+            if supplied is not None:
+                arguments["catalog_id"] = supplied
+
+            with patch.object(
+                mcp_server,
+                "get_runtime_services",
+                return_value=services,
+            ):
+                result = mcp_server.handle_tool_call({
+                    "name": "local_gpu_set_model_trust",
+                    "arguments": arguments,
+                })
+
+            with self.subTest(catalog_id=supplied):
+                self.assertFalse(result["isError"])
+                services.trust.revoke.assert_called_once_with(
+                    supplied,
+                    token,
+                    arguments["confirmation"],
+                )
+
     def test_registered_workflow_binds_exact_unet_loader_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_dir = Path(directory) / "state"
@@ -509,6 +547,70 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertEqual(binding["template_id"], "z-image-turbo-txt2img")
         self.assertEqual(binding["backend_identity_token"], token)
         self.assertEqual(result["structuredContent"]["registered_workflow"]["source"], "shipped")
+
+    def test_regional_shipped_workflow_can_be_inspected_without_generation_data(self) -> None:
+        filesystem = {
+            "backend": "filesystem",
+            "endpoint_identity": "filesystem:test",
+            "backend_model_id": "checkpoints/sd_xl_base_1.0.safetensors",
+            "format": ".safetensors",
+            "byte_size": 1024,
+            "modified_ns": 1,
+            "sha256": "a" * 64,
+            "identity_strength": "cryptographic",
+            "metadata": {},
+        }
+        comfy = {
+            "backend": "comfyui",
+            "endpoint_identity": "endpoint:comfyui",
+            "backend_model_id": "sd_xl_base_1.0.safetensors",
+            "format": ".safetensors",
+            "byte_size": None,
+            "modified_ns": None,
+            "sha256": None,
+            "identity_strength": "backend_binding",
+            "metadata": {
+                "loader_class": "CheckpointLoaderSimple",
+                "loader_input": "ckpt_name",
+            },
+        }
+        capabilities = {
+            "model_family": "sdxl",
+            "prompt_dialect": "natural-v1",
+            "operations": ["txt2img"],
+            "minimum_dimension": 256,
+            "maximum_dimension": 1536,
+            "minimum_vram_gb": 12,
+            "negative_prompt": "supported",
+            "affinity": ["illustration"],
+            "recommended": {
+                "resolution": {"width": 1024, "height": 1024},
+                "steps": 30,
+                "guidance": 7.0,
+                "sampler": "dpmpp_2m",
+                "scheduler": "karras",
+            },
+        }
+        services = Mock()
+        services.discovery.inventory.return_value = [filesystem, comfy]
+        services.workflows = WorkflowTemplateRegistry(
+            ROOT / "workflows" / "comfyui",
+            Path(tempfile.gettempdir()) / "local-gpu-imagegen-regional-state",
+        )
+
+        binding, registration, bundle = mcp_server._shipped_workflow_binding(
+            services,
+            filesystem,
+            "sdxl-regional-txt2img",
+            capabilities,
+            [mcp_server.identity_token(filesystem)],
+        )
+
+        self.assertEqual(binding["template_id"], "sdxl-regional-txt2img")
+        self.assertEqual(
+            bundle["workflow"]["sha256"],
+            registration["workflow_sha256"],
+        )
 
     def test_workflow_inspection_builds_bundle_without_mutating_trust(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

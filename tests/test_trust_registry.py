@@ -12,8 +12,16 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from local_gpu_imagegen.errors import ArtifactError, StateError, ValidationError  # noqa: E402
-from local_gpu_imagegen.model_identity import build_component_bundle  # noqa: E402
+from local_gpu_imagegen.errors import (  # noqa: E402
+    ArtifactError,
+    ConflictError,
+    StateError,
+    ValidationError,
+)
+from local_gpu_imagegen.model_identity import (  # noqa: E402
+    build_component_bundle,
+    identity_token,
+)
 from local_gpu_imagegen.trust_registry import (  # noqa: E402
     TrustRegistry,
     default_state_dir,
@@ -38,7 +46,7 @@ def discovery_record(
     }
 
 
-def component_bundle() -> dict[str, object]:
+def component_bundle(workflow_sha256: str = "c" * 64) -> dict[str, object]:
     return build_component_bundle(
         [{
             "role": "primary_model",
@@ -52,7 +60,7 @@ def component_bundle() -> dict[str, object]:
         {
             "template_id": "z-image-turbo-txt2img",
             "template_version": 1,
-            "sha256": "c" * 64,
+            "sha256": workflow_sha256,
         },
     )
 
@@ -73,6 +81,45 @@ class TrustRegistryTests(unittest.TestCase):
             self.registry.confirmation_value("approve_private", record),
             capabilities={"operations": ["txt2img"]},
         )
+
+    def install_two_variants(self) -> list[dict[str, object]]:
+        record = discovery_record(
+            identity_strength="cryptographic",
+            sha256="a" * 64,
+        )
+        bundle_a = component_bundle(workflow_sha256="c" * 64)
+        bundle_b = component_bundle(workflow_sha256="d" * 64)
+        capabilities = {"operations": ["txt2img"]}
+        self.registry.approve_private(
+            record,
+            self.registry.confirmation_value("approve_private", record),
+            capabilities=capabilities,
+        )
+        document = json.loads(
+            (self.root / "trust.json").read_text(encoding="utf-8")
+        )
+        document["records"][0]["workflow_binding"] = {
+            "backend": "comfyui",
+            "component_bundle_sha256": bundle_a["bundle_sha256"],
+        }
+        document["records"][0]["component_bundle"] = bundle_a
+        self.registry._write(document)
+        for bundle in (bundle_a, bundle_b):
+            self.registry.approve_private(
+                record,
+                self.registry.confirmation_value(
+                    "approve_private",
+                    record,
+                    bundle,
+                ),
+                capabilities=capabilities,
+                workflow_binding={
+                    "backend": "comfyui",
+                    "component_bundle_sha256": bundle["bundle_sha256"],
+                },
+                component_bundle=bundle,
+            )
+        return self.registry.list_records()
 
     def test_state_dir_override_is_exact_and_does_not_create_it(self) -> None:
         override = self.root / "override"
@@ -271,6 +318,108 @@ class TrustRegistryTests(unittest.TestCase):
         self.assertEqual(records[0]["catalog_id"], first["catalog_id"])
         self.assertEqual(records[0], second)
         self.assertEqual(records[0]["preference"], 25)
+
+    def test_same_identity_can_keep_legacy_and_add_new_bundle_variant(self) -> None:
+        records = self.install_two_variants()
+        token = identity_token(
+            discovery_record(identity_strength="cryptographic", sha256="a" * 64)
+        )
+        legacy_id = "local:" + token.removeprefix("model:")[:24]
+
+        self.assertEqual(len(records), 2)
+        self.assertIn(legacy_id, {item["catalog_id"] for item in records})
+        self.assertEqual(
+            {item["identity_token"] for item in records},
+            {token},
+        )
+        self.assertEqual(
+            len({item["component_bundle"]["bundle_sha256"] for item in records}),
+            2,
+        )
+
+    def test_bundle_reapproval_preserves_only_the_exact_pairs_evidence(self) -> None:
+        records = self.install_two_variants()
+        selected = records[1]
+        self.registry.record_observation(
+            selected["catalog_id"],
+            selected["identity_token"],
+            "txt2img",
+            "run-regional",
+        )
+        bundle = selected["component_bundle"]
+        record = discovery_record(
+            identity_strength="cryptographic",
+            sha256="a" * 64,
+        )
+
+        reapproved = self.registry.approve_private(
+            record,
+            self.registry.confirmation_value("approve_private", record, bundle),
+            capabilities={"operations": ["txt2img"]},
+            workflow_binding={
+                "backend": "comfyui",
+                "component_bundle_sha256": bundle["bundle_sha256"],
+            },
+            component_bundle=bundle,
+            preference=30,
+        )
+
+        self.assertEqual(reapproved["catalog_id"], selected["catalog_id"])
+        self.assertEqual(reapproved["evidence"][-1]["run_id"], "run-regional")
+        self.assertEqual(len(self.registry.list_records()), 2)
+
+    def test_catalog_id_collision_fails_without_replacing_existing_pair(self) -> None:
+        first = self.approve_private()
+        record = discovery_record(
+            identity_strength="cryptographic",
+            sha256="a" * 64,
+        )
+        bundle = component_bundle()
+
+        with patch(
+            "local_gpu_imagegen.trust_registry._variant_catalog_id",
+            return_value=first["catalog_id"],
+        ), self.assertRaisesRegex(ConflictError, "catalog_id_collision"):
+            self.registry.approve_private(
+                record,
+                self.registry.confirmation_value(
+                    "approve_private",
+                    record,
+                    bundle,
+                ),
+                capabilities={"operations": ["txt2img"]},
+                workflow_binding={"backend": "comfyui"},
+                component_bundle=bundle,
+            )
+
+        self.assertEqual(self.registry.list_records(), [first])
+
+    def test_ambiguous_revoke_requires_exact_catalog_id(self) -> None:
+        records = self.install_two_variants()
+        token = records[0]["identity_token"]
+
+        with self.assertRaisesRegex(ValidationError, "ambiguous_trust_variant"):
+            self.registry.revoke(None, token, "unused")
+
+        selected = records[1]["catalog_id"]
+        result = self.registry.revoke(
+            selected,
+            token,
+            f"revoke:{selected}:{token}",
+        )
+        self.assertEqual(result["catalog_id"], selected)
+        self.assertEqual(len(self.registry.list_records()), 1)
+
+    def test_unique_revoke_can_resolve_omitted_catalog_id(self) -> None:
+        approved = self.approve_private()
+        result = self.registry.revoke(
+            None,
+            approved["identity_token"],
+            f"revoke:{approved['catalog_id']}:{approved['identity_token']}",
+        )
+
+        self.assertEqual(result["catalog_id"], approved["catalog_id"])
+        self.assertEqual(self.registry.list_records(), [])
 
     def test_revoke_requires_exact_identity_confirmation(self) -> None:
         approved = self.approve_private()

@@ -500,6 +500,10 @@ def tool_schema() -> list[dict[str, Any]]:
                 },
                 "workflow_path": {"type": "string", "minLength": 1},
                 "workflow_binding": json_object,
+                "catalog_id": {
+                    "type": "string",
+                    "pattern": "^local:[0-9a-f]{24}$",
+                },
                 "preference": {"type": "integer", "minimum": -100, "maximum": 100},
             }, ["action", "identity_token"]),
             "outputSchema": _output_schema({
@@ -1419,7 +1423,7 @@ def _shipped_workflow_binding(
     resolved_model_id = str(record["backend_model_id"])
     if record.get("backend") == "filesystem":
         resolved_model_id = resolved_model_id.replace("\\", "/").rsplit("/", 1)[-1]
-    resolved = services.workflows.resolve(
+    resolved = services.workflows.inspect_shipped(
         template_id,
         resolved_model_id,
         operations[0],
@@ -1493,8 +1497,11 @@ def _workflow_loader_bindings(graph: object) -> list[tuple[object, object, objec
 def _trust_call(services: Any, arguments: dict[str, Any]) -> dict[str, object]:
     token = arguments["identity_token"]
     if arguments["action"] == "revoke":
-        catalog_id = "local:" + token.removeprefix("model:")[:24]
-        return services.trust.revoke(catalog_id, token, arguments["confirmation"])
+        return services.trust.revoke(
+            arguments.get("catalog_id"),
+            token,
+            arguments["confirmation"],
+        )
 
     record = _inventory_identity(services, token)
     workflow_binding = None

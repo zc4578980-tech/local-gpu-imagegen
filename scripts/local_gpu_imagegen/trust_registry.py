@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -140,14 +141,44 @@ class TrustRegistry:
 
     def revoke(
         self,
-        catalog_id: str,
+        catalog_id: str | None,
         identity: str,
         confirmation: str,
     ) -> dict[str, object]:
-        if not isinstance(catalog_id, str) or CATALOG_ID_PATTERN.fullmatch(catalog_id) is None:
-            raise ValidationError("invalid_catalog_id", "Catalog ID is invalid.")
         if not isinstance(identity, str) or not identity.startswith("model:"):
             raise ValidationError("invalid_model_identity", "Identity token is invalid.")
+        if catalog_id is not None and (
+            not isinstance(catalog_id, str)
+            or CATALOG_ID_PATTERN.fullmatch(catalog_id) is None
+        ):
+            raise ValidationError("invalid_catalog_id", "Catalog ID is invalid.")
+
+        document = self._read()
+        candidates = [
+            entry
+            for entry in document["records"]
+            if entry["identity_token"] == identity
+        ]
+        if catalog_id is None:
+            if len(candidates) > 1:
+                raise ValidationError(
+                    "ambiguous_trust_variant",
+                    "Multiple workflow-bound trust variants require an exact catalog ID.",
+                    {
+                        "catalog_ids": sorted(
+                            str(entry["catalog_id"]) for entry in candidates
+                        )
+                    },
+                )
+            if not candidates:
+                raise StateError(
+                    "trust_record_not_found",
+                    "Trust record does not exist.",
+                )
+            catalog_id = str(candidates[0]["catalog_id"])
+        elif not any(entry["catalog_id"] == catalog_id for entry in candidates):
+            raise StateError("trust_record_not_found", "Trust record does not exist.")
+
         expected = f"revoke:{catalog_id}:{identity}"
         if confirmation != expected:
             raise ValidationError(
@@ -156,7 +187,6 @@ class TrustRegistry:
                 {"confirmation": expected},
             )
 
-        document = self._read()
         original_count = len(document["records"])
         document["records"] = [
             entry
@@ -259,16 +289,43 @@ class TrustRegistry:
         _validate_json(candidate_values, "invalid_trust_record")
 
         document = self._read()
-        catalog_id = "local:" + token.removeprefix("model:")[:24]
+        bundle_sha256 = (
+            str(normalized_bundle["bundle_sha256"])
+            if normalized_bundle is not None
+            else None
+        )
         previous = next(
             (
                 item
                 for item in document["records"]
-                if item["catalog_id"] == catalog_id
-                and item["identity_token"] == token
+                if item["identity_token"] == token
+                and _bundle_sha(item) == bundle_sha256
             ),
             None,
         )
+        if previous is not None:
+            catalog_id = str(previous["catalog_id"])
+        elif bundle_sha256 is not None:
+            catalog_id = _variant_catalog_id(token, bundle_sha256)
+        else:
+            catalog_id = "local:" + token.removeprefix("model:")[:24]
+        collision = next(
+            (
+                item
+                for item in document["records"]
+                if item["catalog_id"] == catalog_id
+                and (
+                    item["identity_token"] != token
+                    or _bundle_sha(item) != bundle_sha256
+                )
+            ),
+            None,
+        )
+        if collision is not None:
+            raise ConflictError(
+                "catalog_id_collision",
+                "Derived workflow trust catalog ID collides with another record.",
+            )
         evidence = copy.deepcopy(previous["evidence"]) if previous is not None else [{"level": "declared"}]
         limitations: list[str] = []
         if validated["identity_strength"] == "backend_binding":
@@ -294,8 +351,8 @@ class TrustRegistry:
             item
             for item in document["records"]
             if not (
-                item["catalog_id"] == catalog_id
-                and item["identity_token"] == token
+                item["identity_token"] == token
+                and _bundle_sha(item) == bundle_sha256
             )
         ]
         records.append(approved)
@@ -396,6 +453,21 @@ class TrustRegistry:
         atomic_write_json(self.path, validated)
 
 
+def _bundle_sha(record: dict[str, object]) -> str | None:
+    bundle = record.get("component_bundle")
+    if not isinstance(bundle, dict):
+        return None
+    digest = bundle.get("bundle_sha256")
+    return str(digest) if isinstance(digest, str) else None
+
+
+def _variant_catalog_id(identity: str, bundle_sha256: str) -> str:
+    digest = hashlib.sha256(
+        f"{identity}\n{bundle_sha256}".encode("utf-8")
+    ).hexdigest()
+    return "local:" + digest[:24]
+
+
 def _validate_document(value: object) -> dict[str, object]:
     if (
         not isinstance(value, dict)
@@ -411,7 +483,8 @@ def _validate_document(value: object) -> dict[str, object]:
     document = copy.deepcopy(value)
     records = document["records"]
     assert isinstance(records, list)
-    seen: set[tuple[str, str]] = set()
+    seen_pairs: set[tuple[str, str | None]] = set()
+    seen_catalog_ids: dict[str, tuple[str, str | None]] = {}
     for record in records:
         if not isinstance(record, dict):
             raise ArtifactError("corrupt_trust_registry", "Trust record must be an object.")
@@ -449,13 +522,6 @@ def _validate_document(value: object) -> dict[str, object]:
             raise ArtifactError("corrupt_trust_registry", "Stored model identity is invalid.") from error
         if identity_token(identity) != token or identity["identity_strength"] != record["identity_strength"]:
             raise ArtifactError("corrupt_trust_registry", "Stored identity token does not match its record.")
-        expected_catalog_id = "local:" + token.removeprefix("model:")[:24]
-        if catalog_id != expected_catalog_id:
-            raise ArtifactError("corrupt_trust_registry", "Stored catalog ID does not match its identity token.")
-        key = (catalog_id, token)
-        if key in seen:
-            raise ArtifactError("corrupt_trust_registry", "Trust registry contains duplicate identities.")
-        seen.add(key)
         if (
             not isinstance(record["capabilities"], dict)
             or record["workflow_binding"] is not None and not isinstance(record["workflow_binding"], dict)
@@ -477,6 +543,37 @@ def _validate_document(value: object) -> dict[str, object]:
                     "Stored component bundle is invalid.",
                 ) from error
             record["component_bundle"] = component_bundle
+        bundle_sha256 = _bundle_sha(record)
+        legacy_catalog_id = "local:" + token.removeprefix("model:")[:24]
+        variant_catalog_id = (
+            _variant_catalog_id(token, bundle_sha256)
+            if bundle_sha256 is not None
+            else None
+        )
+        if catalog_id not in {legacy_catalog_id, variant_catalog_id}:
+            raise ArtifactError(
+                "corrupt_trust_registry",
+                "Stored catalog ID does not match its identity and workflow bundle.",
+            )
+        if catalog_id != legacy_catalog_id and bundle_sha256 is None:
+            raise ArtifactError(
+                "corrupt_trust_registry",
+                "Workflow variant catalog IDs require a component bundle.",
+            )
+        pair = (token, bundle_sha256)
+        if pair in seen_pairs:
+            raise ArtifactError(
+                "corrupt_trust_registry",
+                "Trust registry contains duplicate identity and bundle pairs.",
+            )
+        previous_pair = seen_catalog_ids.get(catalog_id)
+        if previous_pair is not None and previous_pair != pair:
+            raise ArtifactError(
+                "corrupt_trust_registry",
+                "Trust registry contains a catalog ID collision.",
+            )
+        seen_pairs.add(pair)
+        seen_catalog_ids[catalog_id] = pair
         evidence = record["evidence"]
         assert isinstance(evidence, list)
         if not evidence or evidence[0] != {"level": "declared"}:
