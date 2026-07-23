@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 
@@ -16,8 +18,16 @@ sys.path.insert(0, str(SCRIPTS))
 
 import mcp_server  # noqa: E402
 from local_gpu_imagegen.errors import AssetEngineError  # noqa: E402
+from local_gpu_imagegen.model_catalog import ModelCatalog  # noqa: E402
+from local_gpu_imagegen.model_router import CapabilityRouter  # noqa: E402
 from local_gpu_imagegen.preview import PreviewResult  # noqa: E402
+from local_gpu_imagegen.prompt_compilers import PromptCompilerRegistry  # noqa: E402
 from local_gpu_imagegen.trust_registry import TrustRegistry  # noqa: E402
+from local_gpu_imagegen.two_stage_layout import (  # noqa: E402
+    TWO_STAGE_LAYOUT_MODE,
+    TWO_STAGE_TEMPLATE_ID,
+    build_control_identity,
+)
 from local_gpu_imagegen.workflow_templates import WorkflowTemplateRegistry  # noqa: E402
 
 
@@ -43,6 +53,17 @@ HIGH_LEVEL_TOOLS = EXPECTED_TOOLS - {
     "local_gpu_imagegen_check",
     "local_gpu_generate_image",
 }
+
+
+def exact_two_stage_layout() -> dict[str, object]:
+    return {
+        "mode": TWO_STAGE_LAYOUT_MODE,
+        "canvas": {"width": 640, "height": 320},
+        "copy_protected_rect": {"x": 0, "y": 0, "width": 224, "height": 320},
+        "subject_mask_rect": {"x": 304, "y": 16, "width": 320, "height": 288},
+        "feather_pixels": 0,
+        "vae_grow_mask_by": 0,
+    }
 
 
 def visual_checks() -> dict[str, object]:
@@ -103,7 +124,7 @@ class McpServerUnitTests(unittest.TestCase):
             "local_gpu_set_model_trust": {
                 "action", "identity_token", "confirmation", "capabilities", "public_metadata",
                 "workflow_template_id", "workflow_path", "workflow_binding", "preference",
-                "component_identity_tokens", "catalog_id",
+                "component_identity_tokens", "catalog_id", "two_stage_layout",
             },
             "local_gpu_recommend_models": {
                 "authorization_scope", "operation", "profile", "style", "width", "height",
@@ -149,7 +170,7 @@ class McpServerUnitTests(unittest.TestCase):
                     "local_gpu_set_model_trust": {
                         "confirmation", "capabilities", "public_metadata", "workflow_template_id",
                         "workflow_path", "workflow_binding", "preference", "component_identity_tokens",
-                        "catalog_id",
+                        "catalog_id", "two_stage_layout",
                     },
                     "local_gpu_recommend_models": {"regional_layout", "two_stage_layout"},
                     "local_gpu_start_run": {
@@ -739,6 +760,198 @@ class McpServerUnitTests(unittest.TestCase):
                 data["confirmations"]["approve_public_candidate"],
             )
             self.assertEqual(services.trust.list_records(), [])
+
+    def test_supported_mcp_flow_creates_and_routes_exact_two_stage_variant(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            filesystem = {
+                "backend": "filesystem",
+                "endpoint_identity": "filesystem:test",
+                "backend_model_id": "checkpoints/sd_xl_base_1.0.safetensors",
+                "format": ".safetensors",
+                "byte_size": 2048,
+                "modified_ns": 1,
+                "sha256": "a" * 64,
+                "identity_strength": "cryptographic",
+                "metadata": {},
+            }
+            comfy = {
+                "backend": "comfyui",
+                "endpoint_identity": "endpoint:comfyui",
+                "backend_model_id": "sd_xl_base_1.0.safetensors",
+                "format": ".safetensors",
+                "byte_size": None,
+                "modified_ns": None,
+                "sha256": None,
+                "identity_strength": "backend_binding",
+                "metadata": {
+                    "loader_class": "CheckpointLoaderSimple",
+                    "loader_input": "ckpt_name",
+                },
+            }
+            inventory = [filesystem, comfy]
+            capabilities = {
+                "model_family": "sdxl",
+                "prompt_dialect": "natural-v1",
+                "operations": ["txt2img"],
+                "minimum_dimension": 256,
+                "maximum_dimension": 1536,
+                "minimum_vram_gb": 12,
+                "negative_prompt": "supported",
+                "affinity": ["illustration"],
+                "recommended": {
+                    "resolution": {"width": 640, "height": 320},
+                    "steps": 30,
+                    "guidance": 7.0,
+                    "sampler": "dpmpp_2m",
+                    "scheduler": "karras",
+                },
+                "two_stage_layout_modes": [TWO_STAGE_LAYOUT_MODE],
+            }
+            discovery = Mock()
+            discovery.inventory.return_value = inventory
+            workflows = WorkflowTemplateRegistry(
+                ROOT / "workflows" / "comfyui",
+                root / "workflow-state",
+            )
+            trust = TrustRegistry(root / "trust-state")
+            services = SimpleNamespace(
+                discovery=discovery,
+                workflows=workflows,
+                trust=trust,
+            )
+            layout = exact_two_stage_layout()
+            base_arguments = {
+                "identity_token": mcp_server.identity_token(filesystem),
+                "capabilities": capabilities,
+                "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+                "component_identity_tokens": [mcp_server.identity_token(filesystem)],
+                "two_stage_layout": layout,
+            }
+
+            with patch.object(mcp_server, "get_runtime_services", return_value=services):
+                inspected = mcp_server.handle_tool_call({
+                    "name": "local_gpu_set_model_trust",
+                    "arguments": {
+                        **base_arguments,
+                        "action": "inspect_workflow_binding",
+                    },
+                })
+                self.assertFalse(inspected["isError"])
+                inspection = inspected["structuredContent"]
+                workflow_sha256 = inspection["registered_workflow"]["workflow_sha256"]
+                control_sha256 = build_control_identity(
+                    layout,
+                    workflow_sha256,
+                    "base-subject-v1",
+                )
+                confirmation = inspection["confirmations"]["approve_private"]
+                self.assertIn(f":control:{control_sha256}", confirmation)
+
+                changed_layout = copy.deepcopy(layout)
+                changed_layout["subject_mask_rect"] = {
+                    "x": 312, "y": 16, "width": 312, "height": 288,
+                }
+                tampered = mcp_server.handle_tool_call({
+                    "name": "local_gpu_set_model_trust",
+                    "arguments": {
+                        **base_arguments,
+                        "action": "approve_private",
+                        "confirmation": confirmation,
+                        "two_stage_layout": changed_layout,
+                    },
+                })
+                self.assertTrue(tampered["isError"])
+                self.assertEqual(
+                    tampered["structuredContent"]["error"]["code"],
+                    "trust_confirmation_mismatch",
+                )
+
+                approved = mcp_server.handle_tool_call({
+                    "name": "local_gpu_set_model_trust",
+                    "arguments": {
+                        **base_arguments,
+                        "action": "approve_private",
+                        "confirmation": confirmation,
+                    },
+                })
+                self.assertFalse(approved["isError"])
+
+            reopened = TrustRegistry(root / "trust-state")
+            records = reopened.list_records()
+            self.assertEqual(len(records), 1)
+            self.assertEqual(
+                records[0]["workflow_binding"]["control_sha256"],
+                control_sha256,
+            )
+            models_root = root / "models"
+            models_root.mkdir()
+            catalog = ModelCatalog(
+                models_root,
+                lambda: inventory,
+                reopened,
+                lambda: {"available_backends": ["comfyui"]},
+                workflows,
+            )
+            router = CapabilityRouter(
+                catalog,
+                PromptCompilerRegistry(),
+                layout_capability_provider=lambda mode: {
+                    "mode": mode,
+                    "available": True,
+                    "endpoint_identity": "endpoint:comfyui",
+                    "reason": None,
+                },
+            )
+            recommendation = router.recommend({
+                "authorization_scope": "private",
+                "operation": "txt2img",
+                "profile": "standalone-illustration",
+                "style": None,
+                "width": 640,
+                "height": 320,
+                "affinity_tags": ["illustration"],
+                "required_vram_gb": 12,
+                "preferred_model_id": None,
+                "two_stage_layout": layout,
+            })
+
+            self.assertEqual(len(recommendation["routes"]), 1)
+            self.assertEqual(
+                recommendation["routes"][0]["control_sha256"],
+                control_sha256,
+            )
+
+    def test_trust_layout_is_required_only_for_two_stage_shipped_workflow(self) -> None:
+        tool = next(
+            item for item in mcp_server.tool_schema()
+            if item["name"] == "local_gpu_set_model_trust"
+        )
+        base = {
+            "action": "inspect_workflow_binding",
+            "identity_token": "model:" + "a" * 64,
+            "capabilities": {},
+            "component_identity_tokens": ["model:" + "a" * 64],
+        }
+        cases = (
+            ({**base, "workflow_template_id": TWO_STAGE_TEMPLATE_ID}, "invalid_two_stage_layout"),
+            ({
+                **base,
+                "workflow_template_id": "sdxl-txt2img",
+                "two_stage_layout": exact_two_stage_layout(),
+            }, "invalid_two_stage_layout"),
+            ({
+                **base,
+                "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+                "two_stage_layout": {**exact_two_stage_layout(), "mode": "wrong"},
+            }, "invalid_argument_value"),
+        )
+
+        for arguments, code in cases:
+            with self.subTest(code=code):
+                error = mcp_server.validate_tool_arguments(tool, arguments)
+                self.assertIsNotNone(error)
+                self.assertEqual(error["structuredContent"]["error"]["code"], code)
 
     def test_trust_rejects_shipped_and_imported_workflow_together(self) -> None:
         tool = next(

@@ -320,6 +320,12 @@ class TrustRegistryTests(unittest.TestCase):
             )
 
         binding["control_sha256"] = "d" * 64
+        confirmation = self.registry.confirmation_value(
+            "approve_private",
+            record,
+            bundle,
+            workflow_binding=binding,
+        )
         approved = self.registry.approve_private(
             record,
             confirmation,
@@ -330,6 +336,117 @@ class TrustRegistryTests(unittest.TestCase):
 
         self.assertEqual(approved["workflow_binding"], binding)
         self.assertEqual(self.registry.list_records()[0]["workflow_binding"], binding)
+
+    def test_two_stage_confirmation_binds_control_digest(self) -> None:
+        record = discovery_record(identity_strength="cryptographic", sha256="a" * 64)
+        bundle = component_bundle(template_id=TWO_STAGE_TEMPLATE_ID)
+        binding = {
+            "backend": "comfyui",
+            "template_id": TWO_STAGE_TEMPLATE_ID,
+            "control_sha256": "d" * 64,
+        }
+        confirmation = self.registry.confirmation_value(
+            "approve_private",
+            record,
+            bundle,
+            workflow_binding=binding,
+        )
+        self.assertIn(":control:" + "d" * 64, confirmation)
+
+        with self.assertRaisesRegex(ValidationError, "trust_confirmation_mismatch"):
+            self.registry.approve_private(
+                record,
+                confirmation,
+                capabilities={"operations": ["txt2img"]},
+                workflow_binding={**binding, "control_sha256": "e" * 64},
+                component_bundle=bundle,
+            )
+
+    def test_binding_and_bundle_workflow_ids_must_match_in_both_directions(self) -> None:
+        record = discovery_record(identity_strength="cryptographic", sha256="a" * 64)
+        cases = (
+            (
+                component_bundle(template_id=TWO_STAGE_TEMPLATE_ID),
+                {"backend": "comfyui", "template_id": "z-image-turbo-txt2img", "control_sha256": "d" * 64},
+            ),
+            (
+                component_bundle(template_id="z-image-turbo-txt2img"),
+                {"backend": "comfyui", "template_id": TWO_STAGE_TEMPLATE_ID, "control_sha256": "d" * 64},
+            ),
+        )
+        for bundle, binding in cases:
+            with self.subTest(binding=binding["template_id"]):
+                confirmation = self.registry.confirmation_value(
+                    "approve_private",
+                    record,
+                    bundle,
+                    workflow_binding=binding,
+                )
+                with self.assertRaisesRegex(ValidationError, "template"):
+                    self.registry.approve_private(
+                        record,
+                        confirmation,
+                        capabilities={"operations": ["txt2img"]},
+                        workflow_binding=binding,
+                        component_bundle=bundle,
+                    )
+
+    def test_stored_binding_and_bundle_workflow_ids_must_match_in_both_directions(self) -> None:
+        record = discovery_record(identity_strength="cryptographic", sha256="a" * 64)
+        legacy_bundle = component_bundle(template_id="z-image-turbo-txt2img")
+        legacy_binding = {
+            "backend": "comfyui",
+            "template_id": "z-image-turbo-txt2img",
+        }
+        self.registry.approve_private(
+            record,
+            self.registry.confirmation_value(
+                "approve_private",
+                record,
+                legacy_bundle,
+                workflow_binding=legacy_binding,
+            ),
+            capabilities={"operations": ["txt2img"]},
+            workflow_binding=legacy_binding,
+            component_bundle=legacy_bundle,
+        )
+        two_stage_bundle = component_bundle(template_id=TWO_STAGE_TEMPLATE_ID)
+        two_stage_binding = {
+            "backend": "comfyui",
+            "template_id": TWO_STAGE_TEMPLATE_ID,
+            "control_sha256": "d" * 64,
+        }
+        self.registry.approve_private(
+            record,
+            self.registry.confirmation_value(
+                "approve_private",
+                record,
+                two_stage_bundle,
+                workflow_binding=two_stage_binding,
+            ),
+            capabilities={"operations": ["txt2img"]},
+            workflow_binding=two_stage_binding,
+            component_bundle=two_stage_bundle,
+        )
+
+        path = self.root / "trust.json"
+        original = json.loads(path.read_text(encoding="utf-8"))
+        cases = (
+            (0, TWO_STAGE_TEMPLATE_ID, "d" * 64),
+            (1, "z-image-turbo-txt2img", None),
+        )
+        for index, template_id, control_sha256 in cases:
+            with self.subTest(template_id=template_id):
+                document = copy.deepcopy(original)
+                binding = document["records"][index]["workflow_binding"]
+                binding["template_id"] = template_id
+                if control_sha256 is None:
+                    binding.pop("control_sha256", None)
+                else:
+                    binding["control_sha256"] = control_sha256
+                path.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(ArtifactError, "corrupt_trust_registry"):
+                    self.registry.list_records()
 
     def test_existing_workflow_variants_reject_control_without_shape_drift(self) -> None:
         record = discovery_record(identity_strength="cryptographic", sha256="a" * 64)

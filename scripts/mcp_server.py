@@ -14,6 +14,12 @@ from local_gpu_imagegen.errors import AssetEngineError
 from local_gpu_imagegen.model_identity import build_component_bundle, identity_token
 from local_gpu_imagegen.paths import default_output_root, resolve_resource_root
 from local_gpu_imagegen.postprocess import SUPPORTED_MODELS
+from local_gpu_imagegen.two_stage_layout import (
+    TWO_STAGE_LAYOUT_MODE,
+    TWO_STAGE_TEMPLATE_ID,
+    build_control_identity,
+    validate_two_stage_layout,
+)
 from local_gpu_imagegen.workflow_templates import (
     MODEL_LOADER_INPUTS,
     workflow_component_bindings,
@@ -407,6 +413,26 @@ def tool_schema() -> list[dict[str, Any]]:
         "subject_negative_prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
         "subject_denoise": {"type": "number", "minimum": 0.8, "maximum": 1.0},
     }, ["subject_prompt", "subject_negative_prompt", "subject_denoise"])
+    integer_rect = _object_schema({
+        "x": {"type": "integer", "minimum": 0},
+        "y": {"type": "integer", "minimum": 0},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+    }, ["x", "y", "width", "height"])
+    two_stage_layout = _object_schema({
+        "mode": {"type": "string", "enum": [TWO_STAGE_LAYOUT_MODE]},
+        "canvas": _object_schema({
+            "width": {"type": "integer", "minimum": 256, "maximum": 1536},
+            "height": {"type": "integer", "minimum": 256, "maximum": 1536},
+        }, ["width", "height"]),
+        "copy_protected_rect": integer_rect,
+        "subject_mask_rect": integer_rect,
+        "feather_pixels": {"type": "integer", "minimum": 0, "maximum": 64},
+        "vae_grow_mask_by": {"type": "integer", "minimum": 0, "maximum": 64},
+    }, [
+        "mode", "canvas", "copy_protected_rect", "subject_mask_rect",
+        "feather_pixels", "vae_grow_mask_by",
+    ])
     visual_check = _object_schema({
         "status": {
             "type": "string",
@@ -516,6 +542,7 @@ def tool_schema() -> list[dict[str, Any]]:
                     "pattern": "^local:[0-9a-f]{24}$",
                 },
                 "preference": {"type": "integer", "minimum": -100, "maximum": 100},
+                "two_stage_layout": two_stage_layout,
             }, ["action", "identity_token"]),
             "outputSchema": _output_schema({
                 "catalog_id": {"type": "string"},
@@ -979,6 +1006,36 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
 
     if tool["name"] == "local_gpu_set_model_trust":
         action = arguments.get("action")
+        if "two_stage_layout" in arguments:
+            layout = arguments["two_stage_layout"]
+            assert isinstance(layout, dict)
+            nested_error = _validate_nested_object(
+                "two_stage_layout",
+                layout,
+                properties["two_stage_layout"],
+            )
+            if nested_error is not None:
+                return nested_error
+        template_id = arguments.get("workflow_template_id")
+        has_two_stage_layout = "two_stage_layout" in arguments
+        if has_two_stage_layout and (
+            action == "revoke" or template_id != TWO_STAGE_TEMPLATE_ID
+        ) or (
+            action != "revoke"
+            and template_id == TWO_STAGE_TEMPLATE_ID
+            and not has_two_stage_layout
+        ):
+            return tool_error(
+                "invalid_two_stage_layout",
+                "validation",
+                "Two-stage layout is required only for the reviewed two-stage shipped workflow.",
+                {"field": "two_stage_layout", "workflowTemplateId": template_id},
+            )
+        if has_two_stage_layout:
+            try:
+                validate_two_stage_layout(arguments["two_stage_layout"])
+            except AssetEngineError as error:
+                return tool_error(error.code, error.category, error.args[0], error.details)
         if action in {"inspect_workflow_binding", "approve_private", "approve_public_candidate"} and "capabilities" not in arguments:
             return tool_error(
                 "missing_argument",
@@ -1410,7 +1467,17 @@ def _shipped_workflow_binding(
     template_id: str,
     capabilities: dict[str, object],
     component_identity_tokens: list[str] | None = None,
+    two_stage_layout: object = None,
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object] | None]:
+    normalized_two_stage_layout = None
+    if template_id == TWO_STAGE_TEMPLATE_ID:
+        normalized_two_stage_layout = validate_two_stage_layout(two_stage_layout)
+    elif two_stage_layout is not None:
+        raise AssetEngineError(
+            "invalid_two_stage_layout",
+            "Two-stage layout is allowed only for the reviewed two-stage shipped workflow.",
+            "validation",
+        )
     if record.get("backend") not in {"comfyui", "filesystem"}:
         raise AssetEngineError(
             "shipped_workflow_requires_backend_identity",
@@ -1504,6 +1571,14 @@ def _shipped_workflow_binding(
         "template_version": resolved["template_version"],
         "workflow_sha256": resolved["workflow_sha256"],
     }
+    if normalized_two_stage_layout is not None:
+        control_sha256 = build_control_identity(
+            normalized_two_stage_layout,
+            resolved["workflow_sha256"],
+            "base-subject-v1",
+        )
+        trust_binding["control_sha256"] = control_sha256
+        public_registration["control_sha256"] = control_sha256
     if component_bundle is not None:
         trust_binding["component_bundle_sha256"] = component_bundle["bundle_sha256"]
     return trust_binding, public_registration, component_bundle
@@ -1545,6 +1620,7 @@ def _trust_call(services: Any, arguments: dict[str, Any]) -> dict[str, object]:
             arguments["workflow_template_id"],
             arguments["capabilities"],
             component_tokens,
+            arguments.get("two_stage_layout"),
         )
     elif "workflow_path" in arguments:
         workflow_binding, registered_workflow, component_bundle = _registered_workflow_binding(
@@ -1566,7 +1642,12 @@ def _trust_call(services: Any, arguments: dict[str, Any]) -> dict[str, object]:
             "component_bundle": component_bundle,
             "registered_workflow": registered_workflow,
             "confirmations": {
-                action: services.trust.confirmation_value(action, record, component_bundle)
+                action: services.trust.confirmation_value(
+                    action,
+                    record,
+                    component_bundle,
+                    workflow_binding=workflow_binding,
+                )
                 for action in ("approve_private", "approve_public_candidate")
             },
         }

@@ -65,6 +65,8 @@ class TrustRegistry:
         action: str,
         record: dict[str, object],
         component_bundle: dict[str, object] | None = None,
+        *,
+        workflow_binding: dict[str, object] | None = None,
     ) -> str:
         if action not in {"approve_private", "approve_public_candidate"}:
             raise ValidationError("invalid_trust_action", "Trust action is unsupported.")
@@ -72,6 +74,14 @@ class TrustRegistry:
         if component_bundle is not None:
             bundle = validate_component_bundle(component_bundle)
             suffix = f":bundle:{bundle['bundle_sha256']}"
+        if (
+            isinstance(workflow_binding, dict)
+            and workflow_binding.get("template_id") == TWO_STAGE_TEMPLATE_ID
+            and isinstance(workflow_binding.get("control_sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", workflow_binding["control_sha256"])
+            is not None
+        ):
+            suffix += f":control:{workflow_binding['control_sha256']}"
         return f"{action}:{identity_token(record)}{suffix}"
 
     def approve_private(
@@ -262,7 +272,12 @@ class TrustRegistry:
             if component_bundle is not None
             else None
         )
-        expected = self.confirmation_value(action, validated, normalized_bundle)
+        expected = self.confirmation_value(
+            action,
+            validated,
+            normalized_bundle,
+            workflow_binding=workflow_binding,
+        )
         if confirmation != expected:
             raise ValidationError(
                 "trust_confirmation_mismatch",
@@ -642,10 +657,25 @@ def _validate_workflow_binding_control(
         if isinstance(component_bundle, dict)
         else None
     )
-    template_id = (
+    binding_template_id = workflow_binding.get("template_id")
+    bundle_template_id = (
         workflow.get("template_id")
         if isinstance(workflow, dict)
-        else workflow_binding.get("template_id")
+        else None
+    )
+    if (
+        isinstance(workflow, dict)
+        and "template_id" in workflow_binding
+        and binding_template_id != bundle_template_id
+    ):
+        raise ValidationError(
+            "invalid_workflow_binding",
+            "Workflow binding template ID must exactly match the component bundle template ID.",
+        )
+    template_id = (
+        binding_template_id
+        if "template_id" in workflow_binding
+        else bundle_template_id
     )
     control_sha256 = workflow_binding.get("control_sha256")
     if template_id == TWO_STAGE_TEMPLATE_ID:

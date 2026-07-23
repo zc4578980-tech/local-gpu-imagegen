@@ -16,6 +16,7 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 | `ModelCatalog` / `CapabilityRouter` | Merge current inventory/trust/readiness and issue one deterministic frozen route plus at most two alternatives | Silent fallback or weakened hard requirements |
 | `WorkflowTemplateRegistry` | Validates, copies, hashes, and resolves reviewed ComfyUI graphs | Arbitrary custom-node execution |
 | `regional_layout.py` | Normalizes one copy region plus one subject region and validates their conditioning contract | Arbitrary region graphs or visual-quality judgment |
+| `two_stage_layout.py` | Normalizes the bounded copy/subject layout and derives its workflow-bound control identity | Trust mutation, route fallback, or visual-quality judgment |
 | `BackendRegistry` | Dispatches exact WebUI/ComfyUI adapters and the Diffusers compatibility runner | Route selection |
 | `AssetRunEngine` | Confirmed root/child orchestration, edit-mode mapping, previews, review, and final publication | Filesystem locking details |
 | `RunStore` | Atomic manifest updates, attempt ownership, idempotency, recovery, and cleanup | Backend execution |
@@ -34,7 +35,7 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 3. `handle_request` handles initialization, ping, tool listing, or tool calls.
 4. Tool arguments are checked against the published input schema before a subprocess starts.
 5. `local_gpu_discover_models` freezes an `api_only`, `selected_folders`, `common_locations`, or `full_drive` plan. Broader scopes execute only after exact confirmation.
-6. Discovery `index` reads bounded metadata without loading weights; `fingerprint` hashes only selected indexed candidates. Trust changes require a separate exact confirmation and write only user-local state.
+6. Discovery `index` reads bounded metadata without loading weights; `fingerprint` hashes only selected indexed candidates. Trust changes require a separate exact confirmation and write only user-local state. For the reviewed two-stage workflow, the caller supplies the layout and the server derives the control digest after workflow inspection; raw caller-supplied control digests are not accepted.
 7. `local_gpu_list_profiles` merges repository templates, current inventory, trust, workflow availability, and readiness for `private` or `public_evidence` scope.
 8. `local_gpu_recommend_models` applies hard capability filters and returns one route plus at most two alternatives. A regional request also binds normalized copy/subject geometry to the reviewed `sdxl-regional-txt2img` capability. The Agent displays the exact route and obtains a new post-display confirmation.
 9. `AssetRunEngine` consumes the single-use `route_token`, persists endpoint/model/workflow/compiler identity and any regional geometry, and rechecks them before backend work.
@@ -57,6 +58,8 @@ The client then creates a `selected_folders` `fingerprint` plan whose `selected_
 `TrustRegistry` defaults to the OS user-state directory and can be moved with `LOCAL_GPU_IMAGEGEN_STATE_DIR`. `backend_binding` identifies only the model currently reported by one endpoint and remains `private`. For reviewed split workflows, a non-mutating inspection joins current ComfyUI loader identities to explicitly fingerprinted filesystem identities, then hashes the primary model, text encoder, VAE, and workflow identity into one canonical component bundle. The bundle digest is frozen in trust confirmation, catalog resolution, route tokens, manifests, and public evidence. Public candidacy additionally requires component-by-component source/license/redistribution metadata and still cannot bypass acceptance authority.
 
 A route freezes authorization scope, backend, endpoint identity, model ID and identity token, workflow/template version, prompt compiler/version, operation, dimensions, and normalized requirements. The route is part of run idempotency. Identity drift, compiler drift, or a backend result that reports another route fails before a successful round is retained. Root and child runs enforce no silent model switch.
+
+For `sdxl-two-stage-copy-subject`, trust inspection validates and normalizes `two_stage_layout`, inspects the shipped workflow, and derives `control_sha256` from that layout, the inspected workflow SHA-256, and the fixed `base-subject-v1` stage contract. The confirmation appends the existing component-bundle digest and the derived control digest; changing the layout therefore invalidates approval. Stored trust is accepted only when `workflow_binding.template_id` exactly matches `component_bundle.workflow.template_id`, and the two-stage binding contains a lowercase control SHA-256. Recommendation and execution require the same endpoint, model, workflow, bundle, control, and normalized layout. Missing or drifted identity fails closed and never falls back to regional or standard SDXL generation.
 
 ## Regional Layout Contract
 

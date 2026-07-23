@@ -35,6 +35,7 @@ Before PyPI publication, install the verified wheel or a source checkout, then u
 - **Bring your existing models:** bounded discovery merges WebUI/Forge and ComfyUI inventory with explicit user-local trust; scanning never loads or downloads weights.
 - **Frozen, explainable routing:** one model/backend/workflow/compiler identity is persisted and rechecked, with no silent model switch.
 - **Confirmed regional composition:** a reviewed SDXL ComfyUI route freezes one copy region and one subject region, then permits prompt/strength refinement without silently moving either region.
+- **Control-bound two-stage routing:** the optional SDXL copy/subject workflow derives its control identity server-side from the normalized layout and inspected workflow, then requires an exact endpoint/model/workflow/bundle/control match.
 - **Durable review loop:** a persisted manifest tracks one to three successful generation rounds, evidence-based reviews, final selection, and recovery actions.
 - **Three delivery Profiles:** standalone illustrations, presentation visuals, and UI visual assets share one deterministic run and review contract.
 - **Auditable hot revision:** an immutable child run records a preserve/change contract and uses prompt refinement, img2img, or explicitly confirmed inpainting.
@@ -145,6 +146,8 @@ The Skill will not guess from a checkpoint filename or silently select a backend
 After a reviewed or finalized candidate, the user can describe what to keep and what to change. The Skill presents an auditable preserve/change contract, asks for a separate one-to-three-round revision budget, and creates an immutable child run only after confirmation. It chooses the least destructive mode: same-seed prompt refinement, then low-strength img2img, then inpainting with explicit mask-overlay confirmation. No-mask preservation is best-effort.
 
 For the optional `copy-subject-v1` route, the Agent displays both normalized regions as decimals and percentages, both regional prompts and strengths, the exact `sdxl-regional-txt2img` route, and the successful-round budget before confirmation. The geometry is frozen for that run. Refinement may change regional prompts or strengths, but moving a region requires a newly confirmed root or child; unavailable or drifted regional capability never falls back to prompt-only `sdxl-txt2img`.
+
+For the optional `sdxl-two-stage-copy-subject` route, `local_gpu_set_model_trust` accepts the exact `two_stage_layout`; callers never provide `control_sha256`. The server normalizes that layout, inspects the shipped workflow, derives the control digest, and includes the bundle and control digests in the displayed trust confirmation. Approval and later routing require the same normalized layout, workflow, component bundle, endpoint, and model identity. Any mismatch fails closed with no fallback to the regional or standard SDXL routes. This contract is model-free engineering evidence, not a claim that generated images satisfy the requested composition or quality bar.
 
 The adaptive sequence is discovery -> trust when needed -> scoped catalog -> brief -> exact-route recommendation -> post-display confirmation -> start -> read persisted run -> construct complete plan -> generate -> full-resolution inspect -> review -> refine/explore or display candidate -> wait for a later user message -> finalize. The configured `max_rounds` must be from `1` through `3`, and urgency or sunk cost never extends it.
 
@@ -344,6 +347,7 @@ Verified:
 - durable manifest transitions, idempotency, recovery, review, finalization, and cleanup contracts
 - three Profile contracts plus immutable preserve/change child runs and confirmed geometry/user masks
 - fixed copy/subject geometry, regional conditioning, route drift rejection, and a two-round model-free regional vertical slice
+- server-derived two-stage control identity, control-bound trust confirmation, contradictory-binding rejection, and exact model-free route recovery
 - a fake-backend contract matrix covering nine fixed briefs and three child revisions
 - local-only Diffusers hub policy by default
 - installable `serve`, `doctor`, `verify`, `config`, and read-only-by-default `setup` CLI contracts, including an isolated wheel smoke test
