@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import sys
 import tempfile
@@ -15,6 +16,7 @@ from local_gpu_imagegen.errors import ArtifactError, ConflictError, ValidationEr
 from local_gpu_imagegen.workflow_templates import (  # noqa: E402
     WorkflowTemplateRegistry,
     validate_imported_workflow,
+    workflow_component_bindings,
 )
 
 
@@ -38,6 +40,39 @@ def parameters(**changes: object) -> dict[str, object]:
     }
     value.update(changes)
     return value
+
+
+def approved_two_stage_layout() -> dict[str, object]:
+    return {
+        "mode": "copy-subject-two-stage-v1",
+        "canvas": {"width": 1280, "height": 720},
+        "copy_protected_rect": {"x": 0, "y": 0, "width": 576, "height": 720},
+        "subject_mask_rect": {"x": 720, "y": 24, "width": 512, "height": 672},
+        "feather_pixels": 32,
+        "vae_grow_mask_by": 8,
+    }
+
+
+def approved_two_stage_conditioning() -> dict[str, object]:
+    return {
+        "subject_prompt": "complete brass telescope",
+        "subject_negative_prompt": "cropped telescope, text, people",
+        "subject_denoise": 0.9,
+    }
+
+
+def two_stage_parameters() -> dict[str, object]:
+    return parameters(
+        positive_prompt="empty blue-hour observatory background",
+        negative_prompt="telescope, text, people",
+        seed=2026072303,
+        steps=30,
+        guidance_scale=7.0,
+        sampler="dpmpp_2m",
+        scheduler="karras",
+        width=1280,
+        height=720,
+    )
 
 
 def binding(**changes: object) -> dict[str, list[str]]:
@@ -98,6 +133,167 @@ class WorkflowTemplateTests(unittest.TestCase):
 
     def write_safe_source(self) -> None:
         self.safe_source.write_text(json.dumps(safe_graph()), encoding="utf-8")
+
+    def load_mutated_two_stage(self, mutate: object) -> dict[str, object]:
+        source = ROOT / "workflows" / "comfyui" / "sdxl-two-stage-copy-subject-v1.json"
+        document = json.loads(source.read_text(encoding="utf-8"))
+        mutate(document["graph"])
+        reviewed_root = Path(self.temporary_directory.name) / "reviewed"
+        reviewed_root.mkdir(exist_ok=True)
+        (reviewed_root / source.name).write_text(json.dumps(document), encoding="utf-8")
+        registry = WorkflowTemplateRegistry(reviewed_root, self.state_dir)
+        return registry.resolve(
+            "sdxl-two-stage-copy-subject",
+            SDXL_MODEL,
+            "txt2img",
+            two_stage_parameters(),
+            two_stage_layout=approved_two_stage_layout(),
+            two_stage_conditioning=approved_two_stage_conditioning(),
+        )
+
+    def test_two_stage_template_binds_exact_graph_and_roles(self) -> None:
+        resolved = self.registry.resolve(
+            "sdxl-two-stage-copy-subject",
+            SDXL_MODEL,
+            "txt2img",
+            two_stage_parameters(),
+            two_stage_layout=approved_two_stage_layout(),
+            two_stage_conditioning=approved_two_stage_conditioning(),
+        )
+
+        graph = resolved["graph"]
+        self.assertEqual(len(graph), 21)
+        self.assertEqual(
+            {node_id: node["class_type"] for node_id, node in graph.items()},
+            {
+                "1": "CheckpointLoaderSimple",
+                "2": "EmptyLatentImage",
+                "3": "CLIPTextEncode",
+                "4": "CLIPTextEncode",
+                "5": "KSampler",
+                "6": "VAEDecode",
+                "7": "CLIPTextEncode",
+                "8": "CLIPTextEncode",
+                "9": "SolidMask",
+                "10": "SolidMask",
+                "11": "MaskComposite",
+                "12": "FeatherMask",
+                "13": "MaskComposite",
+                "14": "VAEEncodeForInpaint",
+                "15": "KSampler",
+                "16": "VAEDecode",
+                "17": "ImageCompositeMasked",
+                "18": "MaskToImage",
+                "19": "SaveImage",
+                "20": "SaveImage",
+                "21": "SaveImage",
+            },
+        )
+        self.assertEqual(
+            resolved["output_nodes"],
+            {"base": "19", "mask": "20", "final": "21"},
+        )
+        self.assertEqual(graph["5"]["inputs"]["seed"], 2026072303)
+        self.assertEqual(graph["15"]["inputs"]["seed"], 2026072304)
+        self.assertEqual(graph["2"]["inputs"], {
+            "width": 1280,
+            "height": 720,
+            "batch_size": 1,
+        })
+        self.assertEqual(graph["9"]["inputs"], {
+            "value": 0.0,
+            "width": 1280,
+            "height": 720,
+        })
+        self.assertEqual(graph["10"]["inputs"], {
+            "value": 1.0,
+            "width": 512,
+            "height": 672,
+        })
+        self.assertEqual(
+            graph["11"]["inputs"],
+            {
+                "destination": ["9", 0],
+                "source": ["10", 0],
+                "x": 720,
+                "y": 24,
+                "operation": "add",
+            },
+        )
+        self.assertEqual(
+            graph["17"]["inputs"],
+            {
+                "destination": ["6", 0],
+                "source": ["16", 0],
+                "x": 0,
+                "y": 0,
+                "resize_source": False,
+                "mask": ["13", 0],
+            },
+        )
+        self.assertRegex(resolved["workflow_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(resolved["control_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            graph["3"]["inputs"]["text"],
+            two_stage_parameters()["positive_prompt"],
+        )
+        self.assertEqual(
+            graph["4"]["inputs"]["text"],
+            two_stage_parameters()["negative_prompt"],
+        )
+        self.assertEqual(
+            graph["7"]["inputs"]["text"],
+            approved_two_stage_conditioning()["subject_prompt"],
+        )
+        self.assertEqual(
+            graph["8"]["inputs"]["text"],
+            approved_two_stage_conditioning()["subject_negative_prompt"],
+        )
+        for node_id in ("5", "15"):
+            self.assertEqual(graph[node_id]["inputs"]["steps"], 30)
+            self.assertEqual(graph[node_id]["inputs"]["cfg"], 7.0)
+            self.assertEqual(graph[node_id]["inputs"]["sampler_name"], "dpmpp_2m")
+            self.assertEqual(graph[node_id]["inputs"]["scheduler"], "karras")
+        self.assertEqual(graph["5"]["inputs"]["denoise"], 1.0)
+        self.assertEqual(graph["15"]["inputs"]["denoise"], 0.9)
+        self.assertEqual(
+            workflow_component_bindings(graph),
+            [{
+                "role": "primary_model",
+                "loader_class": "CheckpointLoaderSimple",
+                "loader_input": "ckpt_name",
+                "backend_model_id": SDXL_MODEL,
+            }],
+        )
+
+    def test_two_stage_graph_rejects_every_topology_and_static_drift(self) -> None:
+        mutations = (
+            lambda graph: graph.pop("20"),
+            lambda graph: graph["15"]["inputs"].update(seed=9),
+            lambda graph: graph["17"]["inputs"].update(resize_source=True),
+            lambda graph: graph["13"]["inputs"].update(source=["10", 0]),
+            lambda graph: graph.update({"22": copy.deepcopy(graph["21"])}),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate), self.assertRaisesRegex(
+                (ArtifactError, ValidationError),
+                "invalid_workflow_template|unsafe_comfy_workflow",
+            ):
+                self.load_mutated_two_stage(mutate)
+
+    def test_existing_sdxl_workflow_files_remain_byte_identical(self) -> None:
+        expected = {
+            "sdxl-txt2img-v1.json": (
+                "bc4157aa5f984f341c5f385ee31e4f81fb93e199022e6af60026b2dc9255ae68"
+            ),
+            "sdxl-regional-txt2img-v1.json": (
+                "b371f1d1f2d06c05ebab33c035940e083efddd8153311b101cb1579773b571cd"
+            ),
+        }
+        for filename, digest in expected.items():
+            with self.subTest(filename=filename):
+                encoded = (ROOT / "workflows" / "comfyui" / filename).read_bytes()
+                self.assertEqual(hashlib.sha256(encoded).hexdigest(), digest)
 
     def test_shipped_template_renders_only_bound_parameters(self) -> None:
         resolved = self.registry.resolve(
@@ -255,6 +451,44 @@ class WorkflowTemplateTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValidationError, "unsafe_comfy_workflow"):
             validate_imported_workflow(graph, binding(), [MODEL])
+
+    def test_two_stage_only_nodes_remain_forbidden_in_imported_workflows(self) -> None:
+        cases = {
+            "SolidMask": {"value": 1.0, "width": 512, "height": 512},
+            "MaskComposite": {
+                "destination": ["5", 0],
+                "source": ["5", 0],
+                "x": 0,
+                "y": 0,
+                "operation": "add",
+            },
+            "FeatherMask": {
+                "mask": ["5", 0],
+                "left": 8,
+                "top": 8,
+                "right": 8,
+                "bottom": 8,
+            },
+            "ImageCompositeMasked": {
+                "destination": ["8", 0],
+                "source": ["8", 0],
+                "x": 0,
+                "y": 0,
+                "resize_source": False,
+                "mask": ["5", 0],
+            },
+            "MaskToImage": {"mask": ["5", 0]},
+        }
+        for class_type, inputs in cases.items():
+            with self.subTest(class_type=class_type), self.assertRaisesRegex(
+                ValidationError,
+                "unsafe_comfy_workflow",
+            ):
+                validate_imported_workflow(
+                    graph_with_node("20", class_type, inputs),
+                    binding(),
+                    [MODEL],
+                )
 
     def test_inspect_shipped_regional_template_keeps_reviewed_static_values(self) -> None:
         inspected = self.registry.inspect_shipped(

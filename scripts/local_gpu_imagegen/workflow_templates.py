@@ -18,6 +18,14 @@ from .regional_layout import (
     validate_regional_conditioning,
     validate_regional_layout,
 )
+from .two_stage_layout import (
+    TWO_STAGE_LAYOUT_MODE,
+    TWO_STAGE_TEMPLATE_ID,
+    build_control_identity,
+    derive_subject_seed,
+    validate_two_stage_conditioning,
+    validate_two_stage_layout,
+)
 
 
 SAFE_NODE_INPUTS = {
@@ -63,6 +71,16 @@ REGIONAL_NODE_INPUTS = {
 }
 REGIONAL_NODE_CLASSES = frozenset(REGIONAL_NODE_INPUTS)
 SHIPPED_REGIONAL_NODE_INPUTS = {**SAFE_NODE_INPUTS, **REGIONAL_NODE_INPUTS}
+TWO_STAGE_NODE_INPUTS = {
+    "SolidMask": frozenset({"value", "width", "height"}),
+    "MaskComposite": frozenset({"destination", "source", "x", "y", "operation"}),
+    "FeatherMask": frozenset({"mask", "left", "top", "right", "bottom"}),
+    "ImageCompositeMasked": frozenset({
+        "destination", "source", "x", "y", "resize_source", "mask",
+    }),
+    "MaskToImage": frozenset({"mask"}),
+}
+SHIPPED_TWO_STAGE_NODE_INPUTS = {**SAFE_NODE_INPUTS, **TWO_STAGE_NODE_INPUTS}
 MODEL_LOADER_INPUTS = {
     "CheckpointLoaderSimple": "ckpt_name",
     "UNETLoader": "unet_name",
@@ -128,6 +146,121 @@ MAX_SEED = 2**64 - 1
 TEMPLATE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 IMPORTED_ID_PATTERN = re.compile(r"^imported:([0-9a-f]{64})$")
 
+TWO_STAGE_OUTPUT_NODES = {"base": "19", "mask": "20", "final": "21"}
+TWO_STAGE_BINDINGS = {
+    "model": ["1", "inputs", "ckpt_name"],
+    "positive_prompt": ["3", "inputs", "text"],
+    "negative_prompt": ["4", "inputs", "text"],
+    "seed": ["5", "inputs", "seed"],
+    "steps": ["5", "inputs", "steps"],
+    "guidance_scale": ["5", "inputs", "cfg"],
+    "sampler": ["5", "inputs", "sampler_name"],
+    "scheduler": ["5", "inputs", "scheduler"],
+    "width": ["2", "inputs", "width"],
+    "height": ["2", "inputs", "height"],
+}
+TWO_STAGE_NODE_CLASSES = {
+    "1": "CheckpointLoaderSimple",
+    "2": "EmptyLatentImage",
+    "3": "CLIPTextEncode",
+    "4": "CLIPTextEncode",
+    "5": "KSampler",
+    "6": "VAEDecode",
+    "7": "CLIPTextEncode",
+    "8": "CLIPTextEncode",
+    "9": "SolidMask",
+    "10": "SolidMask",
+    "11": "MaskComposite",
+    "12": "FeatherMask",
+    "13": "MaskComposite",
+    "14": "VAEEncodeForInpaint",
+    "15": "KSampler",
+    "16": "VAEDecode",
+    "17": "ImageCompositeMasked",
+    "18": "MaskToImage",
+    "19": "SaveImage",
+    "20": "SaveImage",
+    "21": "SaveImage",
+}
+TWO_STAGE_EDGES = {
+    ("3", "clip"): ["1", 1],
+    ("4", "clip"): ["1", 1],
+    ("5", "model"): ["1", 0],
+    ("5", "positive"): ["3", 0],
+    ("5", "negative"): ["4", 0],
+    ("5", "latent_image"): ["2", 0],
+    ("6", "samples"): ["5", 0],
+    ("6", "vae"): ["1", 2],
+    ("7", "clip"): ["1", 1],
+    ("8", "clip"): ["1", 1],
+    ("11", "destination"): ["9", 0],
+    ("11", "source"): ["10", 0],
+    ("12", "mask"): ["10", 0],
+    ("13", "destination"): ["9", 0],
+    ("13", "source"): ["12", 0],
+    ("14", "pixels"): ["6", 0],
+    ("14", "vae"): ["1", 2],
+    ("14", "mask"): ["11", 0],
+    ("15", "model"): ["1", 0],
+    ("15", "positive"): ["7", 0],
+    ("15", "negative"): ["8", 0],
+    ("15", "latent_image"): ["14", 0],
+    ("16", "samples"): ["15", 0],
+    ("16", "vae"): ["1", 2],
+    ("17", "destination"): ["6", 0],
+    ("17", "source"): ["16", 0],
+    ("17", "mask"): ["13", 0],
+    ("18", "mask"): ["13", 0],
+    ("19", "images"): ["6", 0],
+    ("20", "images"): ["18", 0],
+    ("21", "images"): ["17", 0],
+}
+TWO_STAGE_TEMPLATE_SCALARS = {
+    ("1", "ckpt_name"): "sd_xl_base_1.0.safetensors",
+    ("2", "width"): 1280,
+    ("2", "height"): 720,
+    ("2", "batch_size"): 1,
+    ("3", "text"): "",
+    ("4", "text"): "",
+    ("5", "seed"): 0,
+    ("5", "steps"): 30,
+    ("5", "cfg"): 7.0,
+    ("5", "sampler_name"): "dpmpp_2m",
+    ("5", "scheduler"): "karras",
+    ("5", "denoise"): 1.0,
+    ("7", "text"): "",
+    ("8", "text"): "",
+    ("9", "value"): 0.0,
+    ("9", "width"): 1280,
+    ("9", "height"): 720,
+    ("10", "value"): 1.0,
+    ("10", "width"): 512,
+    ("10", "height"): 672,
+    ("11", "x"): 720,
+    ("11", "y"): 24,
+    ("11", "operation"): "add",
+    ("12", "left"): 32,
+    ("12", "top"): 32,
+    ("12", "right"): 32,
+    ("12", "bottom"): 32,
+    ("13", "x"): 720,
+    ("13", "y"): 24,
+    ("13", "operation"): "add",
+    ("14", "grow_mask_by"): 8,
+    ("15", "seed"): 1,
+    ("15", "steps"): 30,
+    ("15", "cfg"): 7.0,
+    ("15", "sampler_name"): "dpmpp_2m",
+    ("15", "scheduler"): "karras",
+    ("15", "denoise"): 0.9,
+    ("17", "x"): 0,
+    ("17", "y"): 0,
+    ("17", "resize_source"): False,
+    ("19", "filename_prefix"): "local-gpu-imagegen",
+    ("20", "filename_prefix"): "local-gpu-imagegen",
+    ("21", "filename_prefix"): "local-gpu-imagegen",
+}
+
 
 class WorkflowTemplateRegistry:
     def __init__(self, repository_root: Path, state_dir: Path) -> None:
@@ -144,6 +277,8 @@ class WorkflowTemplateRegistry:
         *,
         regional_layout: object = None,
         regional_conditioning: object = None,
+        two_stage_layout: object = None,
+        two_stage_conditioning: object = None,
     ) -> dict[str, object]:
         if not isinstance(template_id, str):
             raise ValidationError(
@@ -162,12 +297,22 @@ class WorkflowTemplateRegistry:
         )
         layout_mode = template.get("layout_mode")
         if layout_mode is None:
-            if regional_layout is not None or regional_conditioning is not None:
+            if any(value is not None for value in (
+                regional_layout,
+                regional_conditioning,
+                two_stage_layout,
+                two_stage_conditioning,
+            )):
                 raise ValidationError(
                     "invalid_regional_conditioning",
-                    "Standard workflows reject regional data.",
+                    "Standard workflows reject layout conditioning data.",
                 )
         elif layout_mode == LAYOUT_MODE:
+            if two_stage_layout is not None or two_stage_conditioning is not None:
+                raise ValidationError(
+                    "invalid_two_stage_conditioning",
+                    "Regional workflows reject two-stage data.",
+                )
             layout = validate_regional_layout(regional_layout)
             conditioning = validate_regional_conditioning(regional_conditioning)
             _bind_regional_values(
@@ -176,13 +321,40 @@ class WorkflowTemplateRegistry:
                 layout,
                 conditioning,
             )
+        elif layout_mode == TWO_STAGE_LAYOUT_MODE:
+            if regional_layout is not None or regional_conditioning is not None:
+                raise ValidationError(
+                    "invalid_regional_conditioning",
+                    "Two-stage workflows reject regional data.",
+                )
+            layout = validate_two_stage_layout(two_stage_layout)
+            conditioning = validate_two_stage_conditioning(two_stage_conditioning)
+            canvas = layout["canvas"]
+            if (
+                parameters.get("width") != canvas["width"]
+                or parameters.get("height") != canvas["height"]
+            ):
+                raise ValidationError(
+                    "invalid_workflow_parameters",
+                    "Two-stage parameters must match the confirmed canvas.",
+                )
+            _bind_two_stage_values(graph, parameters, layout, conditioning)
         else:
             raise ArtifactError(
                 "invalid_workflow_template",
                 "Reviewed layout mode is unsupported.",
             )
-        self._validate_rendered(template, graph, normalized_model)
-        return _rendered_result(template, graph)
+        self._validate_rendered(
+            template,
+            graph,
+            normalized_model,
+            two_stage_layout=layout if layout_mode == TWO_STAGE_LAYOUT_MODE else None,
+        )
+        return _rendered_result(
+            template,
+            graph,
+            two_stage_layout=layout if layout_mode == TWO_STAGE_LAYOUT_MODE else None,
+        )
 
     def inspect_shipped(
         self,
@@ -227,10 +399,19 @@ class WorkflowTemplateRegistry:
         template: dict[str, object],
         graph: dict[str, object],
         normalized_model: str,
+        *,
+        two_stage_layout: object = None,
     ) -> None:
+        if template.get("layout_mode") == TWO_STAGE_LAYOUT_MODE:
+            _validate_rendered_two_stage_workflow(
+                graph,
+                normalized_model,
+                two_stage_layout=two_stage_layout,
+            )
+            return
         validator = (
             _validate_reviewed_regional_workflow
-            if template.get("layout_mode")
+            if template.get("layout_mode") == LAYOUT_MODE
             else validate_imported_workflow
         )
         validator(
@@ -326,6 +507,8 @@ class WorkflowTemplateRegistry:
 def _rendered_result(
     template: dict[str, object],
     graph: dict[str, object],
+    *,
+    two_stage_layout: object = None,
 ) -> dict[str, object]:
     families = template["model_families"]
     model_family = "sd15" if "sd15" in families else families[0]
@@ -335,9 +518,18 @@ def _rendered_result(
         "workflow_sha256": template["workflow_sha256"],
         "operation": template["operation"],
         "model_family": model_family,
-        "output_node": template["output_node"],
         "graph": graph,
     }
+    if template.get("layout_mode") == TWO_STAGE_LAYOUT_MODE:
+        result["output_nodes"] = copy.deepcopy(template["output_nodes"])
+        if two_stage_layout is not None:
+            result["control_sha256"] = build_control_identity(
+                two_stage_layout,
+                template["workflow_sha256"],
+                template["stage_contract"],
+            )
+    else:
+        result["output_node"] = template["output_node"]
     if template.get("layout_mode") is not None:
         result["layout_mode"] = template["layout_mode"]
     return result
@@ -367,6 +559,40 @@ def _bind_regional_values(
     }
     for key, value in values.items():
         _set_binding(graph, bindings[key], value)
+
+
+def _bind_two_stage_values(
+    graph: dict[str, object],
+    parameters: dict[str, object],
+    layout: dict[str, object],
+    conditioning: dict[str, object],
+) -> None:
+    canvas = layout["canvas"]
+    subject = layout["subject_mask_rect"]
+    graph["2"]["inputs"].update(width=canvas["width"], height=canvas["height"])
+    graph["9"]["inputs"].update(width=canvas["width"], height=canvas["height"])
+    graph["10"]["inputs"].update(width=subject["width"], height=subject["height"])
+    for node_id in ("11", "13"):
+        graph[node_id]["inputs"].update(x=subject["x"], y=subject["y"])
+    graph["12"]["inputs"].update(
+        left=layout["feather_pixels"],
+        top=layout["feather_pixels"],
+        right=layout["feather_pixels"],
+        bottom=layout["feather_pixels"],
+    )
+    graph["14"]["inputs"]["grow_mask_by"] = layout["vae_grow_mask_by"]
+    graph["7"]["inputs"]["text"] = conditioning["subject_prompt"]
+    graph["8"]["inputs"]["text"] = conditioning["subject_negative_prompt"]
+    graph["15"]["inputs"]["seed"] = derive_subject_seed(parameters["seed"])
+    for field, parameter in (
+        ("steps", "steps"),
+        ("cfg", "guidance_scale"),
+        ("sampler_name", "sampler"),
+        ("scheduler", "scheduler"),
+    ):
+        graph["15"]["inputs"][field] = copy.deepcopy(parameters[parameter])
+    graph["5"]["inputs"]["denoise"] = 1.0
+    graph["15"]["inputs"]["denoise"] = conditioning["subject_denoise"]
 
 
 def _validate_regional_bindings(
@@ -547,6 +773,122 @@ def _validate_reviewed_regional_workflow(
     )
 
 
+def _validate_two_stage_graph(
+    graph: object,
+    available_models: Collection[str],
+    *,
+    template_scalars: bool,
+) -> dict[str, object]:
+    if not isinstance(graph, dict) or set(graph) != set(TWO_STAGE_NODE_CLASSES):
+        raise _unsafe("Two-stage workflow must contain the exact reviewed node IDs.")
+    normalized = copy.deepcopy(graph)
+    for node_id, class_type in TWO_STAGE_NODE_CLASSES.items():
+        node = normalized.get(node_id)
+        if (
+            not isinstance(node, dict)
+            or set(node) != {"class_type", "inputs"}
+            or node.get("class_type") != class_type
+            or not isinstance(node.get("inputs"), dict)
+            or set(node["inputs"]) != SHIPPED_TWO_STAGE_NODE_INPUTS[class_type]
+        ):
+            raise _unsafe("Two-stage workflow node contract drifted.", node_id)
+    actual_edges = {
+        (node_id, field): value
+        for node_id, node in normalized.items()
+        for field, value in node["inputs"].items()
+        if isinstance(value, list)
+    }
+    if actual_edges != TWO_STAGE_EDGES:
+        raise _unsafe("Two-stage workflow edges drifted.")
+    if template_scalars:
+        actual_scalars = {
+            (node_id, field): value
+            for node_id, node in normalized.items()
+            for field, value in node["inputs"].items()
+            if not isinstance(value, list)
+        }
+        if actual_scalars != TWO_STAGE_TEMPLATE_SCALARS:
+            raise _unsafe("Two-stage workflow template scalars drifted.")
+    _validate_edges(normalized)
+    _enforce_resource_limits(normalized)
+    model_names = {
+        _validate_model_name(item)
+        for item in available_models
+        if isinstance(item, str)
+    }
+    if (
+        isinstance(available_models, (str, bytes))
+        or not isinstance(available_models, Collection)
+        or len(model_names) != len(available_models)
+    ):
+        raise _unsafe("Available model names are invalid or duplicated.")
+    _enforce_model_names(normalized, model_names)
+    return normalized
+
+
+def _validate_rendered_two_stage_workflow(
+    graph: object,
+    normalized_model: str,
+    *,
+    two_stage_layout: object = None,
+) -> None:
+    normalized = _validate_two_stage_graph(
+        graph,
+        [normalized_model],
+        template_scalars=False,
+    )
+    inputs = {node_id: node["inputs"] for node_id, node in normalized.items()}
+    static_values = {
+        ("2", "batch_size"): 1,
+        ("5", "denoise"): 1.0,
+        ("9", "value"): 0.0,
+        ("10", "value"): 1.0,
+        ("11", "operation"): "add",
+        ("13", "operation"): "add",
+        ("17", "x"): 0,
+        ("17", "y"): 0,
+        ("17", "resize_source"): False,
+        ("19", "filename_prefix"): "local-gpu-imagegen",
+        ("20", "filename_prefix"): "local-gpu-imagegen",
+        ("21", "filename_prefix"): "local-gpu-imagegen",
+    }
+    if any(
+        inputs[node_id][field] != expected
+        for (node_id, field), expected in static_values.items()
+    ):
+        raise _unsafe("Two-stage workflow static values drifted.")
+    if (
+        inputs["9"]["width"] != inputs["2"]["width"]
+        or inputs["9"]["height"] != inputs["2"]["height"]
+        or inputs["11"]["x"] != inputs["13"]["x"]
+        or inputs["11"]["y"] != inputs["13"]["y"]
+        or len({
+            inputs["12"][side]
+            for side in ("left", "top", "right", "bottom")
+        }) != 1
+        or inputs["15"]["seed"] != derive_subject_seed(inputs["5"]["seed"])
+        or any(
+            inputs["15"][field] != inputs["5"][field]
+            for field in ("steps", "cfg", "sampler_name", "scheduler")
+        )
+    ):
+        raise _unsafe("Two-stage workflow bound values are inconsistent.")
+    if two_stage_layout is not None:
+        layout = validate_two_stage_layout(two_stage_layout)
+        subject = layout["subject_mask_rect"]
+        if (
+            inputs["2"]["width"] != layout["canvas"]["width"]
+            or inputs["2"]["height"] != layout["canvas"]["height"]
+            or inputs["10"]["width"] != subject["width"]
+            or inputs["10"]["height"] != subject["height"]
+            or inputs["11"]["x"] != subject["x"]
+            or inputs["11"]["y"] != subject["y"]
+            or inputs["12"]["left"] != layout["feather_pixels"]
+            or inputs["14"]["grow_mask_by"] != layout["vae_grow_mask_by"]
+        ):
+            raise _unsafe("Two-stage workflow layout bindings drifted.")
+
+
 def _validate_workflow(
     graph: object,
     binding: object,
@@ -605,6 +947,8 @@ def _validate_workflow(
 
 
 def _validate_shipped_document(value: object) -> dict[str, object]:
+    if isinstance(value, dict) and value.get("template_id") == TWO_STAGE_TEMPLATE_ID:
+        return _validate_two_stage_shipped_document(value)
     standard_fields = {
         "schema_version",
         "template_id",
@@ -714,6 +1058,64 @@ def _validate_shipped_document(value: object) -> dict[str, object]:
     }
     if is_regional:
         document["regional_bindings"] = regional_bindings
+    document["workflow_sha256"] = _canonical_hash(value)
+    return document
+
+
+def _validate_two_stage_shipped_document(value: object) -> dict[str, object]:
+    fields = {
+        "schema_version",
+        "template_id",
+        "template_version",
+        "operation",
+        "model_families",
+        "layout_mode",
+        "stage_contract",
+        "allowed_node_classes",
+        "output_nodes",
+        "bindings",
+        "graph",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ArtifactError(
+            "invalid_workflow_template",
+            "Reviewed two-stage workflow fields are invalid.",
+        )
+    allowed = value["allowed_node_classes"]
+    graph = value["graph"]
+    if (
+        value["schema_version"] != 1
+        or value["template_id"] != TWO_STAGE_TEMPLATE_ID
+        or value["template_version"] != 1
+        or value["operation"] != "txt2img"
+        or value["model_families"] != ["sdxl"]
+        or value["layout_mode"] != TWO_STAGE_LAYOUT_MODE
+        or value["stage_contract"] != "base-subject-v1"
+        or value["output_nodes"] != TWO_STAGE_OUTPUT_NODES
+        or value["bindings"] != TWO_STAGE_BINDINGS
+        or not isinstance(allowed, list)
+        or any(not isinstance(item, str) for item in allowed)
+        or len(allowed) != len(set(allowed))
+        or set(allowed) != set(TWO_STAGE_NODE_CLASSES.values())
+        or any(item not in SHIPPED_TWO_STAGE_NODE_INPUTS for item in allowed)
+    ):
+        raise ArtifactError(
+            "invalid_workflow_template",
+            "Reviewed two-stage workflow metadata or bindings are invalid.",
+        )
+    try:
+        normalized_graph = _validate_two_stage_graph(
+            graph,
+            _primary_model_names(graph),
+            template_scalars=True,
+        )
+    except (ValidationError, ValueError) as error:
+        raise ArtifactError(
+            "invalid_workflow_template",
+            "Reviewed two-stage workflow graph is unsafe.",
+        ) from error
+    document = copy.deepcopy(value)
+    document["graph"] = normalized_graph
     document["workflow_sha256"] = _canonical_hash(value)
     return document
 

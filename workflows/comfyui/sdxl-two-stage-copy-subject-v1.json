@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "template_id": "sdxl-two-stage-copy-subject",
+  "template_version": 1,
+  "operation": "txt2img",
+  "model_families": [
+    "sdxl"
+  ],
+  "layout_mode": "copy-subject-two-stage-v1",
+  "stage_contract": "base-subject-v1",
+  "allowed_node_classes": [
+    "CheckpointLoaderSimple",
+    "EmptyLatentImage",
+    "CLIPTextEncode",
+    "KSampler",
+    "VAEDecode",
+    "SolidMask",
+    "MaskComposite",
+    "FeatherMask",
+    "VAEEncodeForInpaint",
+    "ImageCompositeMasked",
+    "MaskToImage",
+    "SaveImage"
+  ],
+  "output_nodes": {
+    "base": "19",
+    "mask": "20",
+    "final": "21"
+  },
+  "bindings": {
+    "model": ["1", "inputs", "ckpt_name"],
+    "positive_prompt": ["3", "inputs", "text"],
+    "negative_prompt": ["4", "inputs", "text"],
+    "seed": ["5", "inputs", "seed"],
+    "steps": ["5", "inputs", "steps"],
+    "guidance_scale": ["5", "inputs", "cfg"],
+    "sampler": ["5", "inputs", "sampler_name"],
+    "scheduler": ["5", "inputs", "scheduler"],
+    "width": ["2", "inputs", "width"],
+    "height": ["2", "inputs", "height"]
+  },
+  "graph": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"}
+    },
+    "2": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {"width": 1280, "height": 720, "batch_size": 1}
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {"text": "", "clip": ["1", 1]}
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {"text": "", "clip": ["1", 1]}
+    },
+    "5": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 0,
+        "steps": 30,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "denoise": 1.0,
+        "model": ["1", 0],
+        "positive": ["3", 0],
+        "negative": ["4", 0],
+        "latent_image": ["2", 0]
+      }
+    },
+    "6": {
+      "class_type": "VAEDecode",
+      "inputs": {"samples": ["5", 0], "vae": ["1", 2]}
+    },
+    "7": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {"text": "", "clip": ["1", 1]}
+    },
+    "8": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {"text": "", "clip": ["1", 1]}
+    },
+    "9": {
+      "class_type": "SolidMask",
+      "inputs": {"value": 0.0, "width": 1280, "height": 720}
+    },
+    "10": {
+      "class_type": "SolidMask",
+      "inputs": {"value": 1.0, "width": 512, "height": 672}
+    },
+    "11": {
+      "class_type": "MaskComposite",
+      "inputs": {
+        "destination": ["9", 0],
+        "source": ["10", 0],
+        "x": 720,
+        "y": 24,
+        "operation": "add"
+      }
+    },
+    "12": {
+      "class_type": "FeatherMask",
+      "inputs": {"mask": ["10", 0], "left": 32, "top": 32, "right": 32, "bottom": 32}
+    },
+    "13": {
+      "class_type": "MaskComposite",
+      "inputs": {
+        "destination": ["9", 0],
+        "source": ["12", 0],
+        "x": 720,
+        "y": 24,
+        "operation": "add"
+      }
+    },
+    "14": {
+      "class_type": "VAEEncodeForInpaint",
+      "inputs": {
+        "pixels": ["6", 0],
+        "vae": ["1", 2],
+        "mask": ["11", 0],
+        "grow_mask_by": 8
+      }
+    },
+    "15": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 1,
+        "steps": 30,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "denoise": 0.9,
+        "model": ["1", 0],
+        "positive": ["7", 0],
+        "negative": ["8", 0],
+        "latent_image": ["14", 0]
+      }
+    },
+    "16": {
+      "class_type": "VAEDecode",
+      "inputs": {"samples": ["15", 0], "vae": ["1", 2]}
+    },
+    "17": {
+      "class_type": "ImageCompositeMasked",
+      "inputs": {
+        "destination": ["6", 0],
+        "source": ["16", 0],
+        "x": 0,
+        "y": 0,
+        "resize_source": false,
+        "mask": ["13", 0]
+      }
+    },
+    "18": {
+      "class_type": "MaskToImage",
+      "inputs": {"mask": ["13", 0]}
+    },
+    "19": {
+      "class_type": "SaveImage",
+      "inputs": {"filename_prefix": "local-gpu-imagegen", "images": ["6", 0]}
+    },
+    "20": {
+      "class_type": "SaveImage",
+      "inputs": {"filename_prefix": "local-gpu-imagegen", "images": ["18", 0]}
+    },
+    "21": {
+      "class_type": "SaveImage",
+      "inputs": {"filename_prefix": "local-gpu-imagegen", "images": ["17", 0]}
+    }
+  }
+}
