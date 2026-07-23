@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.errors import ValidationError  # noqa: E402
+from local_gpu_imagegen.two_stage_layout import TWO_STAGE_TEMPLATE_ID  # noqa: E402
 from local_gpu_imagegen.visual_review import (
     finalization_candidate,
     require_finalization_confirmation,
@@ -48,10 +49,23 @@ def passing_checks(*, prominent_human: bool = True) -> dict[str, object]:
     }
 
 
+def passing_stage_checks() -> dict[str, object]:
+    return {
+        "base_copy_space": {"status": "pass", "observation": "Left copy space is usable."},
+        "base_subject_absent": {"status": "pass", "observation": "The subject is absent from base."},
+        "final_subject_inside_mask": {"status": "pass", "observation": "The subject stays inside the mask."},
+        "final_safe_margins": {"status": "pass", "observation": "Safe margins remain visible."},
+        "final_forbidden_content": {"status": "pass", "observation": "Forbidden content is absent."},
+        "feather_transition": {"status": "pass", "observation": "The transition is coherent."},
+        "pixel_preservation": {"status": "pass", "observation": "Machine report records zero mismatches."},
+    }
+
+
 def eligible_manifest(
     *,
     image_sha256: str = "a" * 64,
     visual_checks: dict[str, object] | None = None,
+    two_stage: bool = False,
 ) -> dict[str, object]:
     review: dict[str, object] = {
         "round_number": 1,
@@ -63,7 +77,7 @@ def eligible_manifest(
     }
     if visual_checks is not None:
         review["visual_checks"] = copy.deepcopy(visual_checks)
-    return {
+    manifest = {
         "run_id": "run-1",
         "request": {
             "merged_profile": {
@@ -84,9 +98,34 @@ def eligible_manifest(
         }],
         "reviews": [review],
     }
+    if two_stage:
+        manifest["request"]["workflow_template_id"] = TWO_STAGE_TEMPLATE_ID
+        manifest["rounds"][0]["pixel_preservation"] = {
+            "checked_pixels": 100,
+            "mismatched_pixels": 0,
+            "copy_mismatched_pixels": 0,
+        }
+        review["stage_checks"] = passing_stage_checks()
+    return manifest
 
 
 class VisualReviewTests(unittest.TestCase):
+    def test_two_stage_eligibility_requires_every_stage_check_to_pass(self) -> None:
+        manifest = eligible_manifest(visual_checks=passing_checks(), two_stage=True)
+        self.assertTrue(review_is_eligible(manifest, manifest["reviews"][0]))
+
+        for name in passing_stage_checks():
+            changed = copy.deepcopy(manifest)
+            changed["reviews"][0]["stage_checks"][name]["status"] = "uncertain"
+            with self.subTest(name=name):
+                self.assertFalse(review_is_eligible(changed, changed["reviews"][0]))
+
+    def test_two_stage_eligibility_requires_recorded_zero_pixel_mismatches(self) -> None:
+        manifest = eligible_manifest(visual_checks=passing_checks(), two_stage=True)
+        manifest["rounds"][0]["pixel_preservation"]["mismatched_pixels"] = 1
+
+        self.assertFalse(review_is_eligible(manifest, manifest["reviews"][0]))
+
     def test_visual_checks_require_exact_fields_and_full_resolution_true(self) -> None:
         cases = ({}, {**passing_checks(), "full_resolution_inspected": False})
         for value in cases:

@@ -4,6 +4,7 @@ import copy
 import re
 
 from .errors import ValidationError
+from .two_stage_layout import TWO_STAGE_TEMPLATE_ID
 
 
 CHECK_NAMES = (
@@ -14,6 +15,16 @@ CHECK_NAMES = (
 )
 ANATOMY_CHECKS = CHECK_NAMES[:3]
 STATUSES = frozenset({"pass", "fail", "uncertain", "not_applicable"})
+STAGE_CHECK_NAMES = (
+    "base_copy_space",
+    "base_subject_absent",
+    "final_subject_inside_mask",
+    "final_safe_margins",
+    "final_forbidden_content",
+    "feather_transition",
+    "pixel_preservation",
+)
+STAGE_STATUSES = frozenset({"pass", "fail", "uncertain"})
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
@@ -88,10 +99,97 @@ def visual_checks_pass(value: object) -> bool:
     )
 
 
+def validate_stage_checks(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != set(STAGE_CHECK_NAMES):
+        raise ValidationError(
+            "invalid_stage_checks",
+            "Stage checks do not match the required two-stage structure.",
+        )
+    result = copy.deepcopy(value)
+    for name in STAGE_CHECK_NAMES:
+        check = value.get(name)
+        if not isinstance(check, dict) or set(check) != {"status", "observation"}:
+            raise ValidationError(
+                "invalid_stage_checks",
+                f"Stage check {name} must contain only status and observation.",
+            )
+        observation = check.get("observation")
+        if (
+            check.get("status") not in STAGE_STATUSES
+            or not isinstance(observation, str)
+            or not observation.strip()
+            or len(observation.strip()) > 500
+        ):
+            raise ValidationError(
+                "invalid_stage_checks",
+                f"Stage check {name} has an invalid status or observation.",
+            )
+    return result
+
+
+def stage_checks_pass(value: object) -> bool:
+    try:
+        checks = validate_stage_checks(value)
+    except ValidationError:
+        return False
+    return all(checks[name]["status"] == "pass" for name in STAGE_CHECK_NAMES)
+
+
+def is_two_stage_manifest(manifest: dict[str, object]) -> bool:
+    request = manifest.get("request")
+    return (
+        isinstance(request, dict)
+        and request.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID
+    )
+
+
+def pixel_preservation_passes(
+    manifest: dict[str, object],
+    round_number: object,
+) -> bool:
+    rounds = manifest.get("rounds")
+    if not isinstance(rounds, list):
+        return False
+    selected = next(
+        (
+            value
+            for value in rounds
+            if isinstance(value, dict) and value.get("round_number") == round_number
+        ),
+        None,
+    )
+    report = selected.get("pixel_preservation") if isinstance(selected, dict) else None
+    return (
+        isinstance(report, dict)
+        and type(report.get("checked_pixels")) is int
+        and report["checked_pixels"] > 0
+        and type(report.get("mismatched_pixels")) is int
+        and report["mismatched_pixels"] == 0
+        and type(report.get("copy_mismatched_pixels")) is int
+        and report["copy_mismatched_pixels"] == 0
+    )
+
+
+def two_stage_review_passes(
+    manifest: dict[str, object],
+    review: dict[str, object],
+    round_number: object | None = None,
+) -> bool:
+    if not is_two_stage_manifest(manifest):
+        return "stage_checks" not in review
+    selected_round = review.get("round_number") if round_number is None else round_number
+    return (
+        stage_checks_pass(review.get("stage_checks"))
+        and pixel_preservation_passes(manifest, selected_round)
+    )
+
+
 def review_is_eligible(manifest: dict[str, object], review: dict[str, object]) -> bool:
     if review.get("next_action") != "finalize":
         return False
     if not visual_checks_pass(review.get("visual_checks")):
+        return False
+    if not two_stage_review_passes(manifest, review):
         return False
 
     failures = review.get("hard_failures")

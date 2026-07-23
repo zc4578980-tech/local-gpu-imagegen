@@ -2,6 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://local-gpu-imagegen.invalid/schemas/run-evidence.schema.json",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {"not": {"required": ["two_stage"]}},
+      "if": {
+        "properties": {
+          "route": {
+            "properties": {"workflow_template_id": {"const": "sdxl-two-stage-copy-subject"}},
+            "required": ["workflow_template_id"]
+          }
+        },
+        "required": ["route"]
+      },
+      "then": {"required": ["two_stage"]}
+    }
+  ],
   "properties": {
     "backend": {"type": "object"},
     "brief_id": {"minLength": 1, "type": "string"},
@@ -17,6 +32,16 @@
     "quality_status": {"const": "accepted"},
     "route": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {"not": {"required": ["control_sha256"]}},
+          "if": {
+            "properties": {"workflow_template_id": {"const": "sdxl-two-stage-copy-subject"}},
+            "required": ["workflow_template_id"]
+          },
+          "then": {"required": ["control_sha256"]}
+        }
+      ],
       "properties": {
         "authorization_scope": {"const": "public_evidence"},
         "backend": {"enum": ["webui", "diffusers", "comfyui"], "type": "string"},
@@ -63,6 +88,7 @@
           ]
         },
         "component_bundle_sha256": {"pattern": "^[0-9a-f]{64}$", "type": ["string", "null"]},
+        "control_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
         "identity_strength": {"const": "cryptographic"},
         "model_id": {"minLength": 1, "type": "string"},
         "prompt_compiler_id": {"minLength": 1, "type": "string"},
@@ -78,9 +104,62 @@
     "schema_version": {"const": 1},
     "selected_round": {"maximum": 3, "minimum": 1, "type": "integer"},
     "started_at": {"format": "date-time", "type": "string"},
-    "style": {"type": ["string", "null"]}
+    "style": {"type": ["string", "null"]},
+    "two_stage": {
+      "additionalProperties": false,
+      "properties": {
+        "base": {"$ref": "#/$defs/stageArtifact"},
+        "control_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "final": {"$ref": "#/$defs/stageArtifact"},
+        "mask": {"$ref": "#/$defs/stageArtifact"},
+        "pixel_preservation": {
+          "additionalProperties": false,
+          "properties": {
+            "checked_pixels": {"minimum": 1, "type": "integer"},
+            "copy_mismatched_pixels": {"const": 0},
+            "mismatched_pixels": {"const": 0},
+            "protected_rect": {
+              "additionalProperties": false,
+              "properties": {
+                "height": {"minimum": 1, "type": "integer"},
+                "width": {"minimum": 1, "type": "integer"},
+                "x": {"minimum": 0, "type": "integer"},
+                "y": {"minimum": 0, "type": "integer"}
+              },
+              "required": ["x", "y", "width", "height"],
+              "type": "object"
+            }
+          },
+          "required": ["protected_rect", "checked_pixels", "mismatched_pixels", "copy_mismatched_pixels"],
+          "type": "object"
+        },
+        "stage_budget": {
+          "additionalProperties": false,
+          "properties": {
+            "consumed": {"minimum": 2, "type": "integer"},
+            "maximum": {"minimum": 2, "type": "integer"}
+          },
+          "required": ["maximum", "consumed"],
+          "type": "object"
+        },
+        "subject_seed": {"maximum": 18446744073709551615, "minimum": 0, "type": "integer"}
+      },
+      "required": ["base", "mask", "final", "control_sha256", "subject_seed", "stage_budget", "pixel_preservation"],
+      "type": "object"
+    }
   },
   "required": ["schema_version", "evidence_class", "brief_id", "run_id", "host", "profile", "style", "backend", "model", "route", "environment", "started_at", "completed_at", "files", "selected_round", "quality_status", "known_limitations", "decision_summary"],
   "title": "Local GPU Imagegen run evidence",
-  "type": "object"
+  "type": "object",
+  "$defs": {
+    "stageArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {"minLength": 1, "type": "string"},
+        "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["path", "sha256"],
+      "type": "object"
+    }
+  }
 }

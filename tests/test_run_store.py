@@ -68,6 +68,18 @@ def visual_checks(*, limb_status: str = "pass") -> dict[str, object]:
     }
 
 
+def passing_stage_checks() -> dict[str, object]:
+    return {
+        "base_copy_space": {"status": "pass", "observation": "Left copy space is usable."},
+        "base_subject_absent": {"status": "pass", "observation": "The subject is absent from base."},
+        "final_subject_inside_mask": {"status": "pass", "observation": "The subject stays inside the mask."},
+        "final_safe_margins": {"status": "pass", "observation": "Safe margins remain visible."},
+        "final_forbidden_content": {"status": "pass", "observation": "Forbidden content is absent."},
+        "feather_transition": {"status": "pass", "observation": "The transition is coherent."},
+        "pixel_preservation": {"status": "pass", "observation": "Machine report records zero mismatches."},
+    }
+
+
 def replace_with_directory_alias(alias: Path, target: Path) -> None:
     shutil.rmtree(alias)
     if os.name == "nt":
@@ -579,6 +591,39 @@ class RunStoreTransitionTests(unittest.TestCase):
             "protected_rect": {"x": 0, "y": 0, "width": 576, "height": 720},
             "checked_pixels": 552960,
             "mismatched_pixels": 0,
+            "copy_mismatched_pixels": 0,
+        }
+
+    def completed_two_stage_round(
+        self,
+        *,
+        mismatched_pixels: int = 0,
+        key: str = "two-stage-review",
+    ) -> str:
+        run_id, handle = self.started_two_stage_attempt(key=key)
+        base, mask, final = self.two_stage_artifacts(run_id)
+        self.store.mark_attempt_artifacts(
+            handle,
+            base,
+            mask,
+            final,
+            self.two_stage_backend_result(),
+        )
+        pixel_report = self.pixel_preservation()
+        pixel_report["mismatched_pixels"] = mismatched_pixels
+        self.store.complete_attempt(handle, {"pixel_preservation": pixel_report})
+        return run_id
+
+    @staticmethod
+    def two_stage_review(*, next_action: str = "finalize") -> dict[str, object]:
+        return {
+            "scores": {},
+            "hard_failures": [],
+            "critique": "Both stages were inspected at full resolution.",
+            "constraint_results": {},
+            "visual_checks": visual_checks(),
+            "stage_checks": passing_stage_checks(),
+            "next_action": next_action,
         }
 
     def assert_partial_rejection_is_atomic(
@@ -885,6 +930,63 @@ class RunStoreTransitionTests(unittest.TestCase):
             ):
                 self.store.finalize(run_id, 1, "Supporting artifact must not finalize.")
             self.assertEqual(self.store.get(run_id), before)
+
+    def test_two_stage_review_requires_exact_stage_checks(self) -> None:
+        run_id = self.completed_two_stage_round(key="stage-checks-valid")
+        try:
+            reviewed = self.store.record_review(run_id, 1, self.two_stage_review())
+        except ValidationError as error:
+            self.fail(f"Exact two-stage review should be accepted: {error}")
+        self.assertEqual(reviewed["reviews"][0]["stage_checks"], passing_stage_checks())
+
+        other_run_id = self.completed_two_stage_round(key="stage-checks-missing")
+        incomplete = self.two_stage_review()
+        del incomplete["stage_checks"]["pixel_preservation"]
+        with self.assertRaisesRegex(ValidationError, "invalid_stage_checks"):
+            self.store.record_review(other_run_id, 1, incomplete)
+
+    def test_standard_review_rejects_stage_checks_and_keeps_old_schema(self) -> None:
+        self.complete_initial()
+        with_stage_checks = self.review_value(next_action="finalize")
+        with_stage_checks["stage_checks"] = passing_stage_checks()
+        with self.assertRaisesRegex(ValidationError, "invalid_review"):
+            self.store.record_review(self.manifest["run_id"], 1, with_stage_checks)
+
+        reviewed = self.store.record_review(
+            self.manifest["run_id"],
+            1,
+            self.review_value(next_action="finalize"),
+        )
+        self.assertNotIn("stage_checks", reviewed["reviews"][0])
+
+    def test_failed_or_uncertain_stage_check_cannot_request_finalization(self) -> None:
+        for index, status in enumerate(("fail", "uncertain"), start=1):
+            run_id = self.completed_two_stage_round(key=f"stage-check-{status}-{index}")
+            review = self.two_stage_review()
+            review["stage_checks"]["final_safe_margins"]["status"] = status
+            with self.subTest(status=status), self.assertRaisesRegex(
+                ValidationError,
+                "stage_checks_require_revision",
+            ):
+                self.store.record_review(run_id, 1, review)
+
+    def test_two_stage_review_and_finalization_require_zero_pixel_mismatches(self) -> None:
+        run_id = self.completed_two_stage_round(
+            mismatched_pixels=1,
+            key="stage-check-nonzero-pixels",
+        )
+        with self.assertRaisesRegex(ValidationError, "stage_checks_require_revision"):
+            self.store.record_review(run_id, 1, self.two_stage_review())
+
+        clean_run_id = self.completed_two_stage_round(key="stage-check-finalization-recheck")
+        self.store.record_review(clean_run_id, 1, self.two_stage_review())
+
+        def corrupt_pixel_report(manifest: dict[str, object]) -> None:
+            manifest["rounds"][0]["pixel_preservation"]["mismatched_pixels"] = 1
+
+        self.store.update(clean_run_id, corrupt_pixel_report)
+        with self.assertRaisesRegex(StateError, "two_stage_finalization_blocked"):
+            self.store.finalize(clean_run_id, 1, "Pixel evidence changed after review.")
 
     def test_intermediate_cleanup_prunes_nested_stage_and_mask_paths(self) -> None:
         run_id, handle = self.started_two_stage_attempt()

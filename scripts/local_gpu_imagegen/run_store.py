@@ -21,6 +21,9 @@ from .two_stage_layout import TWO_STAGE_TEMPLATE_ID, derive_subject_seed
 from .visual_review import (
     require_finalization_confirmation,
     review_is_eligible,
+    stage_checks_pass,
+    two_stage_review_passes,
+    validate_stage_checks,
     validate_visual_checks,
     visual_checks_pass,
 )
@@ -1314,6 +1317,9 @@ class RunStore:
         child_run = isinstance(manifest.get("parent"), dict)
         if child_run:
             required_fields.add("preservation_results")
+        two_stage_run = self._is_two_stage_manifest(manifest)
+        if two_stage_run:
+            required_fields.add("stage_checks")
         if set(review) != required_fields:
             raise ValidationError("invalid_review", "Review fields do not match the required structure.")
         if not isinstance(round_number, int) or isinstance(round_number, bool):
@@ -1369,6 +1375,16 @@ class RunStore:
                 "visual_checks_require_revision",
                 "Failed or uncertain visual checks cannot request finalization.",
             )
+        if two_stage_run:
+            stage_checks = validate_stage_checks(review.get("stage_checks"))
+            if review.get("next_action") == "finalize" and (
+                not stage_checks_pass(stage_checks)
+                or not two_stage_review_passes(manifest, review, round_number)
+            ):
+                raise ValidationError(
+                    "stage_checks_require_revision",
+                    "Failed, uncertain, or nonzero pixel stage checks cannot request finalization.",
+                )
 
         constraints = run_request.get("constraints", {})
         results = review.get("constraint_results")
@@ -1696,6 +1712,11 @@ class RunStore:
         if review is None:
             raise StateError("round_requires_review", "Selected round must be reviewed before finalization.")
         image = self._finalizable_round_image(manifest, selected)
+        if self._is_two_stage_manifest(manifest) and not review_is_eligible(manifest, review):
+            raise StateError(
+                "two_stage_finalization_blocked",
+                "Two-stage finalization requires an eligible review and zero pixel mismatches.",
+            )
         final: dict[str, object] = {
             "round_number": round_number,
             "summary": summary.strip(),

@@ -12,6 +12,7 @@ FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "acceptance" / "v1
 MODEL_SHA256 = "a" * 64
 MODEL_ID = "approved-local-model"
 TIMESTAMP = "2026-07-21T12:00:00Z"
+TWO_STAGE_TEMPLATE_ID = "sdxl-two-stage-copy-subject"
 
 
 def public_route() -> dict[str, object]:
@@ -71,6 +72,18 @@ def png_bytes(width: int = 2, height: int = 2) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(scanlines)) + _chunk(b"IEND", b"")
 
 
+def rgb_png_bytes(width: int, height: int, pixels: bytes) -> bytes:
+    if len(pixels) != width * height * 3:
+        raise ValueError("RGB fixture byte count does not match dimensions")
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    row_size = width * 3
+    scanlines = b"".join(
+        b"\x00" + pixels[offset:offset + row_size]
+        for offset in range(0, len(pixels), row_size)
+    )
+    return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(scanlines)) + _chunk(b"IEND", b"")
+
+
 def jpeg_bytes() -> bytes:
     return b"\xff\xd8\xff\xe0acceptance-preview\xff\xd9"
 
@@ -120,6 +133,169 @@ def observed_metadata(brief_id: str) -> dict[str, object]:
         "known_limitations": ["Acceptance records one observed local configuration."],
         "decision_summary": "Selected after an explicit visual review.",
     }
+
+
+def two_stage_layout() -> dict[str, object]:
+    return {
+        "mode": "copy-subject-two-stage-v1",
+        "canvas": {"width": 640, "height": 320},
+        "copy_protected_rect": {"x": 0, "y": 0, "width": 224, "height": 320},
+        "subject_mask_rect": {"x": 304, "y": 16, "width": 320, "height": 288},
+        "feather_pixels": 0,
+        "vae_grow_mask_by": 0,
+    }
+
+
+def passing_stage_checks() -> dict[str, object]:
+    observations = {
+        "base_copy_space": "Left copy space is dark and low-detail.",
+        "base_subject_absent": "No telescope or focal machinery appears in the base.",
+        "final_subject_inside_mask": "One complete telescope stays inside the mask.",
+        "final_safe_margins": "All telescope edges and tripod feet remain visible.",
+        "final_forbidden_content": "No text, people, controls, or anatomy artifacts appear.",
+        "feather_transition": "The mask boundary is visually coherent.",
+        "pixel_preservation": "Machine report records zero mismatches.",
+    }
+    return {
+        name: {"status": "pass", "observation": observation}
+        for name, observation in observations.items()
+    }
+
+
+def build_two_stage_run_source(
+    root: Path,
+    brief: dict[str, object],
+) -> tuple[Path, dict[str, object], dict[str, object]]:
+    from local_gpu_imagegen.model_identity import build_component_bundle
+    from local_gpu_imagegen.png_pixels import compare_protected_pixels, validate_saved_soft_mask
+    from local_gpu_imagegen.two_stage_layout import build_control_identity
+
+    run_dir = build_run_source(root, brief)
+    layout = two_stage_layout()
+    width = int(layout["canvas"]["width"])
+    height = int(layout["canvas"]["height"])
+    subject = layout["subject_mask_rect"]
+
+    base_pixels = bytearray(b"\x18\x30\x48" * (width * height))
+    final_pixels = bytearray(base_pixels)
+    mask_pixels = bytearray(width * height * 3)
+    for y in range(int(subject["y"]), int(subject["y"]) + int(subject["height"])):
+        for x in range(int(subject["x"]), int(subject["x"]) + int(subject["width"])):
+            offset = (y * width + x) * 3
+            final_pixels[offset:offset + 3] = b"\xa0\x70\x38"
+            mask_pixels[offset:offset + 3] = b"\xff\xff\xff"
+
+    stage_bytes = {
+        "round-01-base.png": rgb_png_bytes(width, height, bytes(base_pixels)),
+        "round-01-mask.png": rgb_png_bytes(width, height, bytes(mask_pixels)),
+        "round-01.png": rgb_png_bytes(width, height, bytes(final_pixels)),
+        "final.png": rgb_png_bytes(width, height, bytes(final_pixels)),
+    }
+    for name, data in stage_bytes.items():
+        (run_dir / name).write_bytes(data)
+
+    workflow = {
+        "template_id": TWO_STAGE_TEMPLATE_ID,
+        "template_version": 1,
+        "sha256": "d" * 64,
+    }
+    identity = {
+        "role": "primary_model",
+        "loader_class": "CheckpointLoaderSimple",
+        "loader_input": "ckpt_name",
+        "backend_model_id": "approved-local-model.safetensors",
+        "filesystem_identity_token": "model:" + "b" * 64,
+        "sha256": MODEL_SHA256,
+        "byte_size": 100,
+    }
+    bundle = build_component_bundle([identity], workflow)
+    control_sha256 = build_control_identity(layout, workflow["sha256"], "base-subject-v1")
+    route = {
+        **locked_route(),
+        "backend": "comfyui",
+        "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+        "workflow_template_version": 1,
+        "prompt_compiler_id": "natural-v1",
+        "component_bundle": bundle,
+        "component_bundle_sha256": bundle["bundle_sha256"],
+        "control_sha256": control_sha256,
+    }
+
+    def artifact(path: str) -> dict[str, object]:
+        return _artifact(path, stage_bytes[path], "image/png") | {
+            "width": width,
+            "height": height,
+        }
+
+    base = artifact("round-01-base.png")
+    mask = artifact("round-01-mask.png")
+    stage_final = artifact("round-01.png")
+    accepted_final = artifact("final.png")
+    pixel_report = compare_protected_pixels(
+        run_dir / "round-01-base.png",
+        run_dir / "round-01.png",
+        layout,
+    )
+    validate_saved_soft_mask(run_dir / "round-01-mask.png", layout)
+
+    manifest = read_json(run_dir / "manifest.json")
+    manifest["request"].update({
+        "backend": "comfyui",
+        "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+        "constraints": {"two_stage_layout": layout},
+        "route": route,
+    })
+    manifest["stage_budget"] = {"maximum": 4, "consumed": 2}
+    round_value = manifest["rounds"][0]
+    round_value.update({
+        "backend": "comfyui",
+        "seed": 42,
+        "backend_result": {
+            "backend": "comfyui",
+            "model": MODEL_ID,
+            "path": "round-01.png",
+            "subject_seed": 43,
+            "control_sha256": control_sha256,
+        },
+        "image": stage_final,
+        "stages": [
+            {"role": "base", "seed": 42, "image": base},
+            {"role": "subject", "seed": 43, "image": stage_final},
+        ],
+        "mask_artifact": mask,
+        "pixel_preservation": pixel_report,
+        "stage_units": 2,
+    })
+    manifest["reviews"][0]["stage_checks"] = passing_stage_checks()
+    manifest["final"].update({"path": "final.png", "image": accepted_final})
+    write_json(run_dir / "manifest.json", manifest)
+    write_json(run_dir / "mcp-final-result.json", {
+        "run_id": manifest["run_id"],
+        "state": "finalized",
+        "final": copy.deepcopy(manifest["final"]),
+    })
+
+    authority = approved_authority()
+    authority["backend"] = {"type": "comfyui", "implementation": "ComfyUI", "local": True}
+    authority["models"][0].update({
+        "components": [{
+            **identity,
+            "source": "https://models.example/approved-local-model.safetensors",
+            "license_id": "example-model-license",
+            "license_url": "https://models.example/license",
+            "output_redistribution_status": "approved",
+        }],
+        "workflow": workflow,
+        "component_bundle_sha256": bundle["bundle_sha256"],
+    })
+    metadata = observed_metadata(str(brief["id"]))
+    metadata["backend"] = {
+        "type": "comfyui",
+        "implementation": "ComfyUI",
+        "version": "observed",
+        "local": True,
+    }
+    return run_dir, authority, metadata
 
 
 def _artifact(path: str, data: bytes, mime_type: str) -> dict[str, object]:

@@ -19,6 +19,7 @@ from export_acceptance_evidence import (  # noqa: E402
 from tests.acceptance_evidence_helpers import (  # noqa: E402
     FIXTURE_PATH,
     approved_authority,
+    build_two_stage_run_source,
     build_run_source,
     observed_metadata,
     read_json,
@@ -54,6 +55,15 @@ class ExportAcceptanceEvidenceTests(unittest.TestCase):
             None,
         )
 
+    def prepare_two_stage_source(self) -> None:
+        self.run_dir, authority, metadata = build_two_stage_run_source(
+            self.temp_path / "two-stage-runs",
+            self.brief,
+        )
+        write_json(self.evidence_root / "acceptance-authority.json", authority)
+        write_json(self.metadata_path, metadata)
+        self.run_id = str(read_json(self.run_dir / "manifest.json")["run_id"])
+
     def test_exports_finalized_run_without_changing_artifact_bytes(self) -> None:
         source_hash = sha256_file(self.run_dir / "round-01.png")
         result = self.export()
@@ -65,6 +75,56 @@ class ExportAcceptanceEvidenceTests(unittest.TestCase):
         self.assertFalse(any(Path(value).is_absolute() for value in _path_values(manifest)))
         self.assertFalse((self.destination / "unrelated.tmp").exists())
         self.assertEqual(read_json(self.destination / "mcp-final-result.json")["run_id"], self.run_id)
+
+    def test_exports_exact_byte_bound_two_stage_provenance(self) -> None:
+        self.prepare_two_stage_source()
+        source_bytes = {
+            name: (self.run_dir / name).read_bytes()
+            for name in ("round-01-base.png", "round-01-mask.png", "round-01.png")
+        }
+
+        try:
+            result = self.export()
+        except EvidenceExportError as error:
+            self.fail(f"Exact two-stage source should export: {error}")
+
+        evidence = read_json(self.destination / "evidence.json")
+        self.assertIn("two_stage", evidence)
+        two_stage = evidence["two_stage"]
+        self.assertEqual(set(two_stage), {
+            "base", "mask", "final", "control_sha256", "subject_seed",
+            "stage_budget", "pixel_preservation",
+        })
+        source_manifest = read_json(self.run_dir / "manifest.json")
+        self.assertEqual(
+            two_stage["control_sha256"],
+            source_manifest["request"]["route"]["control_sha256"],
+        )
+        self.assertEqual(two_stage["subject_seed"], 43)
+        self.assertEqual(two_stage["stage_budget"], {"maximum": 4, "consumed": 2})
+        self.assertEqual(two_stage["pixel_preservation"]["mismatched_pixels"], 0)
+        self.assertEqual(two_stage["pixel_preservation"]["copy_mismatched_pixels"], 0)
+        for role, name in (
+            ("base", "round-01-base.png"),
+            ("mask", "round-01-mask.png"),
+            ("final", "round-01.png"),
+        ):
+            with self.subTest(role=role):
+                self.assertEqual(set(two_stage[role]), {"path", "sha256"})
+                self.assertEqual(two_stage[role]["path"], name)
+                self.assertEqual(two_stage[role]["sha256"], sha256_file(self.run_dir / name))
+                self.assertEqual((self.destination / name).read_bytes(), source_bytes[name])
+        self.assertEqual(result["source_hashes"], result["export_hashes"])
+
+    def test_rejects_partial_two_stage_source_before_copy(self) -> None:
+        self.prepare_two_stage_source()
+        manifest = read_json(self.run_dir / "manifest.json")
+        manifest["state"] = "partial"
+        manifest["last_stable_state"] = "partial"
+        write_json(self.run_dir / "manifest.json", manifest)
+
+        with self.assertRaisesRegex(EvidenceExportError, "partial_evidence_forbidden"):
+            self.export()
 
     def test_rejects_existing_destination(self) -> None:
         self.destination.mkdir(parents=True)

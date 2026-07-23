@@ -20,6 +20,7 @@ from validate_acceptance_evidence import (
     sha256_file,
     validate_authority,
 )
+from local_gpu_imagegen.two_stage_layout import TWO_STAGE_TEMPLATE_ID
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +46,7 @@ PUBLIC_ROUTE_KEYS = (
     "component_bundle",
     "component_bundle_sha256",
 )
+TWO_STAGE_PUBLIC_ROUTE_KEYS = (*PUBLIC_ROUTE_KEYS, "control_sha256")
 PRIVATE_EVIDENCE_KEYS = frozenset({
     "backend_model_id",
     "base_url",
@@ -83,6 +85,11 @@ def export_run(
     run_id = manifest.get("run_id")
     if not isinstance(run_id, str) or not run_id or confirm_real != run_id:
         raise EvidenceExportError("real_run_confirmation_mismatch", "--confirm-real must exactly match the manifest run ID.")
+    if manifest.get("state") == "partial":
+        raise EvidenceExportError(
+            "partial_evidence_forbidden",
+            "Partial two-stage runs cannot be exported as accepted evidence.",
+        )
     if manifest.get("state") != "finalized" or not isinstance(manifest.get("final"), dict):
         raise EvidenceExportError("run_not_finalized", "Only finalized runs can be exported.")
     _reject_mock_manifest(manifest)
@@ -191,6 +198,14 @@ def _copy_manifest_artifacts(
         if not isinstance(round_value, dict):
             raise EvidenceExportError("invalid_round_evidence", "Round metadata must be an object.")
         _copy_record(source_root, destination, round_value.get("image"), copied, source_hashes)
+        stages = round_value.get("stages")
+        if isinstance(stages, list):
+            for stage in stages:
+                if not isinstance(stage, dict):
+                    raise EvidenceExportError("invalid_two_stage_evidence", "Stage metadata must be an object.")
+                _copy_record(source_root, destination, stage.get("image"), copied, source_hashes)
+        if isinstance(round_value.get("mask_artifact"), dict):
+            _copy_record(source_root, destination, round_value["mask_artifact"], copied, source_hashes)
         if isinstance(round_value.get("preview"), dict):
             _copy_record(source_root, destination, round_value["preview"], copied, source_hashes)
         _copy_plain_path(source_root, destination, round_value.get("backend_result"), "path", copied, source_hashes)
@@ -201,6 +216,13 @@ def _copy_manifest_artifacts(
                 continue
             if isinstance(attempt.get("image"), dict):
                 _copy_record(source_root, destination, attempt["image"], copied, source_hashes)
+            stages = attempt.get("stages")
+            if isinstance(stages, list):
+                for stage in stages:
+                    if isinstance(stage, dict) and isinstance(stage.get("image"), dict):
+                        _copy_record(source_root, destination, stage["image"], copied, source_hashes)
+            if isinstance(attempt.get("mask_artifact"), dict):
+                _copy_record(source_root, destination, attempt["mask_artifact"], copied, source_hashes)
             _copy_plain_path(source_root, destination, attempt.get("backend_result"), "path", copied, source_hashes)
     final = manifest.get("final")
     if not isinstance(final, dict):
@@ -351,7 +373,7 @@ def _build_evidence(
     final = manifest["final"]
     if not isinstance(started_at, str) or not isinstance(final.get("finalized_at"), str):
         raise EvidenceExportError("missing_observed_timestamp", "Run start and completion timestamps must be retained.")
-    return {
+    evidence = {
         "schema_version": 1,
         "evidence_class": "real-codex-mcp-run",
         "brief_id": brief["id"],
@@ -376,6 +398,93 @@ def _build_evidence(
         "known_limitations": copy.deepcopy(metadata["known_limitations"]),
         "decision_summary": metadata["decision_summary"],
     }
+    request = manifest.get("request")
+    if (
+        isinstance(request, dict)
+        and request.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID
+    ):
+        evidence["two_stage"] = _build_two_stage_evidence(manifest, final)
+    return evidence
+
+
+def _build_two_stage_evidence(
+    manifest: dict[str, object],
+    final: dict[str, object],
+) -> dict[str, object]:
+    rounds = manifest.get("rounds")
+    selected = next(
+        (
+            item
+            for item in rounds
+            if isinstance(item, dict) and item.get("round_number") == final.get("round_number")
+        ),
+        None,
+    ) if isinstance(rounds, list) else None
+    stages = selected.get("stages") if isinstance(selected, dict) else None
+    mask = selected.get("mask_artifact") if isinstance(selected, dict) else None
+    backend_result = selected.get("backend_result") if isinstance(selected, dict) else None
+    pixel_report = selected.get("pixel_preservation") if isinstance(selected, dict) else None
+    stage_budget = manifest.get("stage_budget")
+    if (
+        not isinstance(stages, list)
+        or len(stages) != 2
+        or not all(isinstance(stage, dict) for stage in stages)
+        or [stage.get("role") for stage in stages] != ["base", "subject"]
+        or not isinstance(mask, dict)
+        or not isinstance(backend_result, dict)
+        or not isinstance(pixel_report, dict)
+        or not isinstance(stage_budget, dict)
+        or set(stage_budget) != {"maximum", "consumed"}
+        or type(stage_budget.get("maximum")) is not int
+        or type(stage_budget.get("consumed")) is not int
+        or not 0 <= stage_budget["consumed"] <= stage_budget["maximum"]
+        or type(backend_result.get("subject_seed")) is not int
+        or not 0 <= backend_result["subject_seed"] <= 2**64 - 1
+        or not _valid_sha256(backend_result.get("control_sha256"))
+        or pixel_report.get("mismatched_pixels") != 0
+        or pixel_report.get("copy_mismatched_pixels") != 0
+    ):
+        raise EvidenceExportError(
+            "invalid_two_stage_evidence",
+            "Selected two-stage round provenance is incomplete or unsafe.",
+        )
+    base = _artifact_reference(stages[0].get("image"))
+    stage_final = _artifact_reference(stages[1].get("image"))
+    mask_reference = _artifact_reference(mask)
+    selected_image = selected.get("image")
+    if (
+        not isinstance(selected_image, dict)
+        or _artifact_reference(selected_image) != stage_final
+        or len({base["path"], mask_reference["path"], stage_final["path"]}) != 3
+        or stages[1].get("seed") != backend_result["subject_seed"]
+    ):
+        raise EvidenceExportError(
+            "invalid_two_stage_evidence",
+            "Selected image must be the distinct authoritative final stage.",
+        )
+    return {
+        "base": base,
+        "mask": mask_reference,
+        "final": stage_final,
+        "control_sha256": backend_result["control_sha256"],
+        "subject_seed": backend_result["subject_seed"],
+        "stage_budget": copy.deepcopy(stage_budget),
+        "pixel_preservation": copy.deepcopy(pixel_report),
+    }
+
+
+def _artifact_reference(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise EvidenceExportError("invalid_two_stage_evidence", "Stage artifact metadata is missing.")
+    path = value.get("path")
+    digest = value.get("sha256")
+    if not isinstance(path, str) or not path or not _valid_sha256(digest):
+        raise EvidenceExportError("invalid_two_stage_evidence", "Stage artifact path or hash is invalid.")
+    return {"path": path, "sha256": digest}
+
+
+def _valid_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _match_authority(
@@ -421,7 +530,12 @@ def _match_authority(
         or route.get("sha256") != approved.get("sha256")
     ):
         raise EvidenceExportError("route_authority_mismatch", "Manifest route differs from acceptance authority.")
-    public_route = {key: copy.deepcopy(route.get(key)) for key in PUBLIC_ROUTE_KEYS}
+    route_keys = (
+        TWO_STAGE_PUBLIC_ROUTE_KEYS
+        if route.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID
+        else PUBLIC_ROUTE_KEYS
+    )
+    public_route = {key: copy.deepcopy(route.get(key)) for key in route_keys}
     _validate_public_route_shape(public_route)
     try:
         _validate_public_route(public_route, authority)
@@ -435,8 +549,11 @@ def _validate_public_route_shape(route: dict[str, object]) -> None:
     workflow_version = route.get("workflow_template_version")
     component_bundle = route.get("component_bundle")
     component_bundle_sha = route.get("component_bundle_sha256")
+    two_stage = workflow_id == TWO_STAGE_TEMPLATE_ID
+    expected_keys = set(TWO_STAGE_PUBLIC_ROUTE_KEYS if two_stage else PUBLIC_ROUTE_KEYS)
     if (
-        route.get("authorization_scope") != "public_evidence"
+        set(route) != expected_keys
+        or route.get("authorization_scope") != "public_evidence"
         or route.get("identity_strength") != "cryptographic"
         or not isinstance(route.get("backend"), str)
         or not isinstance(route.get("model_id"), str)
@@ -449,6 +566,7 @@ def _validate_public_route_shape(route: dict[str, object]) -> None:
         or (workflow_id is not None and (not isinstance(workflow_id, str) or type(workflow_version) is not int))
         or ((component_bundle is None) != (component_bundle_sha is None))
         or (route.get("backend") == "comfyui" and component_bundle is None)
+        or (two_stage and not _valid_sha256(route.get("control_sha256")))
     ):
         raise EvidenceExportError("route_authority_mismatch", "Manifest route is incomplete or invalid.")
 
