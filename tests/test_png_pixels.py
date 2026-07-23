@@ -227,7 +227,7 @@ class PngPixelTests(unittest.TestCase):
                     values[offset] *= rate
             for distance in range(bounded_x):
                 rate = struct.unpack("=f", struct.pack("=f", (distance + 1) / feather))[0]
-                column = (-distance) % subject_width
+                column = subject_width - 1 - distance
                 for y in range(subject_height):
                     offset = y * subject_width + column
                     values[offset] *= rate
@@ -238,7 +238,7 @@ class PngPixelTests(unittest.TestCase):
                     values[row_start + x] *= rate
             for distance in range(bounded_y):
                 rate = struct.unpack("=f", struct.pack("=f", (distance + 1) / feather))[0]
-                row_start = ((-distance) % subject_height) * subject_width
+                row_start = (subject_height - 1 - distance) * subject_width
                 for x in range(subject_width):
                     values[row_start + x] *= rate
 
@@ -372,7 +372,7 @@ class PngPixelTests(unittest.TestCase):
         self.assertEqual(result["mismatched_pixels"], 1)
         self.assertEqual(result["copy_mismatched_pixels"], 1)
 
-    def test_soft_mask_accepts_exact_installed_asymmetric_output(self) -> None:
+    def test_soft_mask_accepts_exact_installed_symmetric_output(self) -> None:
         layout = approved_layout()
         subject = layout["subject_mask_rect"]
         assert isinstance(subject, dict)
@@ -383,10 +383,10 @@ class PngPixelTests(unittest.TestCase):
 
         center_x = subject["x"] + subject["width"] // 2
         center_y = subject["y"] + subject["height"] // 2
-        self.assertEqual(value_at(center_x, subject["y"]), 0)
-        self.assertEqual(value_at(subject["x"], center_y), 0)
-        self.assertEqual(value_at(subject["x"] + subject["width"] - 1, center_y), 15)
-        self.assertEqual(value_at(center_x, subject["y"] + subject["height"] - 1), 15)
+        self.assertEqual(value_at(center_x, subject["y"]), 7)
+        self.assertEqual(value_at(subject["x"], center_y), 7)
+        self.assertEqual(value_at(subject["x"] + subject["width"] - 1, center_y), 7)
+        self.assertEqual(value_at(center_x, subject["y"] + subject["height"] - 1), 7)
 
         feathered = validate_saved_soft_mask(self.write_png(1280, 720, 3, pixels), layout)
         self.assertEqual(feathered["outside_nonzero_pixels"], 0)
@@ -484,7 +484,7 @@ class PngPixelTests(unittest.TestCase):
         subject = layout["subject_mask_rect"]
         assert isinstance(subject, dict)
         valid = self.soft_mask_pixels()
-        flat_transition_starts = {"left": 31, "right": 30, "top": 31, "bottom": 30}
+        flat_transition_starts = {edge: 31 for edge in ("left", "right", "top", "bottom")}
 
         for edge, coordinates in self.off_center_edge_positions(subject).items():
             rising = bytearray(valid)

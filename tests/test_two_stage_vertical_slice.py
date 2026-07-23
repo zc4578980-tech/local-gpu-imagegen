@@ -111,9 +111,9 @@ def _mask_intensity(x: int, y: int, layout: dict[str, object]) -> int:
     value = 1.0
     for distance in (
         local_x,
-        (-local_x) % width,
+        width - 1 - local_x,
         local_y,
-        (-local_y) % height,
+        height - 1 - local_y,
     ):
         if distance < feather:
             rate = _float32((distance + 1) / feather)

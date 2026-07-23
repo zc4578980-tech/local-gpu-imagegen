@@ -377,12 +377,12 @@ def _installed_saved_mask_value(
     value = 1.0
     if x < len(rates):
         value = _float32(value * rates[x])
-    right_distance = (-x) % width
+    right_distance = width - 1 - x
     if right_distance < len(rates):
         value = _float32(value * rates[right_distance])
     if y < len(rates):
         value = _float32(value * rates[y])
-    bottom_distance = (-y) % height
+    bottom_distance = height - 1 - y
     if bottom_distance < len(rates):
         value = _float32(value * rates[bottom_distance])
     return int(_float32(255.0 * value))
