@@ -106,6 +106,7 @@ class PackagingTests(unittest.TestCase):
             names = set(archive.namelist())
         self.assertIn("local_gpu_imagegen/regional_layout.py", names)
         required_suffixes = {
+            "local_gpu_imagegen/two_stage_layout.py",
             "mcp_server.py",
             "verify_mcp.py",
             "build_showcase.py",
@@ -118,6 +119,7 @@ class PackagingTests(unittest.TestCase):
             "share/local-gpu-imagegen/profiles/use-cases/standalone-illustration.json",
             "share/local-gpu-imagegen/workflows/comfyui/sdxl-txt2img-v1.json",
             "share/local-gpu-imagegen/workflows/comfyui/sdxl-regional-txt2img-v1.json",
+            "share/local-gpu-imagegen/workflows/comfyui/sdxl-two-stage-copy-subject-v1.json",
             "share/local-gpu-imagegen/skills/local-gpu-imagegen/SKILL.md",
             "share/local-gpu-imagegen/evidence/schemas/client-session.schema.json",
             "share/local-gpu-imagegen/evidence/schemas/real-demo.schema.json",

@@ -4,7 +4,16 @@ All notable changes will be documented in this file.
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+
+- Exact Agent guidance for the confirmed `sdxl-two-stage-copy-subject-v1.json` route, including pixel geometry and percentages, base and derived subject seeds, workflow/control/bundle identities, and an initial gate of exactly one two-stage round.
+- A deterministic 1280x720 model-free vertical slice covering catalog variants, live capability, exact route confirmation, base/mask/final artifacts, two stage units, protected-pixel verification, full-resolution stage review, final-only candidacy, and a one-pixel `partial` failure.
+- Optional MCP `stage_checks` transport on the existing `local_gpu_record_review` tool; the public surface remains exactly fifteen tools and generation plans remain exactly twenty fields.
+
+### Evidence Boundary
+
+- The earlier single-pass regional route remains retained negative evidence and experimental compatibility; it does not establish a visual-quality improvement.
+- The two-stage vertical slice uses only deterministic standard-library PNG fixtures. It does not run a model, ComfyUI process, GPU, download, export, or publication action, and it makes no generated-image quality claim.
 
 ## [0.7.0] - 2026-07-23
 

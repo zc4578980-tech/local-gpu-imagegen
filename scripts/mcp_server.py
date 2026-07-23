@@ -24,6 +24,7 @@ from local_gpu_imagegen.workflow_templates import (
     MODEL_LOADER_INPUTS,
     workflow_component_bindings,
 )
+from local_gpu_imagegen.visual_review import STAGE_CHECK_NAMES
 
 
 ROOT = resolve_resource_root()
@@ -455,6 +456,14 @@ def tool_schema() -> list[dict[str, Any]]:
         "hands_and_held_objects",
         "text_and_watermarks",
     ])
+    stage_check = _object_schema({
+        "status": {"type": "string", "enum": ["pass", "fail", "uncertain"]},
+        "observation": {"type": "string", "minLength": 1, "maxLength": 500},
+    }, ["status", "observation"])
+    stage_checks = _object_schema(
+        {name: stage_check for name in STAGE_CHECK_NAMES},
+        list(STAGE_CHECK_NAMES),
+    )
     run_manifest_properties = {
         "run_id": {"type": "string"},
         "schema_version": {"type": "integer"},
@@ -717,6 +726,7 @@ def tool_schema() -> list[dict[str, Any]]:
                 "critique": {"type": "string", "minLength": 1},
                 "constraint_results": json_object,
                 "visual_checks": visual_checks,
+                "stage_checks": stage_checks,
                 "preservation_results": {"type": "array", "items": json_object},
                 "next_action": {"type": "string", "enum": ["refine", "explore", "finalize"]},
             }, [
@@ -1793,7 +1803,7 @@ def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
                 field: arguments[field]
                 for field in (
                     "scores", "hard_failures", "critique", "constraint_results",
-                    "visual_checks", "preservation_results", "next_action",
+                    "visual_checks", "stage_checks", "preservation_results", "next_action",
                 )
                 if field in arguments
             }

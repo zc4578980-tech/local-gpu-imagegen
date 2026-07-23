@@ -236,6 +236,31 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("finalization_confirmation_mismatch", troubleshooting)
         self.assertNotIn("An ineligible nomination receives `needs_user_review`", readme)
 
+    def test_docs_define_two_stage_artifacts_gates_and_honest_single_pass_scope(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        architecture = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+        troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8")
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        public = "\n".join((readme, architecture, troubleshooting, changelog))
+
+        for required in (
+            "`sdxl-two-stage-copy-subject-v1.json`",
+            "base artifact",
+            "mask artifact",
+            "final artifact",
+            "protected-pixel",
+            "full-resolution stage review",
+            "two stage units",
+            "partial",
+            "no fallback",
+            "exactly one two-stage round",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, public)
+        self.assertIn("retained negative evidence", public)
+        self.assertIn("experimental compatibility", public)
+        self.assertIn("does not establish a visual-quality improvement", public)
+
     def test_active_versions_are_v070_and_historical_versions_are_preserved(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))

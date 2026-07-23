@@ -89,6 +89,23 @@ Use `copy-subject-v1` when the user requires one copy-safe region and one separa
 
 A successful backend round that violates the confirmed copy/subject relation is retained, reviewed with `explicit_constraint_violation`, and consumes one successful-round budget slot.
 
+## Two-Stage Copy-Subject Route
+
+Use `copy-subject-two-stage-v1` only when the user needs a pixel-protected copy area plus a separately generated subject. Resolve `sdxl-two-stage-copy-subject` from the live catalog; missing capability, identity drift, or an unavailable route stops the request. No fallback is allowed to `sdxl-regional-txt2img`, `sdxl-txt2img`, prompt-only approximation, another model, or another backend.
+
+Follow this positive confirmation recipe:
+
+1. Write a base scene `positive_prompt` where the base prompt excludes the subject. Put the subject name and its close variants in the base `negative_prompt`. Keep the separately confirmed `subject_prompt`, `subject_negative_prompt`, and `subject_denoise` only in `two_stage_conditioning`.
+2. Display every rectangle in pixels and percentages before confirmation. For the reviewed 1280 x 720 layout, show: copy protected `x=0 (0%), y=0 (0%), width=576 (45%), height=720 (100%)`; subject mask `x=720 (56.25%), y=24 (3.33%), width=512 (40%), height=672 (93.33%)`; `feather_pixels=32`; `vae_grow_mask_by=8`. A different valid layout requires its own exact pixel and percentage display.
+3. Display the base seed and the derived subject seed, where `subject_seed = (base_seed + 1) mod 2^64`. Display the exact model identity, endpoint, workflow SHA-256, control SHA-256, bundle SHA-256, compiler, dimensions, conditioning, policies, and budget in the same summary.
+4. State that one round costs two stage units. Wait for a later explicit confirmation of that complete summary, then call `local_gpu_start_run` with the frozen `two_stage_layout` and exact `initial_two_stage_conditioning`.
+5. Read the persisted run and construct the existing exact 20-field plan. The base prompts stay in `positive_prompt` and `negative_prompt`; the subject-only prompts and denoise stay in `parameters.two_stage_conditioning`. Geometry, route, workflow, control, bundle, model, endpoint, compiler, and policy values remain frozen.
+6. Generate once and require all three retained artifacts: base, mask, and final. If any artifact is missing, malformed, ambiguous, outside the run, or fails mask/protected-pixel verification, partial output stops the run. Do not retry, review, nominate, or fall back from a `partial` run without a new user decision and a newly confirmed route when required.
+7. On a vision-capable host, inspect the base artifact at full resolution and record `base_copy_space` plus `base_subject_absent`. Then inspect the final artifact at full resolution and record `final_subject_inside_mask`, `final_safe_margins`, `final_forbidden_content`, `feather_transition`, and `pixel_preservation`. Every stage check must pass and the machine report must record zero mismatches.
+8. Only the final artifact can become a candidate; the base and mask are supporting evidence. Display the final PNG and its byte-bound finalization confirmation only after both full-resolution stage reviews and the ordinary visual/rubric checks pass.
+
+The first live GPU gate is exactly one two-stage round: set `max_rounds: 1`, spend exactly two stage units, review the base and final, and stop. Additional GPU rounds, a geometry change, or another route require a later explicit decision; unused general run capacity is not permission.
+
 ## Run Sequence
 
 Follow this order exactly:

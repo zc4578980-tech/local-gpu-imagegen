@@ -262,6 +262,34 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("change only regional prompts or strengths", self.text)
         self.assertIn("explicit_constraint_violation", self.text)
 
+    def test_two_stage_route_teaches_exact_confirmation_generation_and_review_contract(self) -> None:
+        section = _section(self.text, "## Two-Stage Copy-Subject Route", "## Run Sequence")
+        _assert_ordered(section, (
+            "base prompt excludes the subject",
+            "1280 x 720",
+            "45%",
+            "56.25%",
+            "40%",
+            "base seed",
+            "derived subject seed",
+            "workflow SHA-256",
+            "control SHA-256",
+            "bundle SHA-256",
+            "one round costs two stage units",
+            "base artifact at full resolution",
+            "final artifact at full resolution",
+            "exactly one two-stage round",
+        ))
+        for boundary in (
+            "`sdxl-two-stage-copy-subject`",
+            "`copy-subject-two-stage-v1`",
+            "partial output stops the run",
+            "No fallback is allowed",
+            "Only the final artifact can become a candidate",
+        ):
+            with self.subTest(boundary=boundary):
+                self.assertIn(boundary, section)
+
     def test_confirmation_gate_rejects_permissive_or_reordered_mutations(self) -> None:
         valid = self.text
         mutations = (

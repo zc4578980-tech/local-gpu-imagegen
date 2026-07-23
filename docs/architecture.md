@@ -67,6 +67,16 @@ The optional `copy-subject-v1` contract contains exactly one normalized `copy_re
 
 After the Agent displays decimals, percentages, regional prompts/strengths, route identity, dimensions, policies, and budget, a later confirmation authorizes the run. The initial generation plan must reproduce the confirmed conditioning exactly. Later rounds may change regional prompts or strengths, while geometry remains frozen. Geometry drift, missing live node signatures, workflow drift, overlap, ambiguity, or a prompt-only fallback fails before attempt creation or backend invocation. This contract is verified through a deterministic fake-backend vertical slice; genuine GPU image quality and compliance with the requested composition remain unverified.
 
+The single-pass regional route is retained negative evidence and experimental compatibility. Its observed result does not establish a visual-quality improvement, so it is not a launch-quality fallback for the two-stage route.
+
+## Two-Stage Artifact And Review Contract
+
+The packaged `sdxl-two-stage-copy-subject-v1.json` graph freezes the normalized pixel layout, reviewed workflow SHA-256, derived control SHA-256, component bundle SHA-256, endpoint, and model identity. The base prompt excludes the subject; the subject prompt is compiled separately and uses the deterministic seed derived by incrementing the base seed modulo `2^64`. The first live GPU gate is exactly one two-stage round.
+
+One successful round costs two stage units and produces exactly three role-bound PNGs: a base artifact, mask artifact, and final artifact. The Engine validates dimensions and route provenance, validates the entire saved soft mask, and runs the protected-pixel comparison between base and final before committing a successful round. Missing, unsafe, aliased, malformed, identity-drifting, or technically invalid output becomes `partial` or failed according to retained stage ownership; there is no fallback to the single-pass regional or standard workflow.
+
+Review inspects the base and final original PNGs rather than only the preview. The base must pass copy-space and subject-absence checks. The final must pass in-mask subject, safe-margin, forbidden-content, feather-transition, pixel-preservation, ordinary visual, and Profile rubric checks. This full-resolution stage review can derive a candidate only for the final artifact; the base and mask remain supporting evidence.
+
 ## Durable Run State
 
 Each high-level run lives under `outputs/runs/<run_id>/` by default. `manifest.json` is the durable source of truth for the confirmed request, attempt history, retained rounds, reviews, warnings, final selection, and monotonically increasing revision. The output root can be replaced with `LOCAL_GPU_IMAGEGEN_OUTPUT_DIR`.

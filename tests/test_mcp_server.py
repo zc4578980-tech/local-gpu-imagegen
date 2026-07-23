@@ -149,7 +149,7 @@ class McpServerUnitTests(unittest.TestCase):
             },
             "local_gpu_record_review": {
                 "run_id", "round_number", "scores", "hard_failures", "critique", "constraint_results",
-                "visual_checks", "preservation_results", "next_action",
+                "visual_checks", "stage_checks", "preservation_results", "next_action",
             },
             "local_gpu_finalize_run": {"run_id", "round_number", "summary", "confirmation", "postprocess"},
             "local_gpu_cleanup_run": {"run_id", "scope", "confirmation"},
@@ -179,7 +179,7 @@ class McpServerUnitTests(unittest.TestCase):
                     "local_gpu_branch_run": {"denoising_strength"},
                     "local_gpu_prepare_mask": {"user_mask_path", "geometry", "feather_pixels"},
                     "local_gpu_generate_round": {"mask_id"},
-                    "local_gpu_record_review": {"preservation_results"},
+                    "local_gpu_record_review": {"stage_checks", "preservation_results"},
                     "local_gpu_finalize_run": {"postprocess"},
                 }.get(name, set())
                 required = fields - optional
@@ -294,6 +294,69 @@ class McpServerUnitTests(unittest.TestCase):
                 evidence["properties"]["status"]["enum"],
                 ["pass", "fail", "uncertain", "not_applicable"],
             )
+
+    def test_two_stage_review_checks_are_reachable_without_expanding_tool_surface(self) -> None:
+        tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
+        self.assertEqual(len(tools), 15)
+        review = tools["local_gpu_record_review"]["inputSchema"]
+        self.assertIn("stage_checks", review["properties"])
+        self.assertNotIn("stage_checks", review["required"])
+        stage_checks = review["properties"]["stage_checks"]
+        self.assertFalse(stage_checks["additionalProperties"])
+        self.assertEqual(set(stage_checks["required"]), {
+            "base_copy_space",
+            "base_subject_absent",
+            "final_subject_inside_mask",
+            "final_safe_margins",
+            "final_forbidden_content",
+            "feather_transition",
+            "pixel_preservation",
+        })
+
+    def test_two_stage_review_forwards_stage_checks_to_engine(self) -> None:
+        stage_checks = {
+            name: {"status": "pass", "observation": f"{name} passed."}
+            for name in (
+                "base_copy_space",
+                "base_subject_absent",
+                "final_subject_inside_mask",
+                "final_safe_margins",
+                "final_forbidden_content",
+                "feather_transition",
+                "pixel_preservation",
+            )
+        }
+        arguments = {
+            "run_id": "run-two-stage",
+            "round_number": 1,
+            "scores": {"composition": 4},
+            "hard_failures": [],
+            "critique": "Both full-resolution stages passed.",
+            "constraint_results": {},
+            "visual_checks": visual_checks(),
+            "stage_checks": stage_checks,
+            "next_action": "finalize",
+        }
+        engine = Mock()
+        engine.record_review.return_value = {
+            "ok": True,
+            "run_id": "run-two-stage",
+            "state": "reviewed",
+            "rounds": [],
+            "reviews": [],
+            "recoverable_next_actions": ["finalize_run"],
+            "warnings": [],
+        }
+
+        with patch.object(mcp_server, "get_asset_engine", return_value=engine):
+            result = mcp_server.handle_tool_call({
+                "name": "local_gpu_record_review",
+                "arguments": arguments,
+            })
+
+        self.assertFalse(result["isError"])
+        forwarded = engine.record_review.call_args.args[0]
+        self.assertEqual(forwarded["review"]["stage_checks"], stage_checks)
 
     def test_finalize_confirmation_schema_is_required(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}

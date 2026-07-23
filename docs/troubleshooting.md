@@ -85,6 +85,14 @@ User-local trust defaults to the OS state directory; set `LOCAL_GPU_IMAGEGEN_STA
 
 An empty `CheckpointLoaderSimple` choice list is normal when ComfyUI contains only split diffusion models; discovery should still return `UNETLoader` choices. If a split workflow fails at submission, verify the exact text encoder and VAE named by the template are already installed. The plugin never downloads a missing component. Do not substitute another encoder/VAE or change loader type without a new reviewed workflow and route confirmation.
 
+## A Two-Stage Run Is Partial
+
+For `sdxl-two-stage-copy-subject-v1.json`, inspect `local_gpu_get_run` before doing anything else. A base-only backend failure consumes one stage unit; a retained base plus subject-stage output consumes two stage units even when the mask or protected-pixel technical gate rejects the round. The manifest remains the authority for retained stage roles, exact hashes, error code, and stage budget.
+
+`invalid_two_stage_mask` means the mask artifact leaked outside the confirmed subject rectangle or protected copy area, used unequal RGB channels, or drifted from the reviewed feather envelope. `two_stage_pixel_mismatch` means at least one protected base pixel changed in the final artifact. Unsafe or malformed stage paths and bytes fail under the related artifact/backend error. Any of these outcomes leaves no candidate.
+
+A partial result stops the run. Do not record a visual review, reuse an unconsumed round slot, rename a supporting artifact as final, or switch to the single-pass regional/standard workflow. There is no fallback. Preserve the retained evidence, explain the exact technical failure, and obtain a new user decision before a newly confirmed route or run. The initial real GPU validation remains exactly one two-stage round; do not spend another round merely because the first one failed.
+
 ## ComfyUI Job Times Out Or Disappears
 
 `comfyui_submission_rejected`, `comfyui_job_timed_out`, `comfyui_job_disappeared`, `comfyui_job_rejected`, and `comfyui_job_canceled` are distinct outcomes. A timeout queries the exact known job before returning. Query that job and inspect ComfyUI logs; cancellation deletes only an exact queued job, and a running job is never interrupted globally. Do not resubmit blindly with the same idempotency key.
