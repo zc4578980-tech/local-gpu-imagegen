@@ -303,38 +303,84 @@ def _validate_complete_feather_edges(
     subject: dict[str, int],
     feather: int,
 ) -> int:
+    width = subject["width"]
+    height = subject["height"]
     last_x = subject["x"] + subject["width"] - 1
     last_y = subject["y"] + subject["height"] - 1
+    rates = tuple(_float32((distance + 1) / feather) for distance in range(feather)) if feather else ()
     checked = 0
-    for y in range(subject["y"], last_y + 1):
+    for local_y, y in enumerate(range(subject["y"], last_y + 1)):
         profiles = (
-            [_pixel(mask, subject["x"] + distance, y)[0] for distance in range(feather + 1)],
-            [_pixel(mask, last_x - distance, y)[0] for distance in range(feather + 1)],
+            (
+                [_pixel(mask, subject["x"] + distance, y)[0] for distance in range(feather + 1)],
+                [_installed_saved_mask_value(distance, local_y, width, height, rates) for distance in range(feather + 1)],
+            ),
+            (
+                [_pixel(mask, last_x - distance, y)[0] for distance in range(feather + 1)],
+                [
+                    _installed_saved_mask_value(width - 1 - distance, local_y, width, height, rates)
+                    for distance in range(feather + 1)
+                ],
+            ),
         )
-        for samples in profiles:
-            if not _valid_inward_profile(samples, feather):
+        for samples, expected in profiles:
+            if not _valid_inward_profile(samples, expected, feather):
                 raise _invalid_mask(mask_path, "invalid_feather_direction")
             checked += 1
-    for x in range(subject["x"], last_x + 1):
+    for local_x, x in enumerate(range(subject["x"], last_x + 1)):
         profiles = (
-            [_pixel(mask, x, subject["y"] + distance)[0] for distance in range(feather + 1)],
-            [_pixel(mask, x, last_y - distance)[0] for distance in range(feather + 1)],
+            (
+                [_pixel(mask, x, subject["y"] + distance)[0] for distance in range(feather + 1)],
+                [_installed_saved_mask_value(local_x, distance, width, height, rates) for distance in range(feather + 1)],
+            ),
+            (
+                [_pixel(mask, x, last_y - distance)[0] for distance in range(feather + 1)],
+                [
+                    _installed_saved_mask_value(local_x, height - 1 - distance, width, height, rates)
+                    for distance in range(feather + 1)
+                ],
+            ),
         )
-        for samples in profiles:
-            if not _valid_inward_profile(samples, feather):
+        for samples, expected in profiles:
+            if not _valid_inward_profile(samples, expected, feather):
                 raise _invalid_mask(mask_path, "invalid_feather_direction")
             checked += 1
     return checked
 
 
-def _valid_inward_profile(samples: list[int], feather: int) -> bool:
+def _valid_inward_profile(samples: list[int], expected: list[int], feather: int) -> bool:
     if feather == 0:
         return samples[0] > 0
     return (
-        samples[-1] > 0
-        and (feather == 1 or samples[0] < samples[-1])
-        and all(left <= right for left, right in zip(samples, samples[1:]))
+        all(left <= right for left, right in zip(samples, samples[1:]))
+        and all((sample > 0) == (envelope > 0) for sample, envelope in zip(samples, expected))
+        and (samples[0] < samples[-1]) == (expected[0] < expected[-1])
     )
+
+
+def _installed_saved_mask_value(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    rates: tuple[float, ...],
+) -> int:
+    value = 1.0
+    if x < len(rates):
+        value = _float32(value * rates[x])
+    right_distance = (-x) % width
+    if right_distance < len(rates):
+        value = _float32(value * rates[right_distance])
+    if y < len(rates):
+        value = _float32(value * rates[y])
+    bottom_distance = (-y) % height
+    if bottom_distance < len(rates):
+        value = _float32(value * rates[bottom_distance])
+    return int(_float32(255.0 * value))
+
+
+def _float32(value: float) -> float:
+    return struct.unpack("=f", struct.pack("=f", value))[0]
 
 
 def _invalid(path: Path, reason: str) -> ArtifactError:

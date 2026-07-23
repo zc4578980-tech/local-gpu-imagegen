@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from array import array
+import stat
 import struct
 import sys
 import tempfile
 import unittest
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -210,21 +213,42 @@ class PngPixelTests(unittest.TestCase):
         height = layout["canvas"]["height"]
         feather = layout["feather_pixels"]
         assert isinstance(width, int) and isinstance(height, int) and isinstance(feather, int)
+        subject_width = subject["width"]
+        subject_height = subject["height"]
+        values = array("f", [1.0]) * (subject_width * subject_height)
+
+        if feather:
+            bounded_x = min(feather, subject_width)
+            bounded_y = min(feather, subject_height)
+            for distance in range(bounded_x):
+                rate = struct.unpack("=f", struct.pack("=f", (distance + 1.0) / feather))[0]
+                for y in range(subject_height):
+                    offset = y * subject_width + distance
+                    values[offset] *= rate
+            for distance in range(bounded_x):
+                rate = struct.unpack("=f", struct.pack("=f", (distance + 1) / feather))[0]
+                column = (-distance) % subject_width
+                for y in range(subject_height):
+                    offset = y * subject_width + column
+                    values[offset] *= rate
+            for distance in range(bounded_y):
+                rate = struct.unpack("=f", struct.pack("=f", (distance + 1) / feather))[0]
+                row_start = distance * subject_width
+                for x in range(subject_width):
+                    values[row_start + x] *= rate
+            for distance in range(bounded_y):
+                rate = struct.unpack("=f", struct.pack("=f", (distance + 1) / feather))[0]
+                row_start = ((-distance) % subject_height) * subject_width
+                for x in range(subject_width):
+                    values[row_start + x] *= rate
+
+        saved_values = array("f", (255.0 * value for value in values))
         pixels = bytearray(width * height * 3)
-        for y in range(subject["y"], subject["y"] + subject["height"]):
-            for x in range(subject["x"], subject["x"] + subject["width"]):
-                value = 1.0
-                distances = (
-                    x - subject["x"],
-                    subject["x"] + subject["width"] - 1 - x,
-                    y - subject["y"],
-                    subject["y"] + subject["height"] - 1 - y,
-                )
-                if feather:
-                    for distance in distances:
-                        if distance < feather:
-                            value *= (distance + 1) / feather
-                intensity = int(255 * value)
+        for local_y in range(subject_height):
+            y = subject["y"] + local_y
+            for local_x in range(subject_width):
+                x = subject["x"] + local_x
+                intensity = int(saved_values[local_y * subject_width + local_x])
                 offset = (y * width + x) * 3
                 pixels[offset : offset + 3] = bytes((intensity,)) * 3
         return bytes(pixels)
@@ -288,6 +312,18 @@ class PngPixelTests(unittest.TestCase):
         with self.assertRaisesRegex(ArtifactError, "invalid_generated_image"):
             decode_png_pixels(link, 16, 8)
 
+    def test_bounded_reader_rejects_mocked_windows_reparse_input(self) -> None:
+        path = self.write_png(16, 8, 3, pixel_pattern(3))
+        path_stat = path.lstat()
+        reparse_stat = SimpleNamespace(
+            st_mode=path_stat.st_mode,
+            st_size=path_stat.st_size,
+            st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+        )
+        with patch.object(Path, "lstat", return_value=reparse_stat):
+            with self.assertRaisesRegex(ArtifactError, "invalid_generated_image"):
+                decode_png_pixels(path, 16, 8)
+
     def test_bounded_reader_rejects_opened_file_identity_drift(self) -> None:
         path = self.write_png(16, 8, 3, pixel_pattern(3))
         different = self.write_png(16, 8, 4, pixel_pattern(4))
@@ -322,23 +358,40 @@ class PngPixelTests(unittest.TestCase):
         self.assertEqual(result["mismatched_pixels"], 1)
         self.assertEqual(result["copy_mismatched_pixels"], 1)
 
-    def test_soft_mask_must_be_zero_outside_and_feather_inward(self) -> None:
-        metadata = validate_saved_soft_mask(self.soft_mask(), approved_layout())
-        self.assertEqual(metadata["outside_nonzero_pixels"], 0)
-        self.assertGreater(metadata["edge_profiles_checked"], 0)
-        with self.assertRaisesRegex(ArtifactError, "invalid_two_stage_mask"):
-            validate_saved_soft_mask(self.mask_with_left_leak(), approved_layout())
+    def test_soft_mask_accepts_exact_installed_asymmetric_output(self) -> None:
+        layout = approved_layout()
+        subject = layout["subject_mask_rect"]
+        assert isinstance(subject, dict)
+        pixels = self.soft_mask_pixels(layout)
 
-    def test_soft_mask_accepts_installed_feather_formula_and_hard_edge(self) -> None:
-        feathered = validate_saved_soft_mask(self.soft_mask(), approved_layout())
+        def value_at(x: int, y: int) -> int:
+            return pixels[(y * 1280 + x) * 3]
+
+        center_x = subject["x"] + subject["width"] // 2
+        center_y = subject["y"] + subject["height"] // 2
+        self.assertEqual(value_at(center_x, subject["y"]), 0)
+        self.assertEqual(value_at(subject["x"], center_y), 0)
+        self.assertEqual(value_at(subject["x"] + subject["width"] - 1, center_y), 15)
+        self.assertEqual(value_at(center_x, subject["y"] + subject["height"] - 1), 15)
+
+        feathered = validate_saved_soft_mask(self.write_png(1280, 720, 3, pixels), layout)
         self.assertEqual(feathered["outside_nonzero_pixels"], 0)
+        self.assertGreater(feathered["edge_profiles_checked"], 0)
 
+    def test_soft_mask_accepts_zero_and_one_feather_hard_edges(self) -> None:
         for feather in (0, 1):
             edge_layout = approved_layout()
             edge_layout["feather_pixels"] = feather
             edge_path = self.write_png(1280, 720, 3, self.soft_mask_pixels(edge_layout))
             metadata = validate_saved_soft_mask(edge_path, edge_layout)
             self.assertEqual(metadata["feather_pixels"], feather)
+
+    def test_soft_mask_rejects_outside_leakage(self) -> None:
+        with self.assertRaises(ArtifactError) as raised:
+            validate_saved_soft_mask(self.mask_with_left_leak(), approved_layout())
+        self.assertEqual(raised.exception.code, "invalid_two_stage_mask")
+        self.assertEqual(raised.exception.details["reason"], "mask_invariants_failed")
+        self.assertEqual(raised.exception.details["outside_nonzero_pixels"], 1)
 
     def test_hard_mask_requires_positive_strict_interior(self) -> None:
         layout = approved_layout()
@@ -360,18 +413,27 @@ class PngPixelTests(unittest.TestCase):
         with self.assertRaisesRegex(ArtifactError, "invalid_two_stage_mask"):
             validate_saved_soft_mask(path, layout)
 
-    def test_soft_mask_rejects_channel_interior_and_complete_edge_violations(self) -> None:
+    def test_soft_mask_rejects_unequal_channels_and_empty_mask(self) -> None:
+        layout = approved_layout()
+        valid = self.soft_mask_pixels()
+
+        unequal = bytearray(valid)
+        unequal[((100 * 1280 + 800) * 3) + 1] ^= 1
+        cases = (
+            ("unequal channels", unequal, "unequal_rgb_channels"),
+            ("empty mask", bytearray(len(valid)), "invalid_feather_direction"),
+        )
+        for label, pixels, reason in cases:
+            with self.subTest(label=label), self.assertRaises(ArtifactError) as raised:
+                validate_saved_soft_mask(self.write_png(1280, 720, 3, bytes(pixels)), layout)
+            self.assertEqual(raised.exception.code, "invalid_two_stage_mask")
+            self.assertEqual(raised.exception.details["reason"], reason)
+
+    def test_soft_mask_rejects_off_center_malformed_ramps_on_all_edges(self) -> None:
         layout = approved_layout()
         subject = layout["subject_mask_rect"]
         assert isinstance(subject, dict)
         valid = self.soft_mask_pixels()
-        cases: list[tuple[str, bytearray]] = []
-
-        unequal = bytearray(valid)
-        unequal[((100 * 1280 + 800) * 3) + 1] ^= 1
-        cases.append(("unequal channels", unequal))
-
-        cases.append(("empty interior", bytearray(len(valid))))
 
         positions = {
             "left": lambda distance: (subject["x"] + distance, subject["y"] + 101),
@@ -391,11 +453,10 @@ class PngPixelTests(unittest.TestCase):
                 x, y = coordinates(distance)
                 offset = (y * 1280 + x) * 3
                 nonmonotonic[offset : offset + 3] = bytes((intensity,)) * 3
-            cases.append((f"nonmonotonic {edge} edge", nonmonotonic))
-
-        for label, pixels in cases:
-            with self.subTest(label=label), self.assertRaisesRegex(ArtifactError, "invalid_two_stage_mask"):
-                validate_saved_soft_mask(self.write_png(1280, 720, 3, bytes(pixels)), layout)
+            with self.subTest(edge=edge), self.assertRaises(ArtifactError) as raised:
+                validate_saved_soft_mask(self.write_png(1280, 720, 3, bytes(nonmonotonic)), layout)
+            self.assertEqual(raised.exception.code, "invalid_two_stage_mask")
+            self.assertEqual(raised.exception.details["reason"], "invalid_feather_direction")
 
 
 if __name__ == "__main__":
