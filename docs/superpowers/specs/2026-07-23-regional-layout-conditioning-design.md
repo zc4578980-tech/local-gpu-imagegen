@@ -48,7 +48,7 @@ No ControlNet, custom node, model download, or Python package is required by the
 - ControlNet, IP-Adapter, LoRA, refiner, new model, or custom-node installation.
 - Pixel-perfect placement or a claim that regional conditioning guarantees visual compliance.
 - Silent fallback to prompt-only generation.
-- Changes to shared/global Python or `<local-ai-root>\envs\pytorch-vla`.
+- Changes to shared/global Python or the user's separate `pytorch-vla` learning environment.
 - Publication, push, tag, PyPI upload, MCP Registry publication, or GitHub release.
 - Replacement or migration of retained failed runs.
 

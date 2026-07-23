@@ -10,9 +10,9 @@
 
 ## Global Constraints
 
-- Work only in `<codex-workspace>\projects\plugins\local-gpu-imagegen\.worktrees\v061-launch-readiness` on `feature/v061-launch-readiness`; do not modify `main`.
+- Work only in the existing linked worktree on `feature/v061-launch-readiness`; do not modify `main`.
 - Do not download a model, ControlNet, custom node, Python package, or dependency.
-- Do not modify global Python or `<local-ai-root>\envs\pytorch-vla`.
+- Do not modify global Python or the user's separate `pytorch-vla` learning environment.
 - Keep exactly 15 MCP tools and exactly 20 top-level generation-plan fields.
 - Keep `workflows/comfyui/sdxl-txt2img-v1.json` byte-for-byte unchanged.
 - Keep `dist/local_gpu_imagegen-0.6.1-py3-none-any.whl` unchanged at SHA-256 `33ed4bc1564a92e3252b80f79cf1a7dd91f726774045801fd617bf9d0ef02655`.
@@ -985,7 +985,7 @@ git commit -m "test: cover regional route lifecycle"
 - Modify: `server.json:6,17`
 - Modify: active version assertions in `tests/test_mcp_server.py`, `tests/test_packaging.py`, `tests/test_public_docs.py`, and `tests/test_repository_hygiene.py`
 - Modify: `README.md`, `CHANGELOG.md`, `docs/architecture.md`, `docs/github-listing.md`, `docs/directory-listings.md`, and `docs/release-checklist.md`
-- Update after verification, outside the branch checkout: `<codex-workspace>\projects\plugins\local-gpu-imagegen\PROJECT_NODES.md` and `NEXT_SESSION.md`
+- Update after verification, outside the branch checkout: `<project-root>/PROJECT_NODES.md` and `<project-root>/NEXT_SESSION.md`.
 
 **Interfaces:**
 - Consumes: all model-free feature tasks.
@@ -1042,7 +1042,8 @@ Run:
 
 ```powershell
 $suffix = git rev-parse --short HEAD
-$out = "<codex-workspace>\scratch\local-gpu-imagegen-v070-dist-$suffix"
+$scratchRoot = Join-Path $env:TEMP 'local-gpu-imagegen-verification'
+$out = Join-Path $scratchRoot "v070-dist-$suffix"
 if (Test-Path -LiteralPath $out) { throw "Verification output already exists: $out" }
 New-Item -ItemType Directory -Path $out | Out-Null
 uv build --offline --wheel --out-dir $out
@@ -1057,8 +1058,9 @@ Run:
 
 ```powershell
 $suffix = git rev-parse --short HEAD
-$out = "<codex-workspace>\scratch\local-gpu-imagegen-v070-dist-$suffix"
-$venv = "<codex-workspace>\scratch\local-gpu-imagegen-v070-verify-$suffix"
+$scratchRoot = Join-Path $env:TEMP 'local-gpu-imagegen-verification'
+$out = Join-Path $scratchRoot "v070-dist-$suffix"
+$venv = Join-Path $scratchRoot "v070-verify-$suffix"
 if (Test-Path -LiteralPath $venv) { throw "Verification environment already exists: $venv" }
 $python312 = uv python find 3.12
 uv venv --offline --python $python312 $venv
@@ -1079,7 +1081,8 @@ Run:
 ```powershell
 Get-FileHash -Algorithm SHA256 .\dist\local_gpu_imagegen-0.6.1-py3-none-any.whl
 $suffix = git rev-parse --short HEAD
-Get-FileHash -Algorithm SHA256 "<codex-workspace>\scratch\local-gpu-imagegen-v070-dist-$suffix\local_gpu_imagegen-0.7.0-*.whl"
+$scratchRoot = Join-Path $env:TEMP 'local-gpu-imagegen-verification'
+Get-FileHash -Algorithm SHA256 (Join-Path $scratchRoot "v070-dist-$suffix\local_gpu_imagegen-0.7.0-*.whl")
 git status --short
 ```
 
@@ -1092,7 +1095,7 @@ git commit -m "chore(release): prepare v0.7.0 regional preview"
 
 - [ ] **Step 9: Update continuity records and stop at the GPU authority gate**
 
-Append control flow, failure modes, exact commands, test totals, old/new artifact hashes, known limitations, and the next authority gate to `PROJECT_NODES.md`. Replace stale `NEXT_SESSION.md` instructions with the exact regional bundle inspection/trust/recommendation sequence. Write a brief Obsidian log under `<codex-workspace>\obsidian\Codex Logs\2026-07-23.md` according to the project rules.
+Append control flow, failure modes, exact commands, test totals, old/new artifact hashes, known limitations, and the next authority gate to `<project-root>/PROJECT_NODES.md`. Replace stale `<project-root>/NEXT_SESSION.md` instructions with the exact regional bundle inspection/trust/recommendation sequence. Write a brief entry to the configured Obsidian daily log according to the project rules.
 
 Do not start ComfyUI, inspect the real checkpoint bundle, mutate trust, generate an image, export evidence, push, tag, or publish. Those actions require a new displayed route/bundle/budget confirmation after the model-free milestone is reported.
 
