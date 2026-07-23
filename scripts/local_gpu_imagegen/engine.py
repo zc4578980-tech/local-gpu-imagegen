@@ -46,6 +46,7 @@ from .visual_review import (
 
 BackendRunner = Callable[[dict[str, object]], dict[str, object]]
 CapabilityProvider = Callable[[], dict[str, object]]
+TWO_STAGE_RECOVERY_CLEANUP_WARNING = "two_stage_recovery_cleanup_failed"
 
 
 class AssetRunEngine:
@@ -381,7 +382,8 @@ class AssetRunEngine:
             })
         except Exception as error:
             if two_stage:
-                retained = _retain_two_stage_partial(
+                self._recover_two_stage_attempt(
+                    handle,
                     run_root,
                     stage_pending_paths,
                     stage_final_paths,
@@ -389,21 +391,11 @@ class AssetRunEngine:
                     height,
                     seed,
                     subject_seed,
+                    error,
                 )
-                if retained:
-                    self.store.record_partial_attempt(
-                        handle,
-                        retained,
-                        _attempt_error(error),
-                    )
-                    stage_pending_paths["mask"].unlink(missing_ok=True)
-                    stage_final_paths["mask"].unlink(missing_ok=True)
-                    raise
-                for candidate in (*stage_pending_paths.values(), *stage_final_paths.values()):
-                    candidate.unlink(missing_ok=True)
             else:
                 pending_path.unlink(missing_ok=True)
-            self._fail_owned_attempt(handle, error)
+                self._fail_owned_attempt(handle, error)
             raise
 
         if warnings:
@@ -799,13 +791,66 @@ class AssetRunEngine:
     def _append_warnings(self, run_id: str, warnings: list[str]) -> dict[str, object]:
         return self.store.update(run_id, lambda value: _extend_manifest_warnings(value, warnings))
 
-    def _fail_owned_attempt(self, handle: AttemptHandle, error: Exception) -> None:
-        if handle.owner_token is None:
-            return
+    def _recover_two_stage_attempt(
+        self,
+        handle: AttemptHandle,
+        run_root: Path,
+        pending: dict[str, Path],
+        final: dict[str, Path],
+        width: int,
+        height: int,
+        seed: int,
+        subject_seed: int | None,
+        error: Exception,
+    ) -> None:
+        terminal = False
+        retained_paths: set[Path] = set()
+        attempt_error = _attempt_error(error)
         try:
-            self.store.fail_attempt(handle, _attempt_error(error))
-        except AssetEngineError:
+            retained, retained_paths = _retain_two_stage_partial(
+                run_root,
+                pending,
+                final,
+                width,
+                height,
+                seed,
+                subject_seed,
+            )
+            if _cleanup_two_stage_artifacts(pending, final, retained_paths):
+                _add_cleanup_warning(error, attempt_error)
+            if retained:
+                try:
+                    self.store.record_partial_attempt(handle, retained, attempt_error)
+                except Exception:
+                    pass
+                else:
+                    terminal = True
+        except Exception:
+            # Recovery is deliberately subordinate to the original generation error.
             pass
+        finally:
+            if not terminal:
+                terminal = self._fail_owned_attempt(handle, error, attempt_error)
+                retained_paths = set()
+            if _cleanup_two_stage_artifacts(pending, final, retained_paths):
+                _add_cleanup_warning(error, attempt_error)
+
+    def _fail_owned_attempt(
+        self,
+        handle: AttemptHandle,
+        error: Exception,
+        attempt_error: dict[str, object] | None = None,
+    ) -> bool:
+        if handle.owner_token is None:
+            return True
+        try:
+            self.store.fail_attempt(
+                handle,
+                attempt_error if attempt_error is not None else _attempt_error(error),
+            )
+        except Exception:
+            return False
+        return True
 
 
 def recoverable_next_actions(manifest: dict[str, object]) -> list[str]:
@@ -1314,23 +1359,59 @@ def _retain_two_stage_partial(
     height: int,
     seed: int,
     subject_seed: int | None,
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], set[Path]]:
     retained: list[dict[str, object]] = []
+    retained_paths: set[Path] = set()
     for role, stage_seed in (("base", seed), ("subject", subject_seed)):
         artifact_role = "base" if role == "base" else "final"
-        candidate = final[artifact_role] if final[artifact_role].is_file() else pending[artifact_role]
-        if not candidate.is_file():
-            break
         try:
+            if final[artifact_role].is_file():
+                candidate = final[artifact_role]
+            elif pending[artifact_role].is_file():
+                candidate = pending[artifact_role]
+            else:
+                break
             validate_png(candidate, width, height)
             if candidate == pending[artifact_role]:
                 os.replace(candidate, final[artifact_role])
             metadata = validate_png(final[artifact_role], width, height)
-        except AssetEngineError:
+            metadata["path"] = final[artifact_role].relative_to(run_root).as_posix()
+        except Exception:
             break
-        metadata["path"] = final[artifact_role].relative_to(run_root).as_posix()
         retained.append({"role": role, "seed": stage_seed, "image": metadata})
-    return retained
+        retained_paths.add(final[artifact_role])
+    return retained, retained_paths
+
+
+def _cleanup_two_stage_artifacts(
+    pending: dict[str, Path],
+    final: dict[str, Path],
+    retained_paths: set[Path],
+) -> bool:
+    cleanup_failed = False
+    for candidate in dict.fromkeys((*pending.values(), *final.values())):
+        if candidate in retained_paths:
+            continue
+        try:
+            candidate.unlink(missing_ok=True)
+        except Exception:
+            cleanup_failed = True
+    return cleanup_failed
+
+
+def _add_cleanup_warning(error: Exception, attempt_error: dict[str, object]) -> None:
+    details = attempt_error.get("details")
+    if not isinstance(details, dict):
+        details = {}
+    attempt_error["details"] = {
+        **details,
+        "cleanup_warning": TWO_STAGE_RECOVERY_CLEANUP_WARNING,
+    }
+    if isinstance(error, AssetEngineError):
+        error.details = {
+            **error.details,
+            "cleanup_warning": TWO_STAGE_RECOVERY_CLEANUP_WARNING,
+        }
 
 
 def _attempt_error(error: Exception) -> dict[str, object]:

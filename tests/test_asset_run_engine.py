@@ -161,7 +161,13 @@ class TwoStageBackendRunner:
         mask_path = Path(str(output_paths["mask"]))
         final_path = Path(str(output_paths["final"]))
         write_test_png(base_path, width, height)
+        if self.failure == "malformed_base":
+            base_path.write_bytes(b"malformed base")
+            raise AssetEngineError("backend_stage_failed", "Subject stage failed.", "backend")
         if self.failure == "base_only":
+            raise AssetEngineError("backend_stage_failed", "Subject stage failed.", "backend")
+        if self.failure == "malformed_final":
+            final_path.write_bytes(b"malformed final")
             raise AssetEngineError("backend_stage_failed", "Subject stage failed.", "backend")
 
         def mask_pixel(x: int, y: int) -> bytes:
@@ -889,6 +895,146 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(manifest["state"], "partial")
         self.assertEqual(manifest["stage_budget"]["consumed"], 1)
         self.assertEqual([stage["role"] for stage in manifest["attempts"][0]["retained_stages"]], ["base"])
+
+    def test_two_stage_malformed_trailing_output_retains_only_base_and_cleans_residue(self) -> None:
+        runner = TwoStageBackendRunner(failure="malformed_final")
+        self.engine.backend_runner = runner
+        started = self.engine.start_run(self.two_stage_start_arguments())
+        run_id = str(started["run_id"])
+        route = self.engine.get_run({"run_id": run_id})["request"]["route"]
+
+        with self.assertRaises(AssetEngineError) as raised:
+            self.engine.generate_round({
+                "run_id": run_id,
+                "idempotency_key": "two-stage-malformed-final",
+                "action": "initial",
+                "edit_mode": "txt2img",
+                "seed": 42,
+                "change_summary": "Exercise malformed trailing output recovery.",
+                "plan": self.two_stage_plan(route),
+            })
+
+        self.assertEqual(raised.exception.code, "backend_stage_failed")
+        run_root = self.engine.store.run_root(run_id)
+        manifest = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(manifest["state"], "partial")
+        self.assertIsNone(manifest["active_attempt"])
+        self.assertEqual(manifest["stage_budget"]["consumed"], 1)
+        self.assertEqual(
+            [stage["role"] for stage in manifest["attempts"][0]["retained_stages"]],
+            ["base"],
+        )
+        self.assertEqual({path.name for path in run_root.glob("round-01*")}, {"round-01-base.png"})
+        self.assertFalse((run_root / ".run.lock").exists())
+
+    def test_two_stage_retention_replace_failure_fails_attempt_and_removes_artifacts(self) -> None:
+        runner = TwoStageBackendRunner(failure="base_only")
+        self.engine.backend_runner = runner
+        started = self.engine.start_run(self.two_stage_start_arguments())
+        run_id = str(started["run_id"])
+        route = self.engine.get_run({"run_id": run_id})["request"]["route"]
+        original_replace = os.replace
+
+        def fail_base_retention(source: object, destination: object) -> None:
+            if Path(source).name == "round-01-base.pending.png":
+                raise OSError("injected retention replace failure")
+            original_replace(source, destination)
+
+        with patch("local_gpu_imagegen.engine.os.replace", side_effect=fail_base_retention):
+            with self.assertRaises(AssetEngineError) as raised:
+                self.engine.generate_round({
+                    "run_id": run_id,
+                    "idempotency_key": "two-stage-retention-replace-failure",
+                    "action": "initial",
+                    "edit_mode": "txt2img",
+                    "seed": 42,
+                    "change_summary": "Exercise failed retained-artifact promotion.",
+                    "plan": self.two_stage_plan(route),
+                })
+
+        self.assertEqual(raised.exception.code, "backend_stage_failed")
+        run_root = self.engine.store.run_root(run_id)
+        manifest = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(manifest["state"], "created")
+        self.assertIsNone(manifest["active_attempt"])
+        self.assertEqual(manifest["attempts"][-1]["status"], "failed")
+        self.assertEqual(list(run_root.glob("round-01*")), [])
+        self.assertFalse((run_root / ".run.lock").exists())
+
+    def test_two_stage_cleanup_failure_still_fails_attempt_and_retries_cleanup(self) -> None:
+        runner = TwoStageBackendRunner(failure="malformed_base")
+        self.engine.backend_runner = runner
+        started = self.engine.start_run(self.two_stage_start_arguments())
+        run_id = str(started["run_id"])
+        route = self.engine.get_run({"run_id": run_id})["request"]["route"]
+        original_unlink = Path.unlink
+        cleanup_failures = 0
+
+        def fail_first_malformed_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+            nonlocal cleanup_failures
+            if (
+                path.name == "round-01-base.pending.png"
+                and path.exists()
+                and cleanup_failures == 0
+            ):
+                cleanup_failures += 1
+                raise PermissionError("injected cleanup failure")
+            original_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", new=fail_first_malformed_cleanup):
+            with self.assertRaises(AssetEngineError) as raised:
+                self.engine.generate_round({
+                    "run_id": run_id,
+                    "idempotency_key": "two-stage-cleanup-failure",
+                    "action": "initial",
+                    "edit_mode": "txt2img",
+                    "seed": 42,
+                    "change_summary": "Exercise recovery cleanup failure handling.",
+                    "plan": self.two_stage_plan(route),
+                })
+
+        self.assertEqual(raised.exception.code, "backend_stage_failed")
+        self.assertEqual(cleanup_failures, 1)
+        run_root = self.engine.store.run_root(run_id)
+        manifest = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(manifest["state"], "created")
+        self.assertIsNone(manifest["active_attempt"])
+        self.assertEqual(manifest["attempts"][-1]["status"], "failed")
+        self.assertEqual(list(run_root.glob("round-01*")), [])
+        self.assertFalse((run_root / ".run.lock").exists())
+
+    def test_two_stage_partial_record_failure_fails_attempt_and_removes_retained_artifacts(self) -> None:
+        runner = TwoStageBackendRunner(failure="base_only")
+        self.engine.backend_runner = runner
+        started = self.engine.start_run(self.two_stage_start_arguments())
+        run_id = str(started["run_id"])
+        route = self.engine.get_run({"run_id": run_id})["request"]["route"]
+        partial_error = AssetEngineError(
+            "partial_record_failed",
+            "Injected partial manifest failure.",
+            "artifact",
+        )
+
+        with patch.object(self.engine.store, "record_partial_attempt", side_effect=partial_error):
+            with self.assertRaises(AssetEngineError) as raised:
+                self.engine.generate_round({
+                    "run_id": run_id,
+                    "idempotency_key": "two-stage-partial-record-failure",
+                    "action": "initial",
+                    "edit_mode": "txt2img",
+                    "seed": 42,
+                    "change_summary": "Exercise failed partial manifest transition.",
+                    "plan": self.two_stage_plan(route),
+                })
+
+        self.assertEqual(raised.exception.code, "backend_stage_failed")
+        run_root = self.engine.store.run_root(run_id)
+        manifest = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(manifest["state"], "created")
+        self.assertIsNone(manifest["active_attempt"])
+        self.assertEqual(manifest["attempts"][-1]["status"], "failed")
+        self.assertEqual(list(run_root.glob("round-01*")), [])
+        self.assertFalse((run_root / ".run.lock").exists())
 
     def test_two_stage_mask_or_protected_pixel_failure_records_technical_partial(self) -> None:
         for failure, error_code in (
