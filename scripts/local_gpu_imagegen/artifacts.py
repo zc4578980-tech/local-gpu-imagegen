@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import struct
 import zlib
 from pathlib import Path
@@ -23,6 +24,7 @@ PNG_CHANNELS_BY_COLOR_TYPE = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
 MAX_PNG_FILE_BYTES = 64 * 1024 * 1024
 MAX_PNG_CHUNK_BYTES = 32 * 1024 * 1024
 MAX_PNG_DECOMPRESSED_BYTES = 128 * 1024 * 1024
+MAX_IMAGE_BYTES = MAX_PNG_FILE_BYTES
 ADAM7_PASSES = (
     (0, 0, 8, 8),
     (4, 0, 8, 8),
@@ -51,6 +53,45 @@ def ensure_within(root: Path, candidate: Path) -> Path:
             {"path": str(resolved)},
         )
     return resolved
+
+
+def _read_bounded_regular_file(path: Path, max_bytes: int) -> bytes:
+    """Read one stable regular file without following link-like paths."""
+    try:
+        path_stat = path.lstat()
+        file_attributes = getattr(path_stat, "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            stat.S_ISLNK(path_stat.st_mode)
+            or bool(file_attributes & reparse_flag)
+            or not stat.S_ISREG(path_stat.st_mode)
+            or path_stat.st_size > max_bytes
+        ):
+            raise _bounded_file_error(path)
+        with path.open("rb") as stream:
+            opened_stat = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(opened_stat.st_mode)
+                or opened_stat.st_size > max_bytes
+                or not os.path.samestat(path_stat, opened_stat)
+            ):
+                raise _bounded_file_error(path)
+            data = stream.read(max_bytes + 1)
+    except ArtifactError:
+        raise
+    except (OSError, ValueError) as error:
+        raise _bounded_file_error(path) from error
+    if len(data) > max_bytes:
+        raise _bounded_file_error(path)
+    return data
+
+
+def _bounded_file_error(path: Path) -> ArtifactError:
+    return ArtifactError(
+        "invalid_generated_image",
+        "Generated image is not a bounded regular file.",
+        {"path": str(path), "reason": "unsafe_or_oversize_image"},
+    )
 
 
 def sha256_file(path: Path) -> str:
