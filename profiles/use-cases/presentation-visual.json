@@ -38,6 +38,6 @@
     "unusable_overlay_contrast",
     "explicit_constraint_violation"
   ],
-  "refine_mutable": ["prompt_wording", "negative_prompt", "steps", "guidance_scale", "strength", "regional_conditioning"],
-  "explore_mutable": ["prompt_wording", "negative_prompt", "steps", "guidance_scale", "strength", "seed", "composition", "model_choice", "regional_conditioning"]
+  "refine_mutable": ["prompt_wording", "negative_prompt", "steps", "guidance_scale", "strength", "regional_conditioning", "two_stage_conditioning"],
+  "explore_mutable": ["prompt_wording", "negative_prompt", "steps", "guidance_scale", "strength", "seed", "composition", "model_choice", "regional_conditioning", "two_stage_conditioning"]
 }

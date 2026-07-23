@@ -15,6 +15,7 @@ from local_gpu_imagegen.generation_plan import (  # noqa: E402
     validate_confirmed_run_request,
     validate_generation_plan,
 )
+from local_gpu_imagegen.two_stage_layout import TWO_STAGE_TEMPLATE_ID  # noqa: E402
 
 
 class GenerationPlanTests(unittest.TestCase):
@@ -107,6 +108,52 @@ class GenerationPlanTests(unittest.TestCase):
         plan["prompt_compiler_id"] = "natural-v1"
         return request, plan
 
+    @staticmethod
+    def two_stage_layout() -> dict[str, object]:
+        return {
+            "mode": "copy-subject-two-stage-v1",
+            "canvas": {"width": 640, "height": 320},
+            "copy_protected_rect": {"x": 0, "y": 0, "width": 224, "height": 320},
+            "subject_mask_rect": {"x": 304, "y": 16, "width": 320, "height": 288},
+            "feather_pixels": 0,
+            "vae_grow_mask_by": 0,
+        }
+
+    @staticmethod
+    def two_stage_conditioning() -> dict[str, object]:
+        return {
+            "subject_prompt": "one complete brass telescope on a tripod",
+            "subject_negative_prompt": "cropped subject, duplicate telescope",
+            "subject_denoise": 0.9,
+        }
+
+    def two_stage_contract(self) -> tuple[dict[str, object], dict[str, object]]:
+        request = copy.deepcopy(self.run_request)
+        plan = copy.deepcopy(self.plan)
+        layout = self.two_stage_layout()
+        conditioning = self.two_stage_conditioning()
+        request["constraints"].update({
+            "width": 640,
+            "height": 320,
+            "two_stage_layout": copy.deepcopy(layout),
+        })
+        request["initial_two_stage_conditioning"] = copy.deepcopy(conditioning)
+        request["workflow_template_id"] = TWO_STAGE_TEMPLATE_ID
+        request["route"]["workflow_template_id"] = TWO_STAGE_TEMPLATE_ID
+        request["route"]["requirements"] = {"two_stage_layout": copy.deepcopy(layout)}
+        request["merged_profile"] = {
+            "refine_mutable": ["two_stage_conditioning"],
+            "explore_mutable": ["two_stage_conditioning"],
+        }
+        plan["constraints"].update({
+            "width": 640,
+            "height": 320,
+            "two_stage_layout": copy.deepcopy(layout),
+        })
+        plan["parameters"] = {"two_stage_conditioning": copy.deepcopy(conditioning)}
+        plan["workflow_template_id"] = TWO_STAGE_TEMPLATE_ID
+        return request, plan
+
     def test_accepts_complete_plan_matching_confirmed_run(self) -> None:
         validated = validate_generation_plan(self.plan, self.run_request, "initial")
         self.assertEqual(validated["positive_prompt"], self.plan["positive_prompt"])
@@ -151,6 +198,55 @@ class GenerationPlanTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValidationError, "invalid_regional_conditioning"):
             validate_confirmed_run_request(request)
+
+    def test_initial_two_stage_plan_must_match_confirmed_layout_and_conditioning(self) -> None:
+        request, plan = self.two_stage_contract()
+
+        validated = validate_generation_plan(plan, request, "initial", "txt2img")
+        self.assertEqual(
+            validated["parameters"]["two_stage_conditioning"],
+            request["initial_two_stage_conditioning"],
+        )
+
+        changed = copy.deepcopy(plan)
+        changed["parameters"]["two_stage_conditioning"]["subject_denoise"] = 0.95
+        with self.assertRaisesRegex(ValidationError, "generation_plan_mismatch"):
+            validate_generation_plan(changed, request, "initial", "txt2img")
+
+    def test_two_stage_refine_keeps_layout_frozen_and_uses_profile_allowlist(self) -> None:
+        request, plan = self.two_stage_contract()
+        changed = copy.deepcopy(plan)
+        changed["parameters"]["two_stage_conditioning"]["subject_prompt"] = "one red telescope"
+        validate_generation_plan(changed, request, "refine", "txt2img")
+
+        changed["constraints"]["two_stage_layout"]["subject_mask_rect"]["x"] = 312
+        with self.assertRaisesRegex(ValidationError, "generation_plan_mismatch"):
+            validate_generation_plan(changed, request, "refine", "txt2img")
+
+    def test_standard_and_old_regional_routes_reject_two_stage_data(self) -> None:
+        standard = copy.deepcopy(self.run_request)
+        standard["constraints"]["two_stage_layout"] = self.two_stage_layout()
+        with self.assertRaisesRegex(ValidationError, "invalid_two_stage_conditioning"):
+            validate_confirmed_run_request(standard)
+
+        regional, _ = self.regional_contract()
+        regional["initial_two_stage_conditioning"] = self.two_stage_conditioning()
+        with self.assertRaisesRegex(ValidationError, "invalid_two_stage_conditioning"):
+            validate_confirmed_run_request(regional)
+
+    def test_two_stage_confirmed_request_requires_layout_and_conditioning_as_a_pair(self) -> None:
+        request, _ = self.two_stage_contract()
+        for missing in ("layout", "conditioning", "both"):
+            changed = copy.deepcopy(request)
+            if missing in {"layout", "both"}:
+                del changed["constraints"]["two_stage_layout"]
+            if missing in {"conditioning", "both"}:
+                del changed["initial_two_stage_conditioning"]
+            with self.subTest(missing=missing), self.assertRaisesRegex(
+                ValidationError,
+                "invalid_two_stage_conditioning",
+            ):
+                validate_confirmed_run_request(changed)
 
     def test_rejects_nested_mode_that_disagrees_with_authoritative_txt2img(self) -> None:
         for nested_mode in ("img2img", "inpaint"):

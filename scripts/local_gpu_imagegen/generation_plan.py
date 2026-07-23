@@ -9,6 +9,11 @@ from .regional_layout import (
     validate_regional_conditioning,
     validate_regional_layout,
 )
+from .two_stage_layout import (
+    TWO_STAGE_TEMPLATE_ID,
+    validate_two_stage_conditioning,
+    validate_two_stage_layout,
+)
 
 
 CONFIRMED_ROUTE_FIELDS = frozenset({
@@ -69,6 +74,7 @@ def validate_generation_plan(
     _validate_confirmed_boundary(plan, run_request)
     _validate_backend(plan["backend"], run_request)
     _validate_regional_plan(plan, run_request, action)
+    _validate_two_stage_plan(plan, run_request, action)
     if action != "initial":
         profile = _merged_profile(run_request)
         mutable = profile.get(f"{action}_mutable", [])
@@ -178,8 +184,52 @@ def validate_confirmed_run_request(run_request: object) -> dict[str, object]:
     normalized_constraints = normalized["constraints"]
     assert isinstance(normalized_constraints, dict)
     regional_route = route.get("workflow_template_id") == REGIONAL_TEMPLATE_ID
+    two_stage_route = route.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID
     has_layout = "regional_layout" in normalized_constraints
     has_conditioning = "initial_regional_conditioning" in normalized
+    has_two_stage_layout = "two_stage_layout" in normalized_constraints
+    has_two_stage_conditioning = "initial_two_stage_conditioning" in normalized
+    if (
+        two_stage_route != has_two_stage_layout
+        or two_stage_route != has_two_stage_conditioning
+    ):
+        raise ValidationError(
+            "invalid_two_stage_conditioning",
+            "Two-stage route data is incomplete or not allowed on this route.",
+        )
+    if two_stage_route:
+        if has_layout or has_conditioning:
+            raise ValidationError(
+                "invalid_regional_conditioning",
+                "Two-stage routes cannot accept regional data.",
+            )
+        layout = validate_two_stage_layout(
+            normalized_constraints.get("two_stage_layout")
+        )
+        conditioning = validate_two_stage_conditioning(
+            normalized.get("initial_two_stage_conditioning")
+        )
+        requirements = route.get("requirements")
+        route_layout = validate_two_stage_layout(
+            requirements.get("two_stage_layout") if isinstance(requirements, dict) else None
+        )
+        if route_layout != layout:
+            raise ValidationError(
+                "invalid_run_request",
+                "Confirmed two-stage layout differs from the route requirements.",
+            )
+        canvas = layout["canvas"]
+        if (
+            normalized_constraints.get("width") != canvas["width"]
+            or normalized_constraints.get("height") != canvas["height"]
+        ):
+            raise ValidationError(
+                "invalid_two_stage_layout",
+                "Confirmed dimensions must match the two-stage canvas.",
+            )
+        normalized_constraints["two_stage_layout"] = layout
+        normalized["initial_two_stage_conditioning"] = conditioning
+        return normalized
     if regional_route:
         layout = validate_regional_layout(normalized_constraints.get("regional_layout"))
         conditioning = validate_regional_conditioning(
@@ -238,6 +288,50 @@ def _validate_regional_plan(
         raise ValidationError(
             "invalid_regional_conditioning",
             "Standard routes cannot accept regional data.",
+        )
+
+
+def _validate_two_stage_plan(
+    plan: dict[str, object],
+    run_request: dict[str, object],
+    action: str,
+) -> None:
+    constraints = plan["constraints"]
+    parameters = plan["parameters"]
+    assert isinstance(constraints, dict) and isinstance(parameters, dict)
+    two_stage_route = plan["workflow_template_id"] == TWO_STAGE_TEMPLATE_ID
+    has_layout = "two_stage_layout" in constraints
+    has_conditioning = "two_stage_conditioning" in parameters
+    if two_stage_route != has_layout or two_stage_route != has_conditioning:
+        raise ValidationError(
+            "invalid_two_stage_conditioning",
+            "Two-stage route data is incomplete.",
+        )
+    if two_stage_route:
+        layout = validate_two_stage_layout(constraints.get("two_stage_layout"))
+        conditioning = validate_two_stage_conditioning(
+            parameters.get("two_stage_conditioning")
+        )
+        initial = validate_two_stage_conditioning(
+            run_request.get("initial_two_stage_conditioning")
+        )
+        if action == "initial" and conditioning != initial:
+            raise ValidationError(
+                "generation_plan_mismatch",
+                "Initial two-stage conditioning differs from confirmation.",
+            )
+        canvas = layout["canvas"]
+        if constraints.get("width") != canvas["width"] or constraints.get("height") != canvas["height"]:
+            raise ValidationError(
+                "invalid_two_stage_layout",
+                "Generation dimensions must match the two-stage canvas.",
+            )
+        constraints["two_stage_layout"] = layout
+        parameters["two_stage_conditioning"] = conditioning
+    elif "initial_two_stage_conditioning" in run_request:
+        raise ValidationError(
+            "invalid_two_stage_conditioning",
+            "Standard routes cannot accept two-stage data.",
         )
 
 

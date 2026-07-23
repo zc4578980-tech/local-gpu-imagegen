@@ -112,7 +112,7 @@ class McpServerUnitTests(unittest.TestCase):
             "local_gpu_start_run": {
                 "intent", "profile", "subtype", "style", "constraints", "model_choice", "backend",
                 "authorization_scope", "route_token", "max_rounds", "upscale_policy",
-                "initial_regional_conditioning",
+                "initial_regional_conditioning", "initial_two_stage_conditioning",
             },
             "local_gpu_get_run": {"run_id"},
             "local_gpu_branch_run": {
@@ -151,7 +151,9 @@ class McpServerUnitTests(unittest.TestCase):
                         "catalog_id",
                     },
                     "local_gpu_recommend_models": {"regional_layout"},
-                    "local_gpu_start_run": {"initial_regional_conditioning"},
+                    "local_gpu_start_run": {
+                        "initial_regional_conditioning", "initial_two_stage_conditioning",
+                    },
                     "local_gpu_branch_run": {"denoising_strength"},
                     "local_gpu_prepare_mask": {"user_mask_path", "geometry", "feather_pixels"},
                     "local_gpu_generate_round": {"mask_id"},
@@ -168,31 +170,43 @@ class McpServerUnitTests(unittest.TestCase):
                 "anima-txt2img",
                 "sd15-txt2img",
                 "sdxl-regional-txt2img",
+                "sdxl-two-stage-copy-subject",
                 "sdxl-txt2img",
                 "z-image-turbo-txt2img",
             ],
         )
 
-    def test_two_stage_workflow_is_packaged_but_not_publicly_advertised(self) -> None:
+    def test_two_stage_workflow_is_packaged_and_advertised_after_runtime_integration(self) -> None:
         source = ROOT / "workflows" / "comfyui" / "sdxl-two-stage-copy-subject-v1.json"
         document = json.loads(source.read_text(encoding="utf-8"))
 
         self.assertEqual(document["template_id"], "sdxl-two-stage-copy-subject")
-        self.assertEqual(
-            mcp_server.PACKAGED_PENDING_RUNTIME_WORKFLOW_TEMPLATE_IDS,
-            frozenset({document["template_id"]}),
-        )
-        self.assertNotIn(
+        self.assertIn(
             document["template_id"],
             mcp_server._shipped_workflow_template_ids(),
         )
         tools = mcp_server.tool_schema()
         self.assertEqual(len(tools), 15)
         trust = next(tool for tool in tools if tool["name"] == "local_gpu_set_model_trust")
-        self.assertNotIn(
+        self.assertIn(
             document["template_id"],
             trust["inputSchema"]["properties"]["workflow_template_id"]["enum"],
         )
+
+    def test_start_run_accepts_exact_optional_two_stage_conditioning(self) -> None:
+        tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
+        self.assertEqual(len(tools), 15)
+        start = tools["local_gpu_start_run"]["inputSchema"]
+        self.assertNotIn("initial_two_stage_conditioning", start["required"])
+        conditioning = start["properties"]["initial_two_stage_conditioning"]
+        self.assertFalse(conditioning["additionalProperties"])
+        self.assertEqual(
+            set(conditioning["properties"]),
+            {"subject_prompt", "subject_negative_prompt", "subject_denoise"},
+        )
+        self.assertEqual(set(conditioning["required"]), set(conditioning["properties"]))
+        self.assertEqual(conditioning["properties"]["subject_denoise"]["minimum"], 0.8)
+        self.assertEqual(conditioning["properties"]["subject_denoise"]["maximum"], 1.0)
 
     def test_revision_and_mask_schemas_are_exact(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}

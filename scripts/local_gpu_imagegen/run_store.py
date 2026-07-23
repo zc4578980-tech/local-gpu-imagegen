@@ -309,7 +309,7 @@ class RunStore:
                 "status": "running",
                 "started_at": utc_now(),
             }
-            for field in ("route", "compiled_prompt"):
+            for field in ("route", "compiled_prompt", "compiled_subject_prompt"):
                 if field in normalized_request:
                     active[field] = copy.deepcopy(normalized_request[field])
             if "mask_id" in normalized_request:
@@ -389,7 +389,7 @@ class RunStore:
                 "generation_plan": copy.deepcopy(active["generation_plan"]),
                 "change_summary": active["change_summary"],
             })
-            for field in ("route", "compiled_prompt"):
+            for field in ("route", "compiled_prompt", "compiled_subject_prompt"):
                 if field in active:
                     round_value[field] = copy.deepcopy(active[field])
             if "mask_id" in active:
@@ -1041,7 +1041,7 @@ class RunStore:
             "generation_plan": copy.deepcopy(plan),
             "change_summary": change_summary.strip(),
         }
-        for field in ("route", "compiled_prompt"):
+        for field in ("route", "compiled_prompt", "compiled_subject_prompt"):
             if field in request:
                 value = request[field]
                 if not isinstance(value, dict):
@@ -1050,6 +1050,13 @@ class RunStore:
                         f"Attempt {field} must be an object.",
                     )
                 normalized[field] = copy.deepcopy(value)
+        if "compiled_subject_prompt" in normalized:
+            route = normalized.get("route")
+            if not isinstance(route, dict) or route.get("workflow_template_id") != TWO_STAGE_TEMPLATE_ID:
+                raise ValidationError(
+                    "invalid_attempt_request",
+                    "Only the reviewed two-stage route can retain a compiled subject prompt.",
+                )
         if "mask_id" in request:
             mask_id = request["mask_id"]
             if not isinstance(mask_id, str) or not mask_id.strip():

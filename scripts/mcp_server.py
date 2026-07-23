@@ -27,9 +27,6 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("LOCAL_GPU_IMAGEGEN_COMMAND
 MAX_PREVIEW_BASE64_CHARS = 4 * ((1024 * 1024 + 2) // 3)
 MAX_DISCOVERY_METADATA_STRING_CHARS = 4096
 SERVER_VERSION = __version__
-PACKAGED_PENDING_RUNTIME_WORKFLOW_TEMPLATE_IDS = frozenset({
-    "sdxl-two-stage-copy-subject",
-})
 _asset_engine: Any | None = None
 _runtime_services: Any | None = None
 
@@ -405,6 +402,11 @@ def tool_schema() -> list[dict[str, Any]]:
         "subject_prompt": {"type": "string", "minLength": 1},
         "subject_strength": {"type": "number", "minimum": 0, "maximum": 2},
     }, ["copy_prompt", "copy_strength", "subject_prompt", "subject_strength"])
+    two_stage_conditioning = _object_schema({
+        "subject_prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "subject_negative_prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "subject_denoise": {"type": "number", "minimum": 0.8, "maximum": 1.0},
+    }, ["subject_prompt", "subject_negative_prompt", "subject_denoise"])
     visual_check = _object_schema({
         "status": {
             "type": "string",
@@ -573,6 +575,7 @@ def tool_schema() -> list[dict[str, Any]]:
                 "style": {"type": ["string", "null"], "enum": [None, *_registered_style_ids()]},
                 "constraints": json_object,
                 "initial_regional_conditioning": regional_conditioning,
+                "initial_two_stage_conditioning": two_stage_conditioning,
                 "model_choice": {"type": "string", "minLength": 1},
                 "backend": {"type": "string", "enum": ["webui", "diffusers", "comfyui"]},
                 "authorization_scope": {"type": "string", "enum": ["private", "public_evidence"]},
@@ -765,11 +768,7 @@ def _shipped_workflow_template_ids() -> list[str]:
 
 
 def _workflow_template_is_public(template_id: object) -> bool:
-    return (
-        isinstance(template_id, str)
-        and bool(template_id)
-        and template_id not in PACKAGED_PENDING_RUNTIME_WORKFLOW_TEMPLATE_IDS
-    )
+    return isinstance(template_id, str) and bool(template_id)
 
 
 def _approved_model_ids() -> list[str]:

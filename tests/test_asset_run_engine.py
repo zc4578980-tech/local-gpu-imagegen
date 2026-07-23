@@ -29,6 +29,10 @@ from local_gpu_imagegen.profile_registry import ProfileRegistry  # noqa: E402
 from local_gpu_imagegen.prompt_compilers import PromptCompilerRegistry  # noqa: E402
 from local_gpu_imagegen.regional_layout import REGIONAL_TEMPLATE_ID  # noqa: E402
 from local_gpu_imagegen.run_store import RunStore  # noqa: E402
+from local_gpu_imagegen.two_stage_layout import (  # noqa: E402
+    TWO_STAGE_TEMPLATE_ID,
+    derive_subject_seed,
+)
 from local_gpu_imagegen.workflow_templates import WorkflowTemplateRegistry  # noqa: E402
 
 
@@ -76,6 +80,26 @@ def write_test_png(
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(scanlines)) + _chunk(b"IEND", b""))
 
 
+def write_test_pixels(
+    path: Path,
+    width: int,
+    height: int,
+    pixel_at: Callable[[int, int], bytes],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    scanlines = b"".join(
+        b"\x00" + b"".join(pixel_at(x, y) for x in range(width))
+        for y in range(height)
+    )
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", zlib.compress(scanlines))
+        + _chunk(b"IEND", b"")
+    )
+
+
 class FakeBackendRunner:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -116,6 +140,75 @@ class FakeBackendRunner:
         }
         result.update(self.result_overrides)
         return result
+
+
+class TwoStageBackendRunner:
+    def __init__(self, *, failure: str | None = None) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.failure = failure
+
+    def __call__(self, request: dict[str, object]) -> dict[str, object]:
+        self.calls.append(copy.deepcopy(request))
+        output_paths = request["output_paths"]
+        assert isinstance(output_paths, dict)
+        width = int(request["width"])
+        height = int(request["height"])
+        layout = request["two_stage_layout"]
+        assert isinstance(layout, dict)
+        subject = layout["subject_mask_rect"]
+        assert isinstance(subject, dict)
+        base_path = Path(str(output_paths["base"]))
+        mask_path = Path(str(output_paths["mask"]))
+        final_path = Path(str(output_paths["final"]))
+        write_test_png(base_path, width, height)
+        if self.failure == "base_only":
+            raise AssetEngineError("backend_stage_failed", "Subject stage failed.", "backend")
+
+        def mask_pixel(x: int, y: int) -> bytes:
+            inside = (
+                subject["x"] <= x < subject["x"] + subject["width"]
+                and subject["y"] <= y < subject["y"] + subject["height"]
+            )
+            if self.failure == "mask_leak" and (x, y) == (0, 0):
+                inside = True
+            return b"\xff\xff\xff" if inside else b"\x00\x00\x00"
+
+        write_test_pixels(mask_path, width, height, mask_pixel)
+
+        def final_pixel(x: int, y: int) -> bytes:
+            if self.failure == "protected_change" and (x, y) == (0, 0):
+                return b"\x21\x40\x80"
+            return b"\x20\x40\x80"
+
+        write_test_pixels(final_path, width, height, final_pixel)
+        model = request["model"]
+        workflow = request["workflow"]
+        assert isinstance(model, dict) and isinstance(workflow, dict)
+        return {
+            "ok": True,
+            "path": str(final_path),
+            "backend": request["backend"],
+            "mode": request["mode"],
+            "seed": request["seed"],
+            "width": width,
+            "height": height,
+            "model": model["backend_model_id"],
+            "endpoint_identity": model["endpoint_identity"],
+            "model_identity_token": model["identity_token"],
+            "identity_strength": model["identity_strength"],
+            "workflow_template_id": workflow["template_id"],
+            "workflow_template_version": workflow["template_version"],
+            "workflow_job_id": "job:two-stage-test",
+            "prompt_compiler_id": request["prompt_compiler_id"],
+            "prompt_compiler_version": request["prompt_compiler_version"],
+            "stage_outputs": {
+                "base": {"path": str(base_path)},
+                "final": {"path": str(final_path)},
+            },
+            "mask_output": {"path": str(mask_path)},
+            "subject_seed": derive_subject_seed(request["seed"]),
+            "control_sha256": workflow["control_sha256"],
+        }
 
 
 class FakeCatalog:
@@ -403,6 +496,88 @@ class AssetRunEngineTests(unittest.TestCase):
         }
         return plan
 
+    @staticmethod
+    def two_stage_layout() -> dict[str, object]:
+        return {
+            "mode": "copy-subject-two-stage-v1",
+            "canvas": {"width": 640, "height": 320},
+            "copy_protected_rect": {"x": 0, "y": 0, "width": 224, "height": 320},
+            "subject_mask_rect": {"x": 304, "y": 16, "width": 320, "height": 288},
+            "feather_pixels": 0,
+            "vae_grow_mask_by": 0,
+        }
+
+    @staticmethod
+    def two_stage_conditioning() -> dict[str, object]:
+        return {
+            "subject_prompt": "one complete brass telescope on a tripod",
+            "subject_negative_prompt": "cropped subject, duplicate telescope",
+            "subject_denoise": 0.9,
+        }
+
+    def two_stage_start_arguments(self) -> dict[str, object]:
+        layout = self.two_stage_layout()
+        arguments = self.start_arguments(max_rounds=2)
+        arguments.update({
+            "constraints": {
+                "width": 640,
+                "height": 320,
+                "two_stage_layout": copy.deepcopy(layout),
+            },
+            "initial_two_stage_conditioning": self.two_stage_conditioning(),
+            "backend": "comfyui",
+        })
+        route = self.router.issue(arguments)
+        route.update({
+            "requirements": {"two_stage_layout": copy.deepcopy(layout)},
+            "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+            "workflow_template_version": 1,
+            "prompt_compiler_id": "natural-v1",
+            "prompt_compiler_version": 1,
+        })
+        self.router.routes[str(route["route_token"])] = copy.deepcopy(route)
+        arguments["route_token"] = route["route_token"]
+        if "comfyui" not in self.capabilities["available_backends"]:
+            self.capabilities["available_backends"].append("comfyui")
+        self.engine.workflows = WorkflowTemplateRegistry(
+            ROOT / "workflows" / "comfyui",
+            Path(self.temporary_directory.name) / "two-stage-workflow-state",
+        )
+        return arguments
+
+    def two_stage_plan(self, route: dict[str, object]) -> dict[str, object]:
+        plan = self.plan(route=route, max_rounds=2, parameters={
+            "two_stage_conditioning": self.two_stage_conditioning(),
+        })
+        plan.update({
+            "backend": "comfyui",
+            "positive_prompt": "dark quiet observatory background",
+            "negative_prompt": "text, watermark, telescope",
+        })
+        plan["constraints"] = {
+            "width": 640,
+            "height": 320,
+            "two_stage_layout": self.two_stage_layout(),
+        }
+        return plan
+
+    def execute_two_stage(self, runner: TwoStageBackendRunner) -> tuple[str, object]:
+        self.engine.backend_runner = runner
+        started = self.engine.start_run(self.two_stage_start_arguments())
+        run_id = str(started["run_id"])
+        manifest = self.engine.get_run({"run_id": run_id})
+        route = manifest["request"]["route"]
+        result = self.engine.generate_round({
+            "run_id": run_id,
+            "idempotency_key": "two-stage-initial-1",
+            "action": "initial",
+            "edit_mode": "txt2img",
+            "seed": 2**64 - 1,
+            "change_summary": "Initial confirmed two-stage composition.",
+            "plan": self.two_stage_plan(route),
+        })
+        return run_id, result
+
     def plan(
         self,
         *,
@@ -663,6 +838,87 @@ class AssetRunEngineTests(unittest.TestCase):
         persisted = self.engine.get_run({"run_id": started["run_id"]})
         self.assertEqual(persisted["attempts"], [])
         self.assertEqual(self.runner.calls, [])
+
+    def test_two_stage_success_compiles_both_prompts_and_commits_only_final_preview(self) -> None:
+        runner = TwoStageBackendRunner()
+        run_id, (_, preview) = self.execute_two_stage(runner)
+
+        request = runner.calls[0]
+        output_paths = request["output_paths"]
+        self.assertEqual(set(output_paths), {"base", "mask", "final"})
+        self.assertEqual(len({str(Path(path).resolve()) for path in output_paths.values()}), 3)
+        self.assertTrue(all(Path(path).parent == self.engine.store.run_root(run_id) for path in output_paths.values()))
+        self.assertEqual(request["subject_seed"], 0)
+        self.assertEqual(request["workflow"]["control_sha256"], request["control_sha256"])
+
+        manifest = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(len(manifest["rounds"]), 1)
+        round_value = manifest["rounds"][0]
+        self.assertEqual(round_value["stage_units"], 2)
+        self.assertEqual(round_value["pixel_preservation"]["mismatched_pixels"], 0)
+        self.assertEqual(round_value["compiled_prompt"]["compiler_id"], "natural-v1")
+        self.assertEqual(round_value["compiled_subject_prompt"]["compiler_id"], "natural-v1")
+        self.assertEqual(
+            round_value["compiled_prompt"]["compiler_version"],
+            round_value["compiled_subject_prompt"]["compiler_version"],
+        )
+        self.assertEqual(Path(round_value["image"]["path"]).name, "round-01.png")
+        self.assertIsNotNone(preview)
+        self.assertNotIn("preview", round_value["stages"][0]["image"])
+
+    def test_two_stage_base_only_failure_records_one_retained_stage(self) -> None:
+        runner = TwoStageBackendRunner(failure="base_only")
+        arguments = self.two_stage_start_arguments()
+        self.engine.backend_runner = runner
+        started = self.engine.start_run(arguments)
+        run_id = str(started["run_id"])
+        route = self.engine.get_run({"run_id": run_id})["request"]["route"]
+
+        with self.assertRaisesRegex(AssetEngineError, "Subject stage failed"):
+            self.engine.generate_round({
+                "run_id": run_id,
+                "idempotency_key": "two-stage-base-only",
+                "action": "initial",
+                "edit_mode": "txt2img",
+                "seed": 42,
+                "change_summary": "Exercise retained base handling.",
+                "plan": self.two_stage_plan(route),
+            })
+
+        manifest = self.engine.get_run({"run_id": run_id})
+        self.assertEqual(manifest["state"], "partial")
+        self.assertEqual(manifest["stage_budget"]["consumed"], 1)
+        self.assertEqual([stage["role"] for stage in manifest["attempts"][0]["retained_stages"]], ["base"])
+
+    def test_two_stage_mask_or_protected_pixel_failure_records_technical_partial(self) -> None:
+        for failure, error_code in (
+            ("mask_leak", "invalid_two_stage_mask"),
+            ("protected_change", "two_stage_pixel_mismatch"),
+        ):
+            with self.subTest(failure=failure):
+                runner = TwoStageBackendRunner(failure=failure)
+                arguments = self.two_stage_start_arguments()
+                self.engine.backend_runner = runner
+                started = self.engine.start_run(arguments)
+                run_id = str(started["run_id"])
+                route = self.engine.get_run({"run_id": run_id})["request"]["route"]
+                with self.assertRaisesRegex(AssetEngineError, error_code):
+                    self.engine.generate_round({
+                        "run_id": run_id,
+                        "idempotency_key": f"two-stage-{failure}",
+                        "action": "initial",
+                        "edit_mode": "txt2img",
+                        "seed": 42,
+                        "change_summary": "Exercise technical gate failure.",
+                        "plan": self.two_stage_plan(route),
+                    })
+                manifest = self.engine.get_run({"run_id": run_id})
+                self.assertEqual(manifest["state"], "partial")
+                self.assertEqual(manifest["stage_budget"]["consumed"], 2)
+                self.assertEqual(
+                    [stage["role"] for stage in manifest["attempts"][0]["retained_stages"]],
+                    ["base", "subject"],
+                )
 
     def test_revision_and_mask_injection_preserves_existing_constructor_arguments(self) -> None:
         revisions = object()

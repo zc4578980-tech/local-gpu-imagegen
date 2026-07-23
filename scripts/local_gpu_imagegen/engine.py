@@ -16,6 +16,7 @@ from .errors import ArtifactError, AssetEngineError, ConflictError, StateError, 
 from .generation_plan import validate_confirmed_run_request, validate_generation_plan
 from .masks import MaskService
 from .preview import MAX_PREVIEW_BYTES, PreviewResult, create_preview
+from .png_pixels import compare_protected_pixels, validate_saved_soft_mask
 from .postprocess import (
     POSTPROCESS_CLEANUP_WARNING,
     RealEsrganAdapter,
@@ -30,6 +31,12 @@ from .regional_layout import (
 )
 from .revisions import RevisionService
 from .run_store import AttemptHandle, RunStore
+from .two_stage_layout import (
+    TWO_STAGE_TEMPLATE_ID,
+    derive_subject_seed,
+    validate_two_stage_conditioning,
+    validate_two_stage_layout,
+)
 from .visual_review import (
     finalization_candidate,
     require_finalization_confirmation,
@@ -204,6 +211,26 @@ class AssetRunEngine:
                 "prompt_compiler_drifted",
                 "Confirmed prompt compiler version changed before generation.",
             )
+        two_stage = route.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID
+        compiled_subject_prompt: dict[str, object] | None = None
+        subject_seed: int | None = None
+        if two_stage:
+            parameters = plan["parameters"]
+            assert isinstance(parameters, dict)
+            conditioning = validate_two_stage_conditioning(
+                parameters.get("two_stage_conditioning")
+            )
+            compiled_subject_prompt = self.compilers.compile(
+                str(route.get("prompt_compiler_id")),
+                str(conditioning["subject_prompt"]),
+                str(conditioning["subject_negative_prompt"]),
+            )
+            if compiled_subject_prompt.get("compiler_version") != route.get("prompt_compiler_version"):
+                raise ConflictError(
+                    "prompt_compiler_drifted",
+                    "Confirmed prompt compiler version changed before subject compilation.",
+                )
+            subject_seed = derive_subject_seed(seed)
         execution_plan = copy.deepcopy(plan)
         execution_plan_parameters = execution_plan.get("parameters")
         assert isinstance(execution_plan_parameters, dict)
@@ -211,6 +238,16 @@ class AssetRunEngine:
         round_number = _next_round_number(manifest)
         final_path = ensure_within(run_root, run_root / f"round-{round_number:02d}.png")
         pending_path = ensure_within(run_root, run_root / f"round-{round_number:02d}.pending.png")
+        stage_pending_paths = {
+            "base": ensure_within(run_root, run_root / f"round-{round_number:02d}-base.pending.png"),
+            "mask": ensure_within(run_root, run_root / f"round-{round_number:02d}-mask.pending.png"),
+            "final": pending_path,
+        } if two_stage else {}
+        stage_final_paths = {
+            "base": ensure_within(run_root, run_root / f"round-{round_number:02d}-base.png"),
+            "mask": ensure_within(run_root, run_root / f"round-{round_number:02d}-mask.png"),
+            "final": final_path,
+        } if two_stage else {}
         attempt_request = {
             "action": action,
             "seed": seed,
@@ -219,6 +256,8 @@ class AssetRunEngine:
             "route": copy.deepcopy(route),
             "compiled_prompt": copy.deepcopy(compiled_prompt),
         }
+        if compiled_subject_prompt is not None:
+            attempt_request["compiled_subject_prompt"] = copy.deepcopy(compiled_subject_prompt)
         if mask_id is not None:
             attempt_request["mask_id"] = mask_id
         handle = self.store.begin_attempt(run_id, idempotency_key, attempt_request)
@@ -227,13 +266,15 @@ class AssetRunEngine:
         if handle.status == "completed":
             return self._return_completed(run_id, handle)
 
+        pixel_preservation: dict[str, object] | None = None
         try:
             if handle.status == "resume_preview":
                 image = _existing_image(handle)
                 image_metadata = self._validate_retained_image(run_root, image, width, height)
                 backend_result = _existing_backend_result(handle, mode, width, height, seed, plan, request)
             else:
-                pending_path.unlink(missing_ok=True)
+                for candidate in stage_pending_paths.values() if two_stage else (pending_path,):
+                    candidate.unlink(missing_ok=True)
                 backend_request = _backend_request(
                     execution_plan,
                     compiled_prompt,
@@ -246,6 +287,9 @@ class AssetRunEngine:
                     width,
                     height,
                     mode,
+                    compiled_subject_prompt=compiled_subject_prompt,
+                    output_paths=stage_pending_paths if two_stage else None,
+                    subject_seed=subject_seed,
                 )
                 backend_result = validate_backend_result(
                     self.backend_runner(backend_request),
@@ -257,22 +301,72 @@ class AssetRunEngine:
                     available_backends=request["available_backends"],
                 )
                 _validate_locked_backend_result(backend_result, route, current_model)
-                backend_path = Path(str(backend_result["path"]))
-                if not backend_path.is_absolute():
-                    backend_path = run_root / backend_path
-                backend_path = ensure_within(run_root, backend_path)
-                if backend_path != pending_path.resolve():
-                    raise ArtifactError(
-                        "invalid_backend_result",
-                        "Backend path does not match the requested pending artifact.",
-                        {"path": str(backend_path)},
+                if two_stage:
+                    _validate_two_stage_backend_paths(
+                        backend_result,
+                        run_root,
+                        stage_pending_paths,
+                        str(backend_request["control_sha256"]),
                     )
-                validate_png(backend_path, width, height)
-                os.replace(backend_path, final_path)
-                image_metadata = validate_png(final_path, width, height)
-                image_metadata["path"] = final_path.name
-                backend_result["path"] = final_path.name
-                self.store.mark_attempt_image(handle, image_metadata, backend_result)
+                    for role in ("base", "mask", "final"):
+                        validate_png(stage_pending_paths[role], width, height)
+                    for role in ("base", "mask", "final"):
+                        os.replace(stage_pending_paths[role], stage_final_paths[role])
+                    stage_metadata = {
+                        role: validate_png(stage_final_paths[role], width, height)
+                        for role in ("base", "mask", "final")
+                    }
+                    for role, metadata in stage_metadata.items():
+                        metadata["path"] = stage_final_paths[role].name
+                    constraints = plan["constraints"]
+                    assert isinstance(constraints, dict)
+                    layout = validate_two_stage_layout(constraints.get("two_stage_layout"))
+                    mask_validation = validate_saved_soft_mask(stage_final_paths["mask"], layout)
+                    stage_metadata["mask"]["soft_mask_validation"] = {
+                        key: value for key, value in mask_validation.items() if key != "path"
+                    }
+                    pixel_preservation = compare_protected_pixels(
+                        stage_final_paths["base"],
+                        stage_final_paths["final"],
+                        layout,
+                    )
+                    if pixel_preservation["mismatched_pixels"] != 0:
+                        raise ArtifactError(
+                            "two_stage_pixel_mismatch",
+                            "Final image changed pixels outside the confirmed subject mask.",
+                            copy.deepcopy(pixel_preservation),
+                        )
+                    backend_result["path"] = stage_final_paths["final"].name
+                    backend_result["stage_outputs"] = {
+                        "base": {"path": stage_final_paths["base"].name},
+                        "final": {"path": stage_final_paths["final"].name},
+                    }
+                    backend_result["mask_output"] = {"path": stage_final_paths["mask"].name}
+                    self.store.mark_attempt_artifacts(
+                        handle,
+                        stage_metadata["base"],
+                        stage_metadata["mask"],
+                        stage_metadata["final"],
+                        backend_result,
+                    )
+                    image_metadata = stage_metadata["final"]
+                else:
+                    backend_path = Path(str(backend_result["path"]))
+                    if not backend_path.is_absolute():
+                        backend_path = run_root / backend_path
+                    backend_path = ensure_within(run_root, backend_path)
+                    if backend_path != pending_path.resolve():
+                        raise ArtifactError(
+                            "invalid_backend_result",
+                            "Backend path does not match the requested pending artifact.",
+                            {"path": str(backend_path)},
+                        )
+                    validate_png(backend_path, width, height)
+                    os.replace(backend_path, final_path)
+                    image_metadata = validate_png(final_path, width, height)
+                    image_metadata["path"] = final_path.name
+                    backend_result["path"] = final_path.name
+                    self.store.mark_attempt_image(handle, image_metadata, backend_result)
 
             preview_path = _preferred_preview_path(final_path)
             preview = create_preview(final_path, preview_path)
@@ -283,9 +377,32 @@ class AssetRunEngine:
                 "registry_metadata": _registry_metadata(request),
                 "preview": preview_metadata,
                 "warnings": warnings,
+                **({"pixel_preservation": pixel_preservation} if two_stage else {}),
             })
         except Exception as error:
-            pending_path.unlink(missing_ok=True)
+            if two_stage:
+                retained = _retain_two_stage_partial(
+                    run_root,
+                    stage_pending_paths,
+                    stage_final_paths,
+                    width,
+                    height,
+                    seed,
+                    subject_seed,
+                )
+                if retained:
+                    self.store.record_partial_attempt(
+                        handle,
+                        retained,
+                        _attempt_error(error),
+                    )
+                    stage_pending_paths["mask"].unlink(missing_ok=True)
+                    stage_final_paths["mask"].unlink(missing_ok=True)
+                    raise
+                for candidate in (*stage_pending_paths.values(), *stage_final_paths.values()):
+                    candidate.unlink(missing_ok=True)
+            else:
+                pending_path.unlink(missing_ok=True)
             self._fail_owned_attempt(handle, error)
             raise
 
@@ -685,21 +802,8 @@ class AssetRunEngine:
     def _fail_owned_attempt(self, handle: AttemptHandle, error: Exception) -> None:
         if handle.owner_token is None:
             return
-        if isinstance(error, AssetEngineError):
-            error_value = {
-                "code": error.code,
-                "message": str(error.args[0]),
-                "category": error.category,
-                "details": copy.deepcopy(error.details),
-            }
-        else:
-            error_value = {
-                "code": "unexpected_engine_error",
-                "message": str(error) or type(error).__name__,
-                "category": "internal",
-            }
         try:
-            self.store.fail_attempt(handle, error_value)
+            self.store.fail_attempt(handle, _attempt_error(error))
         except AssetEngineError:
             pass
 
@@ -948,6 +1052,43 @@ def _validate_start_route(
         else None
     )
     regional_route = route.get("workflow_template_id") == REGIONAL_TEMPLATE_ID
+    two_stage_route = route.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID
+    two_stage_layout_value = (
+        route_requirements.get("two_stage_layout")
+        if isinstance(route_requirements, dict)
+        else None
+    )
+    has_two_stage_layout = "two_stage_layout" in constraints
+    has_two_stage_conditioning = "initial_two_stage_conditioning" in arguments
+    if (
+        two_stage_route != has_two_stage_layout
+        or two_stage_route != has_two_stage_conditioning
+        or two_stage_route != (two_stage_layout_value is not None)
+    ):
+        raise ValidationError(
+            "invalid_two_stage_conditioning",
+            "Two-stage route data is incomplete or not allowed on this route.",
+        )
+    if two_stage_route:
+        route_layout = validate_two_stage_layout(two_stage_layout_value)
+        confirmed_layout = validate_two_stage_layout(
+            constraints.get("two_stage_layout")
+        )
+        validate_two_stage_conditioning(
+            arguments.get("initial_two_stage_conditioning")
+        )
+        canvas = confirmed_layout["canvas"]
+        if (
+            route_layout != confirmed_layout
+            or constraints.get("width") != canvas["width"]
+            or constraints.get("height") != canvas["height"]
+        ):
+            raise ConflictError(
+                "route_confirmation_mismatch",
+                "Confirmed route does not match the displayed two-stage layout.",
+                {"field": "two_stage_layout"},
+            )
+        return
     if regional_route:
         route_layout = validate_regional_layout(route_layout_value)
         confirmed_layout = validate_regional_layout(
@@ -985,6 +1126,10 @@ def _backend_request(
     width: int,
     height: int,
     mode: str,
+    *,
+    compiled_subject_prompt: dict[str, object] | None = None,
+    output_paths: dict[str, Path] | None = None,
+    subject_seed: int | None = None,
 ) -> dict[str, object]:
     parameters = plan["parameters"]
     assert isinstance(parameters, dict)
@@ -1038,6 +1183,37 @@ def _backend_request(
                 "regional_conditioning": regional_conditioning,
             }
             request.update(copy.deepcopy(workflow_options))
+        elif template_id == TWO_STAGE_TEMPLATE_ID:
+            if compiled_subject_prompt is None or output_paths is None or type(subject_seed) is not int:
+                raise ArtifactError(
+                    "invalid_two_stage_attempt",
+                    "Two-stage execution inputs are incomplete.",
+                )
+            constraints = plan["constraints"]
+            assert isinstance(constraints, dict)
+            two_stage_layout = validate_two_stage_layout(
+                constraints.get("two_stage_layout")
+            )
+            confirmed_conditioning = validate_two_stage_conditioning(
+                parameters.get("two_stage_conditioning")
+            )
+            two_stage_conditioning = {
+                "subject_prompt": compiled_subject_prompt["positive_prompt"],
+                "subject_negative_prompt": compiled_subject_prompt["negative_prompt"],
+                "subject_denoise": confirmed_conditioning["subject_denoise"],
+            }
+            workflow_options = {
+                "two_stage_layout": two_stage_layout,
+                "two_stage_conditioning": two_stage_conditioning,
+            }
+            request.update(copy.deepcopy(workflow_options))
+            request.update({
+                "output_paths": {
+                    role: str(output_paths[role]) for role in ("base", "mask", "final")
+                },
+                "subject_seed": subject_seed,
+                "compiled_subject_prompt": copy.deepcopy(compiled_subject_prompt),
+            })
         request["workflow"] = workflows.resolve(
             template_id,
             str(model.get("backend_model_id")),
@@ -1055,6 +1231,10 @@ def _backend_request(
             },
             **workflow_options,
         )
+        if template_id == TWO_STAGE_TEMPLATE_ID:
+            workflow = request["workflow"]
+            assert isinstance(workflow, dict)
+            request["control_sha256"] = workflow["control_sha256"]
     return request
 
 
@@ -1081,6 +1261,91 @@ def _validate_locked_backend_result(
                 "Backend result changed the confirmed model route.",
                 {"field": field},
             )
+
+
+def _validate_two_stage_backend_paths(
+    result: dict[str, object],
+    run_root: Path,
+    expected: dict[str, Path],
+    expected_control_sha256: str,
+) -> None:
+    stage_outputs = result.get("stage_outputs")
+    mask_output = result.get("mask_output")
+    if not isinstance(stage_outputs, dict) or not isinstance(mask_output, dict):
+        raise ArtifactError(
+            "invalid_backend_result",
+            "Two-stage backend outputs are incomplete.",
+        )
+    records = {
+        "base": stage_outputs.get("base"),
+        "mask": mask_output,
+        "final": stage_outputs.get("final"),
+    }
+    for role, record in records.items():
+        path_value = record.get("path") if isinstance(record, dict) else None
+        if not isinstance(path_value, str):
+            raise ArtifactError(
+                "invalid_backend_result",
+                "Two-stage backend output path is invalid.",
+                {"role": role},
+            )
+        path = Path(path_value)
+        if not path.is_absolute():
+            path = run_root / path
+        if ensure_within(run_root, path) != expected[role].resolve():
+            raise ArtifactError(
+                "invalid_backend_result",
+                "Two-stage backend path does not match the requested pending artifact.",
+                {"role": role},
+            )
+    if result.get("control_sha256") != expected_control_sha256:
+        raise ArtifactError(
+            "invalid_backend_result",
+            "Two-stage backend result changed the resolved control identity.",
+            {"field": "control_sha256"},
+        )
+
+
+def _retain_two_stage_partial(
+    run_root: Path,
+    pending: dict[str, Path],
+    final: dict[str, Path],
+    width: int,
+    height: int,
+    seed: int,
+    subject_seed: int | None,
+) -> list[dict[str, object]]:
+    retained: list[dict[str, object]] = []
+    for role, stage_seed in (("base", seed), ("subject", subject_seed)):
+        artifact_role = "base" if role == "base" else "final"
+        candidate = final[artifact_role] if final[artifact_role].is_file() else pending[artifact_role]
+        if not candidate.is_file():
+            break
+        try:
+            validate_png(candidate, width, height)
+            if candidate == pending[artifact_role]:
+                os.replace(candidate, final[artifact_role])
+            metadata = validate_png(final[artifact_role], width, height)
+        except AssetEngineError:
+            break
+        metadata["path"] = final[artifact_role].relative_to(run_root).as_posix()
+        retained.append({"role": role, "seed": stage_seed, "image": metadata})
+    return retained
+
+
+def _attempt_error(error: Exception) -> dict[str, object]:
+    if isinstance(error, AssetEngineError):
+        return {
+            "code": error.code,
+            "message": str(error.args[0]),
+            "category": error.category,
+            "details": copy.deepcopy(error.details),
+        }
+    return {
+        "code": "unexpected_engine_error",
+        "message": str(error) or type(error).__name__,
+        "category": "internal",
+    }
 
 
 def _existing_image(handle: AttemptHandle) -> dict[str, object]:

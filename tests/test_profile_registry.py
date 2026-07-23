@@ -48,6 +48,12 @@ class ProfileRegistryTests(unittest.TestCase):
             {"standalone-illustration", "presentation-visual", "ui-visual-asset"},
         )
 
+    def test_all_profiles_allow_two_stage_conditioning_for_later_actions(self) -> None:
+        for identifier, profile in self.registry.list_catalog()["profiles"].items():
+            with self.subTest(profile=identifier):
+                self.assertIn("two_stage_conditioning", profile["refine_mutable"])
+                self.assertIn("two_stage_conditioning", profile["explore_mutable"])
+
     def test_presentation_profile_marks_safe_area_as_critical(self) -> None:
         merged = self.registry.merge(
             "presentation-visual",
