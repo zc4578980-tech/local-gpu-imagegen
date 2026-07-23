@@ -354,6 +354,15 @@ def _valid_inward_profile(samples: list[int], expected: list[int], feather: int)
     return (
         all(left <= right for left, right in zip(samples, samples[1:]))
         and all((sample > 0) == (envelope > 0) for sample, envelope in zip(samples, expected))
+        and all(
+            (left < right) == (expected_left < expected_right)
+            for left, right, expected_left, expected_right in zip(
+                samples,
+                samples[1:],
+                expected,
+                expected[1:],
+            )
+        )
         and (samples[0] < samples[-1]) == (expected[0] < expected[-1])
     )
 

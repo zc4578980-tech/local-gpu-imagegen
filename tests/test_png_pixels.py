@@ -261,6 +261,20 @@ class PngPixelTests(unittest.TestCase):
         pixels[(100 * 1280 + 100) * 3 : (100 * 1280 + 100) * 3 + 3] = b"\x01\x01\x01"
         return self.write_png(1280, 720, 3, bytes(pixels))
 
+    def off_center_edge_positions(self, subject: dict[str, int]):
+        return {
+            "left": lambda distance: (subject["x"] + distance, subject["y"] + 101),
+            "right": lambda distance: (
+                subject["x"] + subject["width"] - 1 - distance,
+                subject["y"] + 103,
+            ),
+            "top": lambda distance: (subject["x"] + 105, subject["y"] + distance),
+            "bottom": lambda distance: (
+                subject["x"] + 107,
+                subject["y"] + subject["height"] - 1 - distance,
+            ),
+        }
+
     def test_rgb_and_rgba_round_trip_without_pillow(self) -> None:
         for channels in (3, 4):
             path = self.write_png(16, 8, channels, pixel_pattern(channels))
@@ -435,19 +449,7 @@ class PngPixelTests(unittest.TestCase):
         assert isinstance(subject, dict)
         valid = self.soft_mask_pixels()
 
-        positions = {
-            "left": lambda distance: (subject["x"] + distance, subject["y"] + 101),
-            "right": lambda distance: (
-                subject["x"] + subject["width"] - 1 - distance,
-                subject["y"] + 103,
-            ),
-            "top": lambda distance: (subject["x"] + 105, subject["y"] + distance),
-            "bottom": lambda distance: (
-                subject["x"] + 107,
-                subject["y"] + subject["height"] - 1 - distance,
-            ),
-        }
-        for edge, coordinates in positions.items():
+        for edge, coordinates in self.off_center_edge_positions(subject).items():
             nonmonotonic = bytearray(valid)
             for distance, intensity in ((5, 200), (6, 100)):
                 x, y = coordinates(distance)
@@ -457,6 +459,44 @@ class PngPixelTests(unittest.TestCase):
                 validate_saved_soft_mask(self.write_png(1280, 720, 3, bytes(nonmonotonic)), layout)
             self.assertEqual(raised.exception.code, "invalid_two_stage_mask")
             self.assertEqual(raised.exception.details["reason"], "invalid_feather_direction")
+
+    def test_soft_mask_rejects_monotone_plateau_where_installed_profile_rises(self) -> None:
+        layout = approved_layout()
+        subject = layout["subject_mask_rect"]
+        assert isinstance(subject, dict)
+        valid = self.soft_mask_pixels()
+
+        for edge, coordinates in self.off_center_edge_positions(subject).items():
+            plateau = bytearray(valid)
+            previous_x, previous_y = coordinates(5)
+            plateau_x, plateau_y = coordinates(6)
+            previous = valid[(previous_y * 1280 + previous_x) * 3]
+            offset = (plateau_y * 1280 + plateau_x) * 3
+            plateau[offset : offset + 3] = bytes((previous,)) * 3
+            with self.subTest(edge=edge):
+                with self.assertRaises(ArtifactError) as raised:
+                    validate_saved_soft_mask(self.write_png(1280, 720, 3, bytes(plateau)), layout)
+                self.assertEqual(raised.exception.code, "invalid_two_stage_mask")
+                self.assertEqual(raised.exception.details["reason"], "invalid_feather_direction")
+
+    def test_soft_mask_rejects_monotone_rise_where_installed_profile_is_flat(self) -> None:
+        layout = approved_layout()
+        subject = layout["subject_mask_rect"]
+        assert isinstance(subject, dict)
+        valid = self.soft_mask_pixels()
+        flat_transition_starts = {"left": 31, "right": 30, "top": 31, "bottom": 30}
+
+        for edge, coordinates in self.off_center_edge_positions(subject).items():
+            rising = bytearray(valid)
+            distance = flat_transition_starts[edge]
+            x, y = coordinates(distance)
+            offset = (y * 1280 + x) * 3
+            rising[offset : offset + 3] = b"\xfe\xfe\xfe"
+            with self.subTest(edge=edge):
+                with self.assertRaises(ArtifactError) as raised:
+                    validate_saved_soft_mask(self.write_png(1280, 720, 3, bytes(rising)), layout)
+                self.assertEqual(raised.exception.code, "invalid_two_stage_mask")
+                self.assertEqual(raised.exception.details["reason"], "invalid_feather_direction")
 
 
 if __name__ == "__main__":
