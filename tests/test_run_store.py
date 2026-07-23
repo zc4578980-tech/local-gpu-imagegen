@@ -25,7 +25,9 @@ from local_gpu_imagegen.errors import (  # noqa: E402
     StateError,
     ValidationError,
 )
+from local_gpu_imagegen.engine import recoverable_next_actions  # noqa: E402
 from local_gpu_imagegen.run_store import AttemptHandle, RunStore, request_hash  # noqa: E402
+from local_gpu_imagegen.two_stage_layout import TWO_STAGE_TEMPLATE_ID  # noqa: E402
 
 
 INITIAL = {
@@ -520,6 +522,64 @@ class RunStoreTransitionTests(unittest.TestCase):
             "height": 256,
         }
 
+    def write_image_for(
+        self,
+        run_id: str,
+        relative_path: str,
+        contents: bytes,
+    ) -> dict[str, object]:
+        path = Path(self.temp.name) / "runs" / run_id / relative_path
+        path.write_bytes(contents)
+        return {
+            "path": relative_path,
+            "sha256": sha256_file(path),
+            "width": 1280,
+            "height": 720,
+        }
+
+    def started_two_stage_attempt(
+        self,
+        *,
+        max_rounds: int = 2,
+        key: str = "two-stage-initial",
+    ) -> tuple[str, AttemptHandle]:
+        manifest = self.store.create({
+            "profile": "presentation-visual",
+            "max_rounds": max_rounds,
+            "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+            "route": {"workflow_template_id": TWO_STAGE_TEMPLATE_ID},
+            "merged_profile": {"rubric": {}, "hard_failures": []},
+        })
+        handle = self.store.begin_attempt(manifest["run_id"], key, INITIAL)
+        return str(manifest["run_id"]), handle
+
+    def two_stage_artifacts(
+        self,
+        run_id: str,
+    ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+        return (
+            self.write_image_for(run_id, "round-01-base.png", b"trusted base"),
+            self.write_image_for(run_id, "round-01-mask.png", b"trusted mask"),
+            self.write_image_for(run_id, "round-01.png", b"trusted final"),
+        )
+
+    @staticmethod
+    def two_stage_backend_result() -> dict[str, object]:
+        return {
+            "path": "round-01.png",
+            "seed": 42,
+            "subject_seed": 43,
+            "control_sha256": "c" * 64,
+        }
+
+    @staticmethod
+    def pixel_preservation() -> dict[str, object]:
+        return {
+            "protected_rect": {"x": 0, "y": 0, "width": 576, "height": 720},
+            "checked_pixels": 552960,
+            "mismatched_pixels": 0,
+        }
+
     def complete_initial(self, key: str = "initial-1") -> dict[str, object]:
         handle = self.store.begin_attempt(self.manifest["run_id"], key, INITIAL)
         return self.store.complete_attempt(handle, {
@@ -571,6 +631,215 @@ class RunStoreTransitionTests(unittest.TestCase):
         retried = self.store.begin_attempt(self.manifest["run_id"], "initial-1", INITIAL)
         self.assertEqual(retried.status, "completed")
         self.assertEqual(retried.existing_round["round_number"], 1)
+
+    def test_only_confirmed_two_stage_workflow_receives_stage_budget(self) -> None:
+        two_stage = self.store.create({
+            "profile": "presentation-visual",
+            "max_rounds": 3,
+            "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+        })
+        standard = self.store.create({
+            "profile": "presentation-visual",
+            "max_rounds": 3,
+            "workflow_template_id": "sdxl-txt2img",
+        })
+        historical = self.store.create({"profile": "presentation-visual", "max_rounds": 3})
+
+        self.assertEqual(two_stage["stage_budget"], {"maximum": 6, "consumed": 0})
+        self.assertNotIn("stage_budget", standard)
+        self.assertNotIn("stage_budget", historical)
+
+    def test_invalid_two_stage_budget_does_not_leave_an_orphan_run(self) -> None:
+        runs_root = Path(self.temp.name) / "runs"
+        before = set(runs_root.iterdir())
+        with self.assertRaisesRegex(StateError, "invalid_round_budget"):
+            self.store.create({
+                "profile": "presentation-visual",
+                "max_rounds": True,
+                "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+            })
+        self.assertEqual(set(runs_root.iterdir()), before)
+
+    def test_complete_two_stage_attempt_consumes_two_stages_and_one_round(self) -> None:
+        run_id, handle = self.started_two_stage_attempt(max_rounds=2)
+        base, mask, final = self.two_stage_artifacts(run_id)
+        self.store.mark_attempt_artifacts(
+            handle, base, mask, final, self.two_stage_backend_result()
+        )
+
+        manifest = self.store.complete_attempt(handle, {
+            "pixel_preservation": self.pixel_preservation(),
+        })
+
+        self.assertEqual(len(manifest["rounds"]), 1)
+        round_value = manifest["rounds"][0]
+        self.assertEqual(round_value["stage_units"], 2)
+        self.assertEqual([stage["role"] for stage in round_value["stages"]], ["base", "subject"])
+        self.assertEqual(round_value["stages"][0]["image"], base)
+        self.assertEqual(round_value["stages"][1]["image"], final)
+        self.assertEqual(round_value["mask_artifact"], mask)
+        self.assertEqual(round_value["image"], final)
+        self.assertEqual(round_value["pixel_preservation"], self.pixel_preservation())
+        self.assertEqual(manifest["stage_budget"], {"maximum": 4, "consumed": 2})
+
+    def test_incomplete_two_stage_completion_keeps_owned_attempt_and_budget(self) -> None:
+        run_id, handle = self.started_two_stage_attempt()
+        base, mask, final = self.two_stage_artifacts(run_id)
+        self.store.mark_attempt_artifacts(
+            handle, base, mask, final, self.two_stage_backend_result()
+        )
+
+        with self.assertRaisesRegex(ValidationError, "invalid_two_stage_attempt"):
+            self.store.complete_attempt(handle, {})
+
+        unchanged = self.store.get(run_id)
+        self.assertEqual(unchanged["state"], "generating")
+        self.assertEqual(unchanged["stage_budget"]["consumed"], 0)
+        self.assertIsNotNone(unchanged["active_attempt"])
+        self.assertTrue((Path(self.temp.name) / "runs" / run_id / ".run.lock").is_file())
+        self.store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
+
+    def test_base_only_partial_blocks_new_generation_and_releases_lock(self) -> None:
+        run_id, handle = self.started_two_stage_attempt(max_rounds=2)
+        base, _, _ = self.two_stage_artifacts(run_id)
+        base_stage = {"role": "base", "seed": 42, "image": base}
+
+        manifest = self.store.record_partial_attempt(
+            handle,
+            [base_stage],
+            {"code": "final_missing", "message": "Final stage was not retained."},
+        )
+
+        self.assertEqual(manifest["state"], "partial")
+        self.assertEqual(manifest["last_stable_state"], "partial")
+        self.assertEqual(manifest["stage_budget"]["consumed"], 1)
+        self.assertEqual(manifest["attempts"][-1]["retained_stages"], [base_stage])
+        self.assertEqual(recoverable_next_actions(manifest), ["get_run"])
+        self.assertFalse((Path(self.temp.name) / "runs" / run_id / ".run.lock").exists())
+        with self.assertRaisesRegex(StateError, "two_stage_run_partial"):
+            self.store.begin_attempt(run_id, "another-key", INITIAL)
+
+    def test_two_retained_stages_consume_two_units_without_a_round(self) -> None:
+        run_id, handle = self.started_two_stage_attempt(max_rounds=1)
+        base, _, final = self.two_stage_artifacts(run_id)
+        retained = [
+            {"role": "base", "seed": 42, "image": base},
+            {"role": "subject", "seed": 43, "image": final},
+        ]
+
+        manifest = self.store.record_partial_attempt(
+            handle,
+            retained,
+            {"code": "pixel_mismatch", "message": "Protected pixels changed."},
+        )
+
+        self.assertEqual(manifest["rounds"], [])
+        self.assertEqual(manifest["attempts"][-1]["retained_stages"], retained)
+        self.assertEqual(manifest["stage_budget"], {"maximum": 2, "consumed": 2})
+
+    def test_partial_attempt_rejects_missing_or_duplicate_stage_artifacts(self) -> None:
+        run_id, handle = self.started_two_stage_attempt(key="partial-missing")
+        missing = {"role": "base", "seed": 42, "image": {
+            "path": "missing.png", "sha256": "a" * 64, "width": 1280, "height": 720,
+        }}
+        with self.assertRaisesRegex(ArtifactError, "image_not_found"):
+            self.store.record_partial_attempt(
+                handle,
+                [missing],
+                {"code": "invalid", "message": "Missing retained stage."},
+            )
+        self.store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
+
+        run_id, handle = self.started_two_stage_attempt(key="partial-duplicate")
+        base, _, _ = self.two_stage_artifacts(run_id)
+        duplicate = {"role": "base", "seed": 42, "image": base}
+        with self.assertRaisesRegex(ValidationError, "invalid_retained_stages"):
+            self.store.record_partial_attempt(
+                handle,
+                [duplicate, duplicate],
+                {"code": "invalid", "message": "Duplicate retained stage."},
+            )
+        self.store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
+
+    def test_stale_two_stage_artifacts_recover_as_read_only_partial(self) -> None:
+        run_id, handle = self.started_two_stage_attempt()
+        base, mask, final = self.two_stage_artifacts(run_id)
+        self.store.mark_attempt_artifacts(
+            handle, base, mask, final, self.two_stage_backend_result()
+        )
+
+        with patch("local_gpu_imagegen.run_store.is_process_alive", return_value=False):
+            recovered = self.store.get(run_id)
+
+        self.assertEqual(recovered["state"], "partial")
+        self.assertEqual(recovered["stage_budget"]["consumed"], 2)
+        self.assertEqual(recovered["attempts"][-1]["stages"][0]["image"], base)
+        self.assertEqual(recovered["attempts"][-1]["mask_artifact"], mask)
+        self.assertEqual(recoverable_next_actions(recovered), ["get_run"])
+
+    def test_two_stage_finalization_rejects_base_or_mask_as_round_image(self) -> None:
+        for selected_role in ("base", "mask"):
+            run_id, handle = self.started_two_stage_attempt(key=f"final-{selected_role}")
+            base, mask, final = self.two_stage_artifacts(run_id)
+            self.store.mark_attempt_artifacts(
+                handle, base, mask, final, self.two_stage_backend_result()
+            )
+            self.store.complete_attempt(handle, {
+                "pixel_preservation": self.pixel_preservation(),
+            })
+
+            def select_supporting_artifact(manifest: dict[str, object]) -> None:
+                manifest["rounds"][0]["image"] = base if selected_role == "base" else mask
+                manifest["reviews"].append({"round_number": 1})
+                manifest["state"] = "reviewed"
+                manifest["last_stable_state"] = "reviewed"
+
+            self.store.update(run_id, select_supporting_artifact)
+            before = self.store.get(run_id)
+            with self.subTest(selected_role=selected_role), self.assertRaisesRegex(
+                StateError, "round_not_finalizable"
+            ):
+                self.store.finalize(run_id, 1, "Supporting artifact must not finalize.")
+            self.assertEqual(self.store.get(run_id), before)
+
+    def test_intermediate_cleanup_prunes_nested_stage_and_mask_paths(self) -> None:
+        run_id, handle = self.started_two_stage_attempt()
+        base, mask, final = self.two_stage_artifacts(run_id)
+        self.store.mark_attempt_artifacts(
+            handle, base, mask, final, self.two_stage_backend_result()
+        )
+        self.store.complete_attempt(handle, {"pixel_preservation": self.pixel_preservation()})
+
+        def finalize_for_cleanup(manifest: dict[str, object]) -> None:
+            manifest["state"] = "finalized"
+            manifest["last_stable_state"] = "finalized"
+            manifest["final"] = {"path": final["path"], "image": final}
+
+        self.store.update(run_id, finalize_for_cleanup)
+        self.store.cleanup(run_id, scope="intermediates", confirmation=run_id)
+
+        cleaned = self.store.get(run_id)
+        self.assertNotIn("path", cleaned["rounds"][0]["stages"][0]["image"])
+        self.assertNotIn("path", cleaned["rounds"][0]["mask_artifact"])
+        self.assertNotIn("image", cleaned["rounds"][0])
+        self.assertEqual(cleaned["final"]["image"]["path"], final["path"])
+        self.assertTrue((Path(self.temp.name) / "runs" / run_id / str(final["path"])).is_file())
+
+    def test_historical_two_stage_manifest_without_stage_budget_remains_readable(self) -> None:
+        manifest = self.store.create({
+            "profile": "presentation-visual",
+            "max_rounds": 2,
+            "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+        })
+
+        def make_historical(value: dict[str, object]) -> None:
+            value.pop("stage_budget")
+
+        historical = self.store.update(manifest["run_id"], make_historical)
+        reread = self.store.get(manifest["run_id"])
+
+        self.assertNotIn("stage_budget", historical)
+        self.assertNotIn("stage_budget", reread)
 
     def test_attempt_and_completed_round_persist_normalized_plan_and_change_summary(self) -> None:
         handle = self.store.begin_attempt(self.manifest["run_id"], "audited-initial", INITIAL)

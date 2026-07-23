@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from local_gpu_imagegen.errors import ArtifactError, StateError, ValidationError  # noqa: E402
 from local_gpu_imagegen.revisions import RevisionService, validate_revision_contract  # noqa: E402
 from local_gpu_imagegen.run_store import RunStore  # noqa: E402
+from local_gpu_imagegen.two_stage_layout import TWO_STAGE_TEMPLATE_ID  # noqa: E402
 
 
 VALID_CONTRACT = {
@@ -204,6 +205,17 @@ class RevisionServiceTests(unittest.TestCase):
         self.assertEqual(child_source.read_bytes(), source_before)
         self.assertEqual(child["revision"]["source_image"]["path"], "parent-source.png")
         self.assertEqual(child["revision"]["source_image"]["sha256"], self.source_hash)
+
+    def test_two_stage_root_and_revision_derive_stage_budget_from_own_round_limit(self) -> None:
+        def make_parent_two_stage(manifest: dict[str, object]) -> None:
+            manifest["request"]["workflow_template_id"] = TWO_STAGE_TEMPLATE_ID
+            manifest["stage_budget"] = {"maximum": 6, "consumed": 0}
+
+        root = self.store.update(self.parent_id, make_parent_two_stage)
+        child = self.service.branch(self.branch_arguments(max_rounds=2))
+
+        self.assertEqual(root["stage_budget"], {"maximum": 6, "consumed": 0})
+        self.assertEqual(child["stage_budget"], {"maximum": 4, "consumed": 0})
 
     def test_branch_requires_reviewed_successful_parent_round(self) -> None:
         with self.assertRaisesRegex(StateError, "revision_parent_not_reviewed"):

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .artifacts import atomic_write_json, ensure_within, sha256_file, validate_json_serializable
 from .errors import ArtifactError, AssetEngineError, ConflictError, StateError, ValidationError
+from .two_stage_layout import TWO_STAGE_TEMPLATE_ID
 from .visual_review import (
     require_finalization_confirmation,
     review_is_eligible,
@@ -165,6 +166,15 @@ class RunStore:
         if not isinstance(request, dict):
             raise ArtifactError("invalid_run_request", "Run requests must be JSON objects.")
         validate_json_serializable(request)
+        stage_budget: dict[str, int] | None = None
+        if request.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID:
+            max_rounds = request.get("max_rounds")
+            if type(max_rounds) is not int or not 1 <= max_rounds <= 3:
+                raise StateError(
+                    "invalid_round_budget",
+                    "Two-stage run max_rounds must be an integer from 1 to 3.",
+                )
+            stage_budget = {"maximum": max_rounds * 2, "consumed": 0}
 
         self.output_root.mkdir(parents=True, exist_ok=True)
         runs_root = ensure_within(self.output_root, self.output_root / "runs")
@@ -194,6 +204,8 @@ class RunStore:
                 "warnings": [],
                 "final": None,
             }
+            if stage_budget is not None:
+                manifest["stage_budget"] = copy.deepcopy(stage_budget)
             atomic_write_json(self._manifest_path(run_id), manifest)
             return copy.deepcopy(manifest)
 
@@ -339,10 +351,9 @@ class RunStore:
             raise ValidationError("invalid_attempt_result", "Attempt result must be an object.")
         validate_json_serializable(result)
         lock_path = self._lock_path(handle.run_id)
-        owns_attempt = False
+        completed = False
         try:
             manifest, active = self._owned_attempt(handle)
-            owns_attempt = True
             rounds = self._rounds(manifest)
             round_number = len(rounds) + 1
             round_value = copy.deepcopy(result)
@@ -350,6 +361,24 @@ class RunStore:
                 round_value["image"] = copy.deepcopy(active["image"])
             if "backend_result" in active:
                 round_value["backend_result"] = copy.deepcopy(active["backend_result"])
+            if self._is_two_stage_manifest(manifest):
+                stages = active.get("stages")
+                mask_artifact = active.get("mask_artifact")
+                pixel_preservation = result.get("pixel_preservation")
+                if (
+                    not isinstance(stages, list)
+                    or not isinstance(mask_artifact, dict)
+                    or not isinstance(pixel_preservation, dict)
+                ):
+                    raise ValidationError(
+                        "invalid_two_stage_attempt",
+                        "Completed two-stage attempts require stages, mask, and pixel preservation metadata.",
+                    )
+                round_value["stages"] = copy.deepcopy(stages)
+                round_value["mask_artifact"] = copy.deepcopy(mask_artifact)
+                round_value["pixel_preservation"] = copy.deepcopy(pixel_preservation)
+                round_value["stage_units"] = 2
+                self._consume_stage_units(manifest, 2)
             round_value.update({
                 "round_number": round_number,
                 "status": "generated",
@@ -375,9 +404,11 @@ class RunStore:
             manifest["active_attempt"] = None
             manifest["state"] = "generated"
             manifest["last_stable_state"] = "generated"
-            return self._save_manifest(handle.run_id, manifest)
+            saved = self._save_manifest(handle.run_id, manifest)
+            completed = True
+            return saved
         finally:
-            if owns_attempt and handle.owner_token is not None:
+            if completed and handle.owner_token is not None:
                 self._release_lock(lock_path, handle.owner_token)
 
     def mark_attempt_image(
@@ -395,6 +426,80 @@ class RunStore:
             active["backend_result"] = copy.deepcopy(backend_result)
         manifest["active_attempt"] = active
         return self._save_manifest(handle.run_id, manifest)
+
+    def mark_attempt_artifacts(
+        self,
+        handle: AttemptHandle,
+        base: dict[str, object],
+        mask: dict[str, object],
+        final: dict[str, object],
+        backend_result: dict[str, object],
+    ) -> dict[str, object]:
+        manifest, active = self._owned_attempt(handle)
+        if not self._is_two_stage_manifest(manifest):
+            raise StateError(
+                "two_stage_run_required",
+                "Stage artifacts can be marked only on the reviewed two-stage workflow.",
+            )
+        if not isinstance(backend_result, dict):
+            raise ValidationError("invalid_backend_result", "Backend result metadata must be an object.")
+        validate_json_serializable(backend_result)
+        subject_seed = backend_result.get("subject_seed")
+        if type(subject_seed) is not int:
+            raise ValidationError(
+                "invalid_backend_result",
+                "Two-stage backend result requires an exact subject seed.",
+            )
+        validated_base = self._validate_full_image(handle.run_id, base)
+        validated_mask = self._validate_full_image(handle.run_id, mask)
+        validated_final = self._validate_full_image(handle.run_id, final)
+        active["stages"] = [
+            {"role": "base", "seed": active["seed"], "image": validated_base},
+            {"role": "subject", "seed": subject_seed, "image": validated_final},
+        ]
+        active["mask_artifact"] = validated_mask
+        active["image"] = copy.deepcopy(validated_final)
+        active["backend_result"] = copy.deepcopy(backend_result)
+        manifest["active_attempt"] = active
+        return self._save_manifest(handle.run_id, manifest)
+
+    def record_partial_attempt(
+        self,
+        handle: AttemptHandle,
+        retained_stages: list[dict[str, object]],
+        error: dict[str, object],
+    ) -> dict[str, object]:
+        self._require_attempt_handle(handle)
+        if not isinstance(error, dict):
+            raise ValidationError("invalid_attempt_error", "Attempt error must be an object.")
+        validate_json_serializable(error)
+        lock_path = self._lock_path(handle.run_id)
+        completed = False
+        try:
+            manifest, active = self._owned_attempt(handle)
+            if not self._is_two_stage_manifest(manifest):
+                raise StateError(
+                    "two_stage_run_required",
+                    "Partial stage attempts apply only to the reviewed two-stage workflow.",
+                )
+            normalized_stages = self._validate_retained_stages(handle.run_id, retained_stages)
+            self._consume_stage_units(manifest, len(normalized_stages))
+            archived = copy.deepcopy(active)
+            archived["status"] = "partial"
+            archived["partial_at"] = utc_now()
+            archived["retained_stages"] = normalized_stages
+            archived["stage_units"] = len(normalized_stages)
+            archived["error"] = copy.deepcopy(error)
+            self._attempts(manifest).append(archived)
+            manifest["active_attempt"] = None
+            manifest["state"] = "partial"
+            manifest["last_stable_state"] = "partial"
+            saved = self._save_manifest(handle.run_id, manifest)
+            completed = True
+            return saved
+        finally:
+            if completed and handle.owner_token is not None:
+                self._release_lock(lock_path, handle.owner_token)
 
     def fail_attempt(self, handle: AttemptHandle, error: dict[str, object]) -> dict[str, object]:
         self._require_attempt_handle(handle)
@@ -948,7 +1053,86 @@ class RunStore:
             normalized["mask_id"] = mask_id
         return normalized
 
+    @staticmethod
+    def _is_two_stage_manifest(manifest: dict[str, object]) -> bool:
+        request = manifest.get("request")
+        return (
+            isinstance(request, dict)
+            and request.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID
+        )
+
+    def _consume_stage_units(self, manifest: dict[str, object], units: int) -> None:
+        request = manifest.get("request")
+        budget = manifest.get("stage_budget")
+        if not isinstance(request, dict) or not isinstance(budget, dict):
+            raise ArtifactError("corrupt_manifest", "Two-stage manifest budget metadata is missing.")
+        max_rounds = request.get("max_rounds")
+        maximum = budget.get("maximum")
+        consumed = budget.get("consumed")
+        if (
+            type(max_rounds) is not int
+            or type(maximum) is not int
+            or maximum != max_rounds * 2
+            or type(consumed) is not int
+            or not 0 <= consumed <= maximum
+            or type(units) is not int
+            or not 1 <= units <= 2
+        ):
+            raise ArtifactError("corrupt_manifest", "Two-stage manifest budget metadata is invalid.")
+        if consumed + units > maximum:
+            raise StateError(
+                "stage_budget_exhausted",
+                "Run has consumed its retained generation-stage budget.",
+            )
+        budget["consumed"] = consumed + units
+
+    def _validate_retained_stages(
+        self,
+        run_id: str,
+        retained_stages: object,
+    ) -> list[dict[str, object]]:
+        if not isinstance(retained_stages, list) or not 1 <= len(retained_stages) <= 2:
+            raise ValidationError(
+                "invalid_retained_stages",
+                "Partial attempts require one or two retained stages.",
+            )
+        validate_json_serializable(retained_stages)
+        expected_roles = ["base", "subject"][:len(retained_stages)]
+        normalized: list[dict[str, object]] = []
+        paths: set[str] = set()
+        for index, stage in enumerate(retained_stages):
+            if (
+                not isinstance(stage, dict)
+                or set(stage) != {"role", "seed", "image"}
+                or stage.get("role") != expected_roles[index]
+                or type(stage.get("seed")) is not int
+            ):
+                raise ValidationError(
+                    "invalid_retained_stages",
+                    "Retained stages must be the exact base-to-subject prefix.",
+                )
+            image = self._validate_full_image(run_id, stage["image"])
+            path = image["path"]
+            assert isinstance(path, str)
+            if path in paths:
+                raise ValidationError(
+                    "invalid_retained_stages",
+                    "Retained stage artifact paths must be distinct.",
+                )
+            paths.add(path)
+            normalized.append({
+                "role": stage["role"],
+                "seed": stage["seed"],
+                "image": image,
+            })
+        return normalized
+
     def _validate_attempt_transition(self, manifest: dict[str, object], request: dict[str, object]) -> None:
+        if manifest.get("state") == "partial":
+            raise StateError(
+                "two_stage_run_partial",
+                "A run with retained partial stages permits read-only recovery only.",
+            )
         if manifest.get("state") == "finalized" or manifest.get("final") is not None:
             raise StateError("run_finalized", "Finalized runs cannot start new generation attempts.")
         action = request.get("action")
@@ -1288,7 +1472,14 @@ class RunStore:
             interrupted["interrupted_at"] = utc_now()
             self._attempts(current).append(interrupted)
             current["active_attempt"] = None
-            current["state"] = current.get("last_stable_state", "created")
+            stages = interrupted.get("stages")
+            if self._is_two_stage_manifest(current) and isinstance(stages, list) and stages:
+                self._consume_stage_units(current, len(stages))
+                interrupted["stage_units"] = len(stages)
+                current["state"] = "partial"
+                current["last_stable_state"] = "partial"
+            else:
+                current["state"] = current.get("last_stable_state", "created")
             warnings = current.get("warnings")
             if not isinstance(warnings, list):
                 raise ArtifactError("corrupt_manifest", "Manifest warnings must be an array.")
@@ -1471,20 +1662,55 @@ class RunStore:
         review = self._review_by_number(manifest, round_number)
         if review is None:
             raise StateError("round_requires_review", "Selected round must be reviewed before finalization.")
+        image = self._finalizable_round_image(manifest, selected)
         final: dict[str, object] = {
             "round_number": round_number,
             "summary": summary.strip(),
             "finalized_at": utc_now(),
             "quality_status": self._quality_status(manifest, review),
+            "image": copy.deepcopy(image),
+            "path": image["path"],
         }
-        image = selected.get("image")
-        if isinstance(image, dict):
-            final["image"] = copy.deepcopy(image)
-            if isinstance(image.get("path"), str):
-                final["path"] = image["path"]
         manifest["final"] = final
         manifest["state"] = "finalized"
         manifest["last_stable_state"] = "finalized"
+
+    def _finalizable_round_image(
+        self,
+        manifest: dict[str, object],
+        selected: dict[str, object],
+    ) -> dict[str, object]:
+        image = selected.get("image")
+        if (
+            selected.get("status") != "generated"
+            or not isinstance(image, dict)
+            or not isinstance(image.get("path"), str)
+            or not image["path"]
+        ):
+            raise StateError(
+                "round_not_finalizable",
+                "Finalization requires a normal generated round image.",
+            )
+        if not self._is_two_stage_manifest(manifest):
+            return image
+        stages = selected.get("stages")
+        mask = selected.get("mask_artifact")
+        if (
+            not isinstance(stages, list)
+            or len(stages) != 2
+            or not all(isinstance(stage, dict) for stage in stages)
+            or [stage.get("role") for stage in stages] != ["base", "subject"]
+            or not isinstance(stages[0].get("image"), dict)
+            or not isinstance(stages[1].get("image"), dict)
+            or not isinstance(mask, dict)
+            or image != stages[1]["image"]
+            or image.get("path") in {stages[0]["image"].get("path"), mask.get("path")}
+        ):
+            raise StateError(
+                "round_not_finalizable",
+                "Two-stage finalization can select only the authoritative final-stage image.",
+            )
+        return image
 
     def _require_finalizable_state(self, manifest: dict[str, object]) -> None:
         if manifest.get("state") != "reviewed" or manifest.get("last_stable_state") != "reviewed":
@@ -1566,12 +1792,25 @@ class RunStore:
                     if key in record:
                         del record[key]
                         removed_reference = True
-                backend_result = record.get("backend_result")
-                if isinstance(backend_result, dict) and "path" in backend_result:
-                    del backend_result["path"]
-                    removed_reference = True
+                for nested_key in ("stages", "retained_stages", "mask_artifact", "backend_result"):
+                    if self._prune_nested_artifact_paths(record.get(nested_key)):
+                        removed_reference = True
                 if removed_reference:
                     record["artifacts_cleaned_at"] = cleaned_at
+
+    @staticmethod
+    def _prune_nested_artifact_paths(value: object) -> bool:
+        removed = False
+        if isinstance(value, dict):
+            if "path" in value:
+                del value["path"]
+                removed = True
+            for child in value.values():
+                removed = RunStore._prune_nested_artifact_paths(child) or removed
+        elif isinstance(value, list):
+            for child in value:
+                removed = RunStore._prune_nested_artifact_paths(child) or removed
+        return removed
 
     def _remove_intermediates(self, run_root: Path, preserved_paths: set[Path]) -> None:
         def is_preserved(path: Path) -> bool:

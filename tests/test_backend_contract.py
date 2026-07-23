@@ -13,6 +13,7 @@ from local_gpu_imagegen.backend_contract import (  # noqa: E402
     validate_backend_result,
 )
 from local_gpu_imagegen.errors import ArtifactError  # noqa: E402
+from local_gpu_imagegen.two_stage_layout import TWO_STAGE_TEMPLATE_ID  # noqa: E402
 
 
 def result(**changes: object) -> dict[str, object]:
@@ -47,6 +48,29 @@ def validate(value: object, *, backend: str = "webui", seed: int = 42) -> dict[s
         expected_backend=backend,
         available_backends=["webui", "diffusers"],
     )
+
+
+def two_stage_backend_result(**changes: object) -> dict[str, object]:
+    value = result(
+        path="C:/runs/final.pending.png",
+        backend="comfyui",
+        seed=2026072303,
+        width=1280,
+        height=720,
+        workflow_template_id=TWO_STAGE_TEMPLATE_ID,
+        workflow_template_version=1,
+        workflow_job_id="prompt-two-stage-1",
+        prompt_compiler_id="natural-v1",
+        stage_outputs={
+            "base": {"path": "C:/runs/base.pending.png"},
+            "final": {"path": "C:/runs/final.pending.png"},
+        },
+        mask_output={"path": "C:/runs/mask.pending.png"},
+        subject_seed=2026072304,
+        control_sha256="c" * 64,
+    )
+    value.update(changes)
+    return value
 
 
 class BackendContractTests(unittest.TestCase):
@@ -100,6 +124,64 @@ class BackendContractTests(unittest.TestCase):
                 available_backends=["comfyui"],
             )
         self.assertEqual(raised.exception.code, "invalid_backend_result")
+
+    def test_two_stage_backend_result_requires_exact_stage_shape(self) -> None:
+        original = two_stage_backend_result()
+        validated = validate_backend_result(
+            original,
+            "txt2img",
+            1280,
+            720,
+            expected_seed=2026072303,
+            expected_backend="comfyui",
+            available_backends=["comfyui"],
+        )
+
+        self.assertEqual(validated["subject_seed"], 2026072304)
+        self.assertEqual(set(validated["stage_outputs"]), {"base", "final"})
+        self.assertEqual(validated["control_sha256"], "c" * 64)
+        self.assertEqual(validated, original)
+        self.assertIsNot(validated, original)
+
+    def test_two_stage_backend_result_rejects_invalid_stage_metadata(self) -> None:
+        cases = {
+            "missing-field": {key: value for key, value in two_stage_backend_result().items() if key != "mask_output"},
+            "extra-role": two_stage_backend_result(stage_outputs={
+                "base": {"path": "C:/runs/base.pending.png"},
+                "mask": {"path": "C:/runs/mask.pending.png"},
+                "final": {"path": "C:/runs/final.pending.png"},
+            }),
+            "extra-output-field": two_stage_backend_result(mask_output={
+                "path": "C:/runs/mask.pending.png", "role": "mask",
+            }),
+            "wrong-subject-seed": two_stage_backend_result(subject_seed=2026072305),
+            "boolean-subject-seed": two_stage_backend_result(subject_seed=True),
+            "unsafe-path": two_stage_backend_result(mask_output={"path": ""}),
+            "uppercase-digest": two_stage_backend_result(control_sha256="C" * 64),
+            "short-digest": two_stage_backend_result(control_sha256="c" * 63),
+        }
+        for name, value in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ArtifactError, "invalid_backend_result"
+            ):
+                validate_backend_result(
+                    value,
+                    "txt2img",
+                    1280,
+                    720,
+                    expected_seed=2026072303,
+                    expected_backend="comfyui",
+                    available_backends=["comfyui"],
+                )
+
+    def test_non_two_stage_results_reject_two_stage_metadata(self) -> None:
+        for field in ("stage_outputs", "mask_output", "subject_seed", "control_sha256"):
+            value = result()
+            value[field] = two_stage_backend_result()[field]
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ArtifactError, "invalid_backend_result"
+            ):
+                validate(value)
 
     def test_rejects_invalid_results_with_stable_error_code(self) -> None:
         cases: dict[str, object] = {
