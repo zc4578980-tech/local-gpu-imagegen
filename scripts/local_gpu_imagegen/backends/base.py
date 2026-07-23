@@ -36,6 +36,9 @@ class BackendAdapter(Protocol):
     def generate(self, request: dict[str, object]) -> dict[str, object]:
         raise NotImplementedError
 
+    def regional_layout_capability(self, mode: str) -> dict[str, object]:
+        raise NotImplementedError
+
     def cancel_or_query(
         self,
         job_id: str,
@@ -328,6 +331,32 @@ class BackendRegistry:
         for backend_id in selected:
             records.extend(self.get(backend_id).discover())
         return records
+
+    def regional_layout_capability(self, mode: str) -> dict[str, object]:
+        adapter = self._adapters.get("comfyui")
+        capability = getattr(adapter, "regional_layout_capability", None)
+        if not callable(capability):
+            return {
+                "mode": mode,
+                "available": False,
+                "endpoint_identity": None,
+                "reason": "regional_layout_unavailable",
+            }
+        result = capability(mode)
+        if (
+            not isinstance(result, dict)
+            or set(result)
+            != {"mode", "available", "endpoint_identity", "reason"}
+            or result["mode"] != mode
+            or type(result["available"]) is not bool
+        ):
+            return {
+                "mode": mode,
+                "available": False,
+                "endpoint_identity": getattr(adapter, "endpoint_identity", None),
+                "reason": "regional_layout_unavailable",
+            }
+        return dict(result)
 
     def generate(self, request: dict[str, object]) -> dict[str, object]:
         backend_id = request.get("backend")

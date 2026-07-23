@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from local_gpu_imagegen.backends.base import BackendRegistry  # noqa: E402
 from local_gpu_imagegen.backends.comfyui import ComfyUIAdapter  # noqa: E402
 from local_gpu_imagegen.errors import (  # noqa: E402
     ArtifactError,
@@ -109,11 +110,11 @@ class ComfyUIAdapterTests(unittest.TestCase):
             timeout=5,
             sleep=lambda _seconds: None,
         )
-        registry = WorkflowTemplateRegistry(
+        self.registry = WorkflowTemplateRegistry(
             ROOT / "workflows" / "comfyui",
             Path(self.temporary_directory.name) / "state",
         )
-        self.workflow = registry.resolve(
+        self.workflow = self.registry.resolve(
             "sd15-txt2img",
             MODEL,
             "txt2img",
@@ -133,6 +134,96 @@ class ComfyUIAdapterTests(unittest.TestCase):
         self.model = discovered[0]
         self.unet_model = discovered[1]
         self.server.requests.clear()
+
+    def install_regional_object_info(self) -> None:
+        self.server.routes[(
+            "GET",
+            "/object_info/ConditioningSetAreaPercentage",
+        )] = FakeResponse.json({
+            "ConditioningSetAreaPercentage": {
+                "input": {
+                    "required": {
+                        "conditioning": ["CONDITIONING", {}],
+                        "width": ["FLOAT", {}],
+                        "height": ["FLOAT", {}],
+                        "x": ["FLOAT", {}],
+                        "y": ["FLOAT", {}],
+                        "strength": ["FLOAT", {}],
+                    }
+                }
+            }
+        })
+        self.server.routes[(
+            "GET",
+            "/object_info/ConditioningCombine",
+        )] = FakeResponse.json({
+            "ConditioningCombine": {
+                "input": {
+                    "required": {
+                        "conditioning_1": ["CONDITIONING", {}],
+                        "conditioning_2": ["CONDITIONING", {}],
+                    }
+                }
+            }
+        })
+
+    @staticmethod
+    def regional_layout() -> dict[str, object]:
+        return {
+            "mode": "copy-subject-v1",
+            "copy_region": {
+                "x": 0.0,
+                "y": 0.0,
+                "width": 0.45,
+                "height": 1.0,
+            },
+            "subject_region": {
+                "x": 0.68,
+                "y": 0.0,
+                "width": 0.30,
+                "height": 1.0,
+            },
+        }
+
+    @staticmethod
+    def regional_conditioning() -> dict[str, object]:
+        return {
+            "copy_prompt": "empty dark copy space",
+            "copy_strength": 1.15,
+            "subject_prompt": "complete telescope",
+            "subject_strength": 1.25,
+        }
+
+    def regional_request(self, **changes: object) -> dict[str, object]:
+        layout = self.regional_layout()
+        conditioning = self.regional_conditioning()
+        settings = {
+            "positive_prompt": "coastal observatory hero",
+            "negative_prompt": "artifacts",
+            "seed": 42,
+            "steps": 30,
+            "guidance_scale": 7.0,
+            "sampler": "dpmpp_2m",
+            "scheduler": "karras",
+            "width": 512,
+            "height": 512,
+        }
+        workflow = self.registry.resolve(
+            "sdxl-regional-txt2img",
+            MODEL,
+            "txt2img",
+            settings,
+            regional_layout=layout,
+            regional_conditioning=conditioning,
+        )
+        return self.request(
+            workflow=workflow,
+            regional_layout=layout,
+            regional_conditioning=conditioning,
+            prompt_compiler_id="natural-v1",
+            **settings,
+            **changes,
+        )
 
     def tearDown(self) -> None:
         self.server_context.__exit__(None, None, None)
@@ -192,6 +283,51 @@ class ComfyUIAdapterTests(unittest.TestCase):
         self.assertEqual(report["version"], "0.3.50")
         self.assertEqual(report["endpoint_identity"], self.adapter.endpoint_identity)
         self.assertTrue(report["ready"])
+
+    def test_regional_capability_requires_both_exact_required_signatures(self) -> None:
+        self.install_regional_object_info()
+
+        available = self.adapter.regional_layout_capability("copy-subject-v1")
+
+        self.assertEqual(available, {
+            "mode": "copy-subject-v1",
+            "available": True,
+            "endpoint_identity": self.adapter.endpoint_identity,
+            "reason": None,
+        })
+        drifted = copy.deepcopy(
+            self.server.routes[("GET", "/object_info/ConditioningCombine")]
+        )
+        drifted.body = drifted.body.replace(b"conditioning_2", b"conditioning_x")
+        self.server.routes[("GET", "/object_info/ConditioningCombine")] = drifted
+
+        unavailable = self.adapter.regional_layout_capability("copy-subject-v1")
+
+        self.assertFalse(unavailable["available"])
+        self.assertEqual(unavailable["reason"], "regional_layout_unavailable")
+
+    def test_regional_capability_registry_fails_closed_without_comfyui(self) -> None:
+        self.assertEqual(
+            BackendRegistry([]).regional_layout_capability("copy-subject-v1"),
+            {
+                "mode": "copy-subject-v1",
+                "available": False,
+                "endpoint_identity": None,
+                "reason": "regional_layout_unavailable",
+            },
+        )
+        self.install_regional_object_info()
+        self.assertTrue(
+            BackendRegistry([self.adapter])
+            .regional_layout_capability("copy-subject-v1")["available"]
+        )
+
+    def test_unsupported_regional_mode_does_not_probe_comfyui(self) -> None:
+        result = self.adapter.regional_layout_capability("arbitrary-regions")
+
+        self.assertEqual(result["reason"], "unsupported_layout_mode")
+        self.assertFalse(result["available"])
+        self.assertEqual(self.server.requests, [])
 
     def test_discovery_uses_checkpoint_choices_without_mutation(self) -> None:
         records = self.adapter.discover()
@@ -289,6 +425,69 @@ class ComfyUIAdapterTests(unittest.TestCase):
         submitted = json.loads(self.server.requests[0]["body"].decode("utf-8"))
         self.assertEqual(submitted["client_id"], "test-attempt")
         self.assertEqual(submitted["prompt"], self.workflow["graph"])
+
+    def test_regional_generate_rechecks_nodes_before_prompt_submission(self) -> None:
+        self.install_regional_object_info()
+        request = self.regional_request()
+        self.server.routes.pop(("GET", "/object_info/ConditioningCombine"))
+
+        with self.assertRaisesRegex(ConflictError, "regional_layout_drifted"):
+            self.adapter.generate(request)
+
+        self.assertFalse(
+            any(item["method"] == "POST" for item in self.server.requests)
+        )
+
+    def test_regional_generate_submits_only_after_exact_live_recheck(self) -> None:
+        self.install_regional_object_info()
+        self.server.routes[("GET", "/history/prompt-1")] = FakeResponse.json(
+            self.completed_history(output_node="16")
+        )
+
+        result = self.adapter.generate(self.regional_request())
+
+        self.assertEqual(result["workflow_template_id"], "sdxl-regional-txt2img")
+        self.assertEqual(
+            [item["path"] for item in self.server.requests],
+            [
+                "/object_info/ConditioningSetAreaPercentage",
+                "/object_info/ConditioningCombine",
+                "/prompt",
+                "/history/prompt-1",
+                "/view?filename=result.png&subfolder=&type=output",
+            ],
+        )
+
+    def test_regional_graph_and_request_drift_fail_before_submission(self) -> None:
+        requests = []
+        missing_conditioning = self.regional_request()
+        del missing_conditioning["regional_conditioning"]
+        requests.append((missing_conditioning, "invalid_regional_conditioning"))
+
+        changed_prompt = self.regional_request()
+        changed_prompt["workflow"]["graph"]["8"]["inputs"]["text"] = "busy copy"
+        requests.append((changed_prompt, "workflow_parameter_mismatch"))
+
+        changed_area = self.regional_request()
+        changed_area["workflow"]["graph"]["10"]["inputs"]["width"] = 0.40
+        requests.append((changed_area, "workflow_parameter_mismatch"))
+
+        extra_encoder = self.regional_request()
+        extra_encoder["workflow"]["graph"]["20"] = copy.deepcopy(
+            extra_encoder["workflow"]["graph"]["8"]
+        )
+        requests.append((extra_encoder, "unsafe_comfy_workflow"))
+
+        for request, expected_code in requests:
+            self.server.requests.clear()
+            with self.subTest(expected_code=expected_code), self.assertRaises(
+                (ConflictError, ValidationError)
+            ) as raised:
+                self.adapter.generate(request)
+            self.assertEqual(raised.exception.code, expected_code)
+            self.assertFalse(
+                any(item["method"] == "POST" for item in self.server.requests)
+            )
 
     def test_changed_model_or_unsafe_workflow_fails_before_submission(self) -> None:
         changed_model = copy.deepcopy(self.model)

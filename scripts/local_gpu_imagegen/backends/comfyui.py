@@ -13,8 +13,21 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ..artifacts import PNG_SIGNATURE, validate_png
-from ..errors import ArtifactError, ConflictError, StateError, ValidationError
+from ..errors import (
+    ArtifactError,
+    AssetEngineError,
+    ConflictError,
+    StateError,
+    ValidationError,
+)
 from ..model_identity import identity_token, validate_discovery_record
+from ..regional_layout import (
+    LAYOUT_MODE,
+    REGIONAL_TEMPLATE_ID,
+    validate_regional_conditioning,
+    validate_regional_layout,
+    validate_regional_node_info,
+)
 from ..workflow_templates import (
     COMPONENT_LOADER_INPUTS,
     FORBIDDEN_TERMS,
@@ -24,6 +37,7 @@ from ..workflow_templates import (
     MAX_STEPS,
     MIN_DIMENSION,
     MODEL_LOADER_INPUTS,
+    REGIONAL_NODE_INPUTS,
     SAFE_NODE_INPUTS,
 )
 from .base import BoundedJsonClient
@@ -35,6 +49,7 @@ MAX_COMFY_REQUEST_BYTES = 16 * 1024 * 1024
 JOB_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 MODES = frozenset({"txt2img", "img2img", "inpaint"})
+REGIONAL_SAFE_NODE_INPUTS = {**SAFE_NODE_INPUTS, **REGIONAL_NODE_INPUTS}
 DISAPPEARED_GRACE_POLLS = 4
 
 
@@ -120,8 +135,43 @@ class ComfyUIAdapter:
                 records.append(record)
         return records
 
+    def regional_layout_capability(self, mode: str) -> dict[str, object]:
+        if mode != LAYOUT_MODE:
+            return {
+                "mode": mode,
+                "available": False,
+                "endpoint_identity": self.endpoint_identity,
+                "reason": "unsupported_layout_mode",
+            }
+        try:
+            area = self.client.get_json(
+                "/object_info/ConditioningSetAreaPercentage"
+            )
+            combine = self.client.get_json("/object_info/ConditioningCombine")
+            validate_regional_node_info(area, combine)
+        except AssetEngineError as error:
+            return {
+                "mode": mode,
+                "available": False,
+                "endpoint_identity": self.endpoint_identity,
+                "reason": error.code,
+            }
+        return {
+            "mode": mode,
+            "available": True,
+            "endpoint_identity": self.endpoint_identity,
+            "reason": None,
+        }
+
     def generate(self, request: dict[str, object]) -> dict[str, object]:
         normalized = _validate_request(request, self.endpoint_identity)
+        if normalized["workflow"].get("layout_mode") == LAYOUT_MODE:
+            capability = self.regional_layout_capability(LAYOUT_MODE)
+            if capability["available"] is not True:
+                raise ConflictError(
+                    "regional_layout_drifted",
+                    "Required ComfyUI regional nodes changed before submission.",
+                )
         submitted = self.client.post_json(
             "/prompt",
             {
@@ -370,11 +420,39 @@ def _validate_resolved_workflow(
         "output_node",
         "graph",
     }
-    if not isinstance(value, dict) or set(value) != required:
+    is_regional = (
+        isinstance(value, dict) and value.get("layout_mode") == LAYOUT_MODE
+    )
+    expected_fields = required | ({"layout_mode"} if is_regional else set())
+    if not isinstance(value, dict) or set(value) != expected_fields:
         raise ValidationError(
             "unsafe_comfy_workflow",
             "Resolved ComfyUI workflow fields are invalid.",
         )
+    if is_regional:
+        if (
+            value["template_id"] != REGIONAL_TEMPLATE_ID
+            or value["model_family"] != "sdxl"
+        ):
+            raise ValidationError(
+                "unsafe_comfy_workflow",
+                "Resolved regional workflow metadata is invalid.",
+            )
+        regional_layout = validate_regional_layout(request.get("regional_layout"))
+        regional_conditioning = validate_regional_conditioning(
+            request.get("regional_conditioning")
+        )
+    else:
+        regional_layout = None
+        regional_conditioning = None
+        if (
+            "regional_layout" in request
+            or "regional_conditioning" in request
+        ):
+            raise ValidationError(
+                "invalid_regional_conditioning",
+                "Standard ComfyUI requests reject regional data.",
+            )
     if (
         not isinstance(value["template_id"], str)
         or type(value["template_version"]) is not int
@@ -400,12 +478,18 @@ def _validate_resolved_workflow(
     samplers = []
     latent_nodes = []
     prompt_values = []
+    class_counts: Counter[str] = Counter()
+    area_nodes: dict[str, dict[str, object]] = {}
+    combine_nodes: dict[str, dict[str, object]] = {}
+    approved_node_inputs = (
+        REGIONAL_SAFE_NODE_INPUTS if is_regional else SAFE_NODE_INPUTS
+    )
     for node_id, node in graph.items():
         if (
             not isinstance(node_id, str)
             or not isinstance(node, dict)
             or set(node) != {"class_type", "inputs"}
-            or node.get("class_type") not in SAFE_NODE_INPUTS
+            or node.get("class_type") not in approved_node_inputs
             or not isinstance(node.get("inputs"), dict)
         ):
             raise ValidationError(
@@ -414,8 +498,9 @@ def _validate_resolved_workflow(
             )
         class_type = node["class_type"]
         inputs = node["inputs"]
+        class_counts[class_type] += 1
         if any(
-            key not in SAFE_NODE_INPUTS[class_type]
+            key not in approved_node_inputs[class_type]
             or any(term in key.lower() for term in FORBIDDEN_TERMS)
             for key in inputs
         ):
@@ -439,6 +524,20 @@ def _validate_resolved_workflow(
             latent_nodes.append(inputs)
         elif class_type == "CLIPTextEncode":
             prompt_values.append(inputs.get("text"))
+        elif class_type == "ConditioningSetAreaPercentage":
+            if set(inputs) != REGIONAL_NODE_INPUTS[class_type]:
+                raise ValidationError(
+                    "unsafe_comfy_workflow",
+                    "Resolved regional area inputs are incomplete.",
+                )
+            area_nodes[node_id] = inputs
+        elif class_type == "ConditioningCombine":
+            if set(inputs) != REGIONAL_NODE_INPUTS[class_type]:
+                raise ValidationError(
+                    "unsafe_comfy_workflow",
+                    "Resolved regional combine inputs are incomplete.",
+                )
+            combine_nodes[node_id] = inputs
         elif class_type in {"LoadImage", "LoadImageMask"}:
             image = inputs.get("image")
             if not isinstance(image, str) or not _safe_relative_path(image):
@@ -487,15 +586,201 @@ def _validate_resolved_workflow(
             "workflow_parameter_mismatch",
             "Resolved ComfyUI dimensions do not match confirmed parameters.",
         )
-    if Counter(prompt_values) != Counter([
-        request["positive_prompt"],
-        request["negative_prompt"],
-    ]):
+    expected_prompts = [request["positive_prompt"], request["negative_prompt"]]
+    if is_regional:
+        expected_prompts.extend([
+            regional_conditioning["copy_prompt"],
+            regional_conditioning["subject_prompt"],
+        ])
+        _validate_regional_graph(
+            graph,
+            sampler,
+            class_counts,
+            area_nodes,
+            combine_nodes,
+            regional_layout,
+            regional_conditioning,
+            request["positive_prompt"],
+            request["negative_prompt"],
+        )
+    if Counter(prompt_values) != Counter(expected_prompts):
         raise ConflictError(
             "workflow_parameter_mismatch",
             "Resolved ComfyUI prompts do not match confirmed prompts.",
         )
     return copy.deepcopy(value)
+
+
+def _validate_regional_graph(
+    graph: dict[str, object],
+    sampler: dict[str, object],
+    class_counts: Counter[str],
+    area_nodes: dict[str, dict[str, object]],
+    combine_nodes: dict[str, dict[str, object]],
+    layout: dict[str, object],
+    conditioning: dict[str, object],
+    positive_prompt: str,
+    negative_prompt: str,
+) -> None:
+    expected_counts = {
+        "CLIPTextEncode": 4,
+        "ConditioningSetAreaPercentage": 2,
+        "ConditioningCombine": 2,
+    }
+    if any(class_counts[name] != count for name, count in expected_counts.items()):
+        raise ValidationError(
+            "unsafe_comfy_workflow",
+            "Resolved regional workflow node counts are invalid.",
+        )
+
+    actual_areas = []
+    for inputs in area_nodes.values():
+        source_edge = inputs.get("conditioning")
+        if not _exact_edge(source_edge):
+            raise ValidationError(
+                "unsafe_comfy_workflow",
+                "Resolved regional area source is invalid.",
+            )
+        source = graph[source_edge[0]]
+        source_inputs = source.get("inputs") if isinstance(source, dict) else None
+        prompt = source_inputs.get("text") if isinstance(source_inputs, dict) else None
+        if source.get("class_type") != "CLIPTextEncode" or not isinstance(prompt, str):
+            raise ValidationError(
+                "unsafe_comfy_workflow",
+                "Resolved regional area prompt source is invalid.",
+            )
+        scalars = tuple(
+            inputs.get(key)
+            for key in ("x", "y", "width", "height", "strength")
+        )
+        if any(not _number(item) for item in scalars):
+            raise ValidationError(
+                "unsafe_comfy_workflow",
+                "Resolved regional area scalars are invalid.",
+            )
+        actual_areas.append((prompt, *scalars))
+
+    copy_region = layout["copy_region"]
+    subject_region = layout["subject_region"]
+    expected_areas = [
+        (
+            conditioning["copy_prompt"],
+            copy_region["x"],
+            copy_region["y"],
+            copy_region["width"],
+            copy_region["height"],
+            conditioning["copy_strength"],
+        ),
+        (
+            conditioning["subject_prompt"],
+            subject_region["x"],
+            subject_region["y"],
+            subject_region["width"],
+            subject_region["height"],
+            conditioning["subject_strength"],
+        ),
+    ]
+    if Counter(actual_areas) != Counter(expected_areas):
+        raise ConflictError(
+            "workflow_parameter_mismatch",
+            "Resolved ComfyUI regional areas do not match confirmed values.",
+        )
+
+    negative_edge = sampler.get("negative")
+    if not _exact_edge(negative_edge):
+        raise ValidationError(
+            "unsafe_comfy_workflow",
+            "Resolved regional negative conditioning edge is invalid.",
+        )
+    negative_node = graph[negative_edge[0]]
+    if (
+        negative_node.get("class_type") != "CLIPTextEncode"
+        or negative_node.get("inputs", {}).get("text") != negative_prompt
+    ):
+        raise ConflictError(
+            "workflow_parameter_mismatch",
+            "Resolved ComfyUI negative prompt does not match confirmation.",
+        )
+
+    visited_combines: set[str] = set()
+    leaves = _conditioning_leaves(
+        sampler.get("positive"),
+        graph,
+        combine_nodes,
+        visited_combines,
+    )
+    if visited_combines != set(combine_nodes):
+        raise ValidationError(
+            "unsafe_comfy_workflow",
+            "Resolved regional combine graph contains unused nodes.",
+        )
+    area_edges = {(node_id, 0) for node_id in area_nodes}
+    leaf_edges = Counter(leaves)
+    for edge in area_edges:
+        if leaf_edges[edge] != 1:
+            raise ValidationError(
+                "unsafe_comfy_workflow",
+                "Resolved regional combine graph omits an area.",
+            )
+        del leaf_edges[edge]
+    if sum(leaf_edges.values()) != 1:
+        raise ValidationError(
+            "unsafe_comfy_workflow",
+            "Resolved regional combine graph has unexpected leaves.",
+        )
+    positive_edge = next(iter(leaf_edges))
+    positive_node = graph[positive_edge[0]]
+    if (
+        positive_node.get("class_type") != "CLIPTextEncode"
+        or positive_node.get("inputs", {}).get("text") != positive_prompt
+    ):
+        raise ConflictError(
+            "workflow_parameter_mismatch",
+            "Resolved ComfyUI positive prompt does not match confirmation.",
+        )
+
+
+def _conditioning_leaves(
+    edge: object,
+    graph: dict[str, object],
+    combine_nodes: dict[str, dict[str, object]],
+    visited: set[str],
+) -> list[tuple[str, int]]:
+    if not _exact_edge(edge):
+        raise ValidationError(
+            "unsafe_comfy_workflow",
+            "Resolved regional conditioning edge is invalid.",
+        )
+    node_id = edge[0]
+    if node_id not in combine_nodes:
+        return [(node_id, 0)]
+    if node_id in visited:
+        raise ValidationError(
+            "unsafe_comfy_workflow",
+            "Resolved regional combine graph contains a cycle.",
+        )
+    visited.add(node_id)
+    inputs = combine_nodes[node_id]
+    return _conditioning_leaves(
+        inputs.get("conditioning_1"),
+        graph,
+        combine_nodes,
+        visited,
+    ) + _conditioning_leaves(
+        inputs.get("conditioning_2"),
+        graph,
+        combine_nodes,
+        visited,
+    )
+
+
+def _exact_edge(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 2
+        and isinstance(value[0], str)
+        and value[1] == 0
+    )
 
 
 def _validate_node_edges(
