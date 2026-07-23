@@ -46,6 +46,23 @@ ACTIVE_VERSION_FILES = ACTIVE_PUBLIC_DOCS + (
 )
 
 class PublicDocumentationTests(unittest.TestCase):
+    def test_readme_shipped_workflow_inventory_matches_packaged_assets(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        inventory = re.search(
+            r"ComfyUI ships reviewed (?P<files>.+?) workflow files\.",
+            readme,
+        )
+
+        self.assertIsNotNone(inventory)
+        assert inventory is not None
+        documented = set(re.findall(r"`([^`]+\.json)`", inventory["files"]))
+        packaged = {
+            path.name
+            for path in (ROOT / "workflows" / "comfyui").glob("*.json")
+            if path.is_file()
+        }
+        self.assertEqual(documented, packaged)
+
     def test_readme_documents_v05_agent_workflow_and_release_boundary(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
