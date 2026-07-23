@@ -31,6 +31,7 @@ from local_gpu_imagegen.regional_layout import REGIONAL_TEMPLATE_ID  # noqa: E40
 from local_gpu_imagegen.run_store import RunStore  # noqa: E402
 from local_gpu_imagegen.two_stage_layout import (  # noqa: E402
     TWO_STAGE_TEMPLATE_ID,
+    build_control_identity,
     derive_subject_seed,
 )
 from local_gpu_imagegen.workflow_templates import WorkflowTemplateRegistry  # noqa: E402
@@ -523,6 +524,26 @@ class AssetRunEngineTests(unittest.TestCase):
 
     def two_stage_start_arguments(self) -> dict[str, object]:
         layout = self.two_stage_layout()
+        self.engine.workflows = WorkflowTemplateRegistry(
+            ROOT / "workflows" / "comfyui",
+            Path(self.temporary_directory.name) / "two-stage-workflow-state",
+        )
+        inspected = self.engine.workflows.inspect_shipped(
+            TWO_STAGE_TEMPLATE_ID,
+            "actual-loaded-model",
+            "txt2img",
+            {
+                "positive_prompt": "catalog validation",
+                "negative_prompt": "",
+                "seed": 0,
+                "steps": 4,
+                "guidance_scale": 6.0,
+                "sampler": "euler",
+                "scheduler": "normal",
+                "width": 640,
+                "height": 320,
+            },
+        )
         arguments = self.start_arguments(max_rounds=2)
         arguments.update({
             "constraints": {
@@ -540,15 +561,16 @@ class AssetRunEngineTests(unittest.TestCase):
             "workflow_template_version": 1,
             "prompt_compiler_id": "natural-v1",
             "prompt_compiler_version": 1,
+            "control_sha256": build_control_identity(
+                layout,
+                inspected["workflow_sha256"],
+                "base-subject-v1",
+            ),
         })
         self.router.routes[str(route["route_token"])] = copy.deepcopy(route)
         arguments["route_token"] = route["route_token"]
         if "comfyui" not in self.capabilities["available_backends"]:
             self.capabilities["available_backends"].append("comfyui")
-        self.engine.workflows = WorkflowTemplateRegistry(
-            ROOT / "workflows" / "comfyui",
-            Path(self.temporary_directory.name) / "two-stage-workflow-state",
-        )
         return arguments
 
     def two_stage_plan(self, route: dict[str, object]) -> dict[str, object]:
@@ -871,6 +893,38 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(Path(round_value["image"]["path"]).name, "round-01.png")
         self.assertIsNotNone(preview)
         self.assertNotIn("preview", round_value["stages"][0]["image"])
+
+    def test_two_stage_backend_result_must_match_route_control_identity(self) -> None:
+        route = {
+            "backend": "comfyui",
+            "endpoint_identity": TEST_ENDPOINT,
+            "identity_token": TEST_IDENTITY,
+            "identity_strength": "cryptographic",
+            "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+            "workflow_template_version": 1,
+            "prompt_compiler_id": "natural-v1",
+            "prompt_compiler_version": 1,
+            "control_sha256": "c" * 64,
+        }
+        model = {"backend_model_id": "actual-loaded-model"}
+        result = {
+            "backend": "comfyui",
+            "endpoint_identity": TEST_ENDPOINT,
+            "model_identity_token": TEST_IDENTITY,
+            "identity_strength": "cryptographic",
+            "workflow_template_id": TWO_STAGE_TEMPLATE_ID,
+            "workflow_template_version": 1,
+            "prompt_compiler_id": "natural-v1",
+            "prompt_compiler_version": 1,
+            "model": "actual-loaded-model",
+            "control_sha256": "d" * 64,
+        }
+
+        with self.assertRaises(AssetEngineError) as raised:
+            engine_module._validate_locked_backend_result(result, route, model)
+
+        self.assertEqual(raised.exception.code, "invalid_backend_result")
+        self.assertEqual(raised.exception.details, {"field": "control_sha256"})
 
     def test_two_stage_base_only_failure_records_one_retained_stage(self) -> None:
         runner = TwoStageBackendRunner(failure="base_only")

@@ -370,7 +370,8 @@ class WorkflowTemplateRegistry:
             operation,
             parameters,
         )
-        self._validate_rendered(template, graph, normalized_model)
+        if template.get("layout_mode") != TWO_STAGE_LAYOUT_MODE:
+            self._validate_rendered(template, graph, normalized_model)
         return _rendered_result(template, graph)
 
     @staticmethod

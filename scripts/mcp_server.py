@@ -542,6 +542,7 @@ def tool_schema() -> list[dict[str, Any]]:
                 "required_vram_gb": {"type": ["number", "null"]},
                 "preferred_model_id": {"type": ["string", "null"]},
                 "regional_layout": {"type": "object"},
+                "two_stage_layout": {"type": "object"},
             }, [
                 "authorization_scope", "operation", "profile", "style", "width", "height",
                 "affinity_tags", "required_vram_gb", "preferred_model_id",

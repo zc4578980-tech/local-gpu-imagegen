@@ -12,6 +12,11 @@ from .regional_layout import (
     REGIONAL_TEMPLATE_ID,
     validate_regional_layout,
 )
+from .two_stage_layout import (
+    TWO_STAGE_TEMPLATE_ID,
+    build_control_identity,
+    validate_two_stage_layout,
+)
 
 
 AUTHORIZATION_SCOPES = frozenset({"private", "public_evidence"})
@@ -28,7 +33,19 @@ REQUIREMENT_FIELDS = frozenset({
     "required_vram_gb",
     "preferred_model_id",
 })
-OPTIONAL_REQUIREMENT_FIELDS = frozenset({"regional_layout"})
+OPTIONAL_REQUIREMENT_FIELDS = frozenset({"regional_layout", "two_stage_layout"})
+LAYOUT_REQUIREMENTS = {
+    "regional_layout": {
+        "capability_field": "regional_layout_modes",
+        "template_id": REGIONAL_TEMPLATE_ID,
+        "unavailable_reason": "regional_layout_unavailable",
+    },
+    "two_stage_layout": {
+        "capability_field": "two_stage_layout_modes",
+        "template_id": TWO_STAGE_TEMPLATE_ID,
+        "unavailable_reason": "two_stage_layout_unavailable",
+    },
+}
 
 
 class CapabilityRouter:
@@ -85,17 +102,22 @@ class CapabilityRouter:
 
     def recommend(self, requirements: dict[str, object]) -> dict[str, object]:
         normalized = _normalize_requirements(requirements)
-        regional_capability = None
-        regional_layout = normalized.get("regional_layout")
-        if isinstance(regional_layout, dict):
-            regional_capability = self._layout_capability(
-                str(regional_layout["mode"])
+        layout_key = next(
+            (key for key in LAYOUT_REQUIREMENTS if key in normalized),
+            None,
+        )
+        layout_capability = None
+        if layout_key is not None:
+            layout = normalized[layout_key]
+            assert isinstance(layout, dict)
+            layout_capability = self._layout_capability(
+                str(layout["mode"])
             )
-            if regional_capability["available"] is not True:
+            if layout_capability["available"] is not True:
                 return {
                     "requirements": normalized,
                     "routes": [],
-                    "reason": "regional_layout_unavailable",
+                    "reason": LAYOUT_REQUIREMENTS[layout_key]["unavailable_reason"],
                 }
         available = self.catalog.list_models(normalized["authorization_scope"])
         eligible = [
@@ -105,7 +127,7 @@ class CapabilityRouter:
                 model,
                 normalized,
                 self.compilers,
-                regional_capability,
+                layout_capability,
             )
         ]
         ranked = sorted(
@@ -227,6 +249,8 @@ class CapabilityRouter:
             "score_components": copy.deepcopy(scored["score_components"]),
             "user_pinned": scored["user_pinned"],
         }
+        if model.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID:
+            boundary["control_sha256"] = model.get("control_sha256")
         token = "route:" + _canonical_hash(boundary)
         route = {
             **boundary,
@@ -238,9 +262,11 @@ class CapabilityRouter:
 
 
 def _normalize_requirements(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) not in (
-        REQUIREMENT_FIELDS,
-        REQUIREMENT_FIELDS | OPTIONAL_REQUIREMENT_FIELDS,
+    if (
+        not isinstance(value, dict)
+        or not REQUIREMENT_FIELDS <= set(value)
+        or set(value) - REQUIREMENT_FIELDS
+        not in (set(), {"regional_layout"}, {"two_stage_layout"})
     ):
         raise _invalid_requirements("Route requirement fields are incomplete or unexpected.")
     scope = value["authorization_scope"]
@@ -288,6 +314,10 @@ def _normalize_requirements(value: object) -> dict[str, object]:
         normalized["regional_layout"] = validate_regional_layout(
             value["regional_layout"]
         )
+    if "two_stage_layout" in value:
+        normalized["two_stage_layout"] = validate_two_stage_layout(
+            value["two_stage_layout"]
+        )
     return normalized
 
 
@@ -295,7 +325,7 @@ def _hard_match(
     model: object,
     requirements: dict[str, object],
     compilers: PromptCompilerRegistry,
-    regional_capability: dict[str, object] | None,
+    layout_capability: dict[str, object] | None,
 ) -> bool:
     if not isinstance(model, dict):
         return False
@@ -341,23 +371,65 @@ def _hard_match(
         return False
     if model.get("backend") == "comfyui" and not model.get("workflow_template_id"):
         return False
-    regional_layout = requirements.get("regional_layout")
-    if isinstance(regional_layout, dict):
-        modes = capabilities.get("regional_layout_modes")
+    layout_key = next(
+        (key for key in LAYOUT_REQUIREMENTS if key in requirements),
+        None,
+    )
+    if layout_key is not None:
+        layout = requirements[layout_key]
+        assert isinstance(layout, dict)
+        specification = LAYOUT_REQUIREMENTS[layout_key]
+        modes = capabilities.get(specification["capability_field"])
         if (
-            regional_capability is None
-            or regional_capability.get("available") is not True
+            layout_capability is None
+            or layout_capability.get("available") is not True
             or model.get("backend") != "comfyui"
             or model.get("endpoint_identity")
-            != regional_capability.get("endpoint_identity")
-            or model.get("workflow_template_id") != REGIONAL_TEMPLATE_ID
+            != layout_capability.get("endpoint_identity")
+            or model.get("workflow_template_id") != specification["template_id"]
             or not isinstance(modes, list)
-            or regional_layout["mode"] not in modes
+            or layout["mode"] not in modes
         ):
             return False
-    elif model.get("workflow_template_id") == REGIONAL_TEMPLATE_ID:
+        if layout_key == "two_stage_layout" and not _two_stage_identity_matches(
+            model,
+            layout,
+        ):
+            return False
+    elif model.get("workflow_template_id") in {
+        REGIONAL_TEMPLATE_ID,
+        TWO_STAGE_TEMPLATE_ID,
+    }:
         return False
     return True
+
+
+def _two_stage_identity_matches(
+    model: dict[str, object],
+    layout: dict[str, object],
+) -> bool:
+    bundle = model.get("component_bundle")
+    bundle_sha256 = model.get("component_bundle_sha256")
+    workflow = bundle.get("workflow") if isinstance(bundle, dict) else None
+    if (
+        not isinstance(bundle, dict)
+        or not isinstance(bundle_sha256, str)
+        or bundle.get("bundle_sha256") != bundle_sha256
+        or not isinstance(workflow, dict)
+        or workflow.get("template_id") != TWO_STAGE_TEMPLATE_ID
+        or workflow.get("template_version") != model.get("workflow_template_version")
+        or not isinstance(workflow.get("sha256"), str)
+    ):
+        return False
+    try:
+        expected_control = build_control_identity(
+            layout,
+            workflow["sha256"],
+            "base-subject-v1",
+        )
+    except AssetEngineError:
+        return False
+    return model.get("control_sha256") == expected_control
 
 
 def _score_model(

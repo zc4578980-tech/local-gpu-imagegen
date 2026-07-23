@@ -26,6 +26,7 @@ from local_gpu_imagegen.trust_registry import (  # noqa: E402
     TrustRegistry,
     default_state_dir,
 )
+from local_gpu_imagegen.two_stage_layout import TWO_STAGE_TEMPLATE_ID  # noqa: E402
 
 
 def discovery_record(
@@ -46,7 +47,10 @@ def discovery_record(
     }
 
 
-def component_bundle(workflow_sha256: str = "c" * 64) -> dict[str, object]:
+def component_bundle(
+    workflow_sha256: str = "c" * 64,
+    template_id: str = "z-image-turbo-txt2img",
+) -> dict[str, object]:
     return build_component_bundle(
         [{
             "role": "primary_model",
@@ -58,7 +62,7 @@ def component_bundle(workflow_sha256: str = "c" * 64) -> dict[str, object]:
             "byte_size": 1024,
         }],
         {
-            "template_id": "z-image-turbo-txt2img",
+            "template_id": template_id,
             "template_version": 1,
             "sha256": workflow_sha256,
         },
@@ -289,6 +293,80 @@ class TrustRegistryTests(unittest.TestCase):
 
         self.assertEqual(approved["component_bundle"], bundle)
         self.assertEqual(approved["public_metadata"], metadata)
+
+    def test_two_stage_variant_requires_exact_control_binding(self) -> None:
+        record = discovery_record(identity_strength="cryptographic", sha256="a" * 64)
+        bundle = component_bundle(template_id=TWO_STAGE_TEMPLATE_ID)
+        binding = {
+            "backend": "comfyui",
+            "template_id": TWO_STAGE_TEMPLATE_ID,
+            "template_version": 1,
+            "workflow_sha256": "c" * 64,
+            "component_bundle_sha256": bundle["bundle_sha256"],
+        }
+        confirmation = self.registry.confirmation_value(
+            "approve_private",
+            record,
+            bundle,
+        )
+
+        with self.assertRaisesRegex(ValidationError, "invalid_workflow_binding"):
+            self.registry.approve_private(
+                record,
+                confirmation,
+                capabilities={"operations": ["txt2img"]},
+                workflow_binding=binding,
+                component_bundle=bundle,
+            )
+
+        binding["control_sha256"] = "d" * 64
+        approved = self.registry.approve_private(
+            record,
+            confirmation,
+            capabilities={"operations": ["txt2img"]},
+            workflow_binding=binding,
+            component_bundle=bundle,
+        )
+
+        self.assertEqual(approved["workflow_binding"], binding)
+        self.assertEqual(self.registry.list_records()[0]["workflow_binding"], binding)
+
+    def test_existing_workflow_variants_reject_control_without_shape_drift(self) -> None:
+        record = discovery_record(identity_strength="cryptographic", sha256="a" * 64)
+        bundle = component_bundle()
+        binding = {
+            "backend": "comfyui",
+            "template_id": "z-image-turbo-txt2img",
+            "template_version": 1,
+            "workflow_sha256": "c" * 64,
+            "component_bundle_sha256": bundle["bundle_sha256"],
+        }
+        confirmation = self.registry.confirmation_value(
+            "approve_private",
+            record,
+            bundle,
+        )
+
+        approved = self.registry.approve_private(
+            record,
+            confirmation,
+            capabilities={"operations": ["txt2img"]},
+            workflow_binding=binding,
+            component_bundle=bundle,
+        )
+        self.assertEqual(approved["workflow_binding"], binding)
+        self.assertNotIn("control_sha256", approved["workflow_binding"])
+
+        changed = {**binding, "control_sha256": "d" * 64}
+        with self.assertRaisesRegex(ValidationError, "invalid_workflow_binding"):
+            self.registry.approve_private(
+                record,
+                confirmation,
+                capabilities={"operations": ["txt2img"]},
+                workflow_binding=changed,
+                component_bundle=bundle,
+            )
+        self.assertEqual(self.registry.list_records(), [approved])
 
     def test_rejects_credentials_recursively_before_writing(self) -> None:
         record = discovery_record()

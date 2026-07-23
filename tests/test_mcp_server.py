@@ -108,6 +108,7 @@ class McpServerUnitTests(unittest.TestCase):
             "local_gpu_recommend_models": {
                 "authorization_scope", "operation", "profile", "style", "width", "height",
                 "affinity_tags", "required_vram_gb", "preferred_model_id", "regional_layout",
+                "two_stage_layout",
             },
             "local_gpu_start_run": {
                 "intent", "profile", "subtype", "style", "constraints", "model_choice", "backend",
@@ -150,7 +151,7 @@ class McpServerUnitTests(unittest.TestCase):
                         "workflow_path", "workflow_binding", "preference", "component_identity_tokens",
                         "catalog_id",
                     },
-                    "local_gpu_recommend_models": {"regional_layout"},
+                    "local_gpu_recommend_models": {"regional_layout", "two_stage_layout"},
                     "local_gpu_start_run": {
                         "initial_regional_conditioning", "initial_two_stage_conditioning",
                     },

@@ -267,6 +267,18 @@ class WorkflowTemplateTests(unittest.TestCase):
             }],
         )
 
+    def test_two_stage_identity_can_be_inspected_before_layout_selection(self) -> None:
+        inspected = self.registry.inspect_shipped(
+            "sdxl-two-stage-copy-subject",
+            SDXL_MODEL,
+            "txt2img",
+            two_stage_parameters(),
+        )
+
+        self.assertEqual(inspected["template_id"], "sdxl-two-stage-copy-subject")
+        self.assertRegex(inspected["workflow_sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn("control_sha256", inspected)
+
     def test_two_stage_graph_rejects_every_topology_and_static_drift(self) -> None:
         mutations = (
             lambda graph: graph.pop("20"),

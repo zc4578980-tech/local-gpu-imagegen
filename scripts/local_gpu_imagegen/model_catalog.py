@@ -14,6 +14,7 @@ from .model_identity import (
 )
 from .prompt_compilers import COMPILER_VERSIONS
 from .regional_layout import LAYOUT_MODE
+from .two_stage_layout import TWO_STAGE_LAYOUT_MODE, TWO_STAGE_TEMPLATE_ID
 
 
 AUTHORIZATION_SCOPES = frozenset({"private", "public_evidence"})
@@ -50,6 +51,7 @@ LOCKED_ROUTE_FIELDS = (
     "workflow_template_id",
     "workflow_template_version",
     "component_bundle_sha256",
+    "control_sha256",
 )
 
 
@@ -238,6 +240,7 @@ class ModelCatalog:
                 "workflow_template_version": None,
                 "component_bundle": None,
                 "component_bundle_sha256": None,
+                "control_sha256": None,
                 "public_candidate": (
                     template.get("output_redistribution_status") == "approved"
                 ),
@@ -276,7 +279,7 @@ class ModelCatalog:
             backend = str(execution["backend"])
             if backend not in ready:
                 continue
-            workflow_id, workflow_version = self._workflow_fields(
+            workflow_id, workflow_version, control_sha256 = self._workflow_fields(
                 backend,
                 execution,
                 trust,
@@ -311,6 +314,7 @@ class ModelCatalog:
                     if component_bundle is not None
                     else None
                 ),
+                "control_sha256": control_sha256,
                 "trust_scope": trust.get("scope"),
                 "public_metadata": copy.deepcopy(trust.get("public_metadata")),
                 "public_candidate": trust.get("scope") == "public_candidate",
@@ -323,16 +327,16 @@ class ModelCatalog:
         current: dict[str, object],
         trust: dict[str, object],
         capabilities: dict[str, object],
-    ) -> tuple[str | None, int | None]:
+    ) -> tuple[str | None, int | None, str | None]:
         if backend != "comfyui":
-            return None, None
+            return None, None, None
         binding = trust.get("workflow_binding")
         if not isinstance(binding, dict):
-            return None, None
+            return None, None, None
         template_id = binding.get("template_id")
         version = binding.get("template_version")
         if not isinstance(template_id, str) or type(version) is not int or version < 1:
-            return None, None
+            return None, None, None
         operation = capabilities["capabilities"]["operations"][0]
         recommended = capabilities["recommended"]
         try:
@@ -353,13 +357,18 @@ class ModelCatalog:
                 },
             )
         except (AttributeError, AssetEngineError):
-            return None, None
+            return None, None, None
         if resolved.get("template_version") != version:
-            return None, None
+            return None, None, None
         expected_workflow_sha = binding.get("workflow_sha256")
         if expected_workflow_sha is not None and resolved.get("workflow_sha256") != expected_workflow_sha:
-            return None, None
-        return template_id, version
+            return None, None, None
+        control_sha256 = (
+            binding.get("control_sha256")
+            if template_id == TWO_STAGE_TEMPLATE_ID
+            else None
+        )
+        return template_id, version, control_sha256
 
     def _repository_models(self) -> list[dict[str, object]]:
         if not self.repository_root.exists():
@@ -442,6 +451,7 @@ def _normalize_local_capabilities(value: object) -> dict[str, object]:
         not in (
             required,
             required | {"regional_layout_modes"},
+            required | {"two_stage_layout_modes"},
         )
         or value["prompt_dialect"] not in COMPILER_VERSIONS
     ):
@@ -462,6 +472,10 @@ def _normalize_local_capabilities(value: object) -> dict[str, object]:
     if "regional_layout_modes" in value:
         capability_document["regional_layout_modes"] = value[
             "regional_layout_modes"
+        ]
+    if "two_stage_layout_modes" in value:
+        capability_document["two_stage_layout_modes"] = value[
+            "two_stage_layout_modes"
         ]
     capabilities = _validate_capabilities(capability_document)
     if not isinstance(value["model_family"], str) or not value["model_family"].strip():
@@ -485,8 +499,11 @@ def _validate_capabilities(value: object) -> dict[str, object]:
         "minimum_vram_gb",
         "negative_prompt",
     }
-    allowed_fields = (fields, fields | {"regional_layout_modes"})
-    if not isinstance(value, dict) or set(value) not in allowed_fields:
+    optional_fields = {"regional_layout_modes", "two_stage_layout_modes"}
+    if (
+        not isinstance(value, dict)
+        or not fields <= set(value) <= fields | optional_fields
+    ):
         raise ValidationError(
             "invalid_model_capabilities",
             "Model capability fields are invalid.",
@@ -495,6 +512,7 @@ def _validate_capabilities(value: object) -> dict[str, object]:
     maximum = value["maximum_dimension"]
     vram = value["minimum_vram_gb"]
     regional_modes = value.get("regional_layout_modes", [])
+    two_stage_modes = value.get("two_stage_layout_modes", [])
     if (
         not _operations(value["operations"])
         or type(minimum) is not int
@@ -508,6 +526,10 @@ def _validate_capabilities(value: object) -> dict[str, object]:
         or any(not isinstance(mode, str) for mode in regional_modes)
         or len(set(regional_modes)) != len(regional_modes)
         or any(mode != LAYOUT_MODE for mode in regional_modes)
+        or not isinstance(two_stage_modes, list)
+        or any(not isinstance(mode, str) for mode in two_stage_modes)
+        or len(set(two_stage_modes)) != len(two_stage_modes)
+        or any(mode != TWO_STAGE_LAYOUT_MODE for mode in two_stage_modes)
     ):
         raise ValidationError(
             "invalid_model_capabilities",
@@ -515,6 +537,8 @@ def _validate_capabilities(value: object) -> dict[str, object]:
         )
     normalized = copy.deepcopy(value)
     normalized["regional_layout_modes"] = copy.deepcopy(regional_modes)
+    if "two_stage_layout_modes" in value:
+        normalized["two_stage_layout_modes"] = copy.deepcopy(two_stage_modes)
     return normalized
 
 

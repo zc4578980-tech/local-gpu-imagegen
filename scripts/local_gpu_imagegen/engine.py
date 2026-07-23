@@ -1299,6 +1299,8 @@ def _validate_locked_backend_result(
         "prompt_compiler_version": route.get("prompt_compiler_version"),
         "model": model.get("backend_model_id"),
     }
+    if route.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID:
+        expected["control_sha256"] = route.get("control_sha256")
     for field, value in expected.items():
         if result.get(field) != value:
             raise ArtifactError(

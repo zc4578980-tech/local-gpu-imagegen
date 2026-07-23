@@ -18,6 +18,12 @@ from local_gpu_imagegen.model_identity import (  # noqa: E402
     identity_token,
     validate_discovery_record,
 )
+from local_gpu_imagegen.regional_layout import REGIONAL_TEMPLATE_ID  # noqa: E402
+from local_gpu_imagegen.two_stage_layout import (  # noqa: E402
+    TWO_STAGE_LAYOUT_MODE,
+    TWO_STAGE_TEMPLATE_ID,
+    build_control_identity,
+)
 
 
 def discovery_record(
@@ -216,6 +222,109 @@ class ModelCatalogTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
+    @staticmethod
+    def two_stage_layout() -> dict[str, object]:
+        return {
+            "mode": TWO_STAGE_LAYOUT_MODE,
+            "canvas": {"width": 640, "height": 320},
+            "copy_protected_rect": {"x": 0, "y": 0, "width": 224, "height": 320},
+            "subject_mask_rect": {"x": 304, "y": 16, "width": 320, "height": 288},
+            "feather_pixels": 0,
+            "vae_grow_mask_by": 0,
+        }
+
+    def install_sdxl_variants(self) -> None:
+        filesystem = validate_discovery_record({
+            "backend": "filesystem",
+            "endpoint_identity": "filesystem:sdxl",
+            "backend_model_id": "sd_xl_base_1.0.safetensors",
+            "format": ".safetensors",
+            "byte_size": 2048,
+            "modified_ns": 123,
+            "sha256": "c" * 64,
+            "identity_strength": "cryptographic",
+            "metadata": {},
+        })
+        filesystem["identity_token"] = identity_token(filesystem)
+        comfy = validate_discovery_record({
+            "backend": "comfyui",
+            "endpoint_identity": "endpoint:comfyui",
+            "backend_model_id": "sd_xl_base_1.0.safetensors",
+            "format": ".safetensors",
+            "byte_size": None,
+            "modified_ns": None,
+            "sha256": None,
+            "identity_strength": "backend_binding",
+            "metadata": {
+                "loader_class": "CheckpointLoaderSimple",
+                "loader_input": "ckpt_name",
+            },
+        })
+        comfy["identity_token"] = identity_token(comfy)
+        self.inventory.extend((filesystem, comfy))
+        self.readiness["available_backends"].append("comfyui")
+
+        for index, template_id in enumerate((
+            "sdxl-txt2img",
+            REGIONAL_TEMPLATE_ID,
+            TWO_STAGE_TEMPLATE_ID,
+        )):
+            bundle = build_component_bundle(
+                [{
+                    "role": "primary_model",
+                    "loader_class": "CheckpointLoaderSimple",
+                    "loader_input": "ckpt_name",
+                    "backend_model_id": "sd_xl_base_1.0.safetensors",
+                    "filesystem_identity_token": filesystem["identity_token"],
+                    "sha256": "c" * 64,
+                    "byte_size": 2048,
+                }],
+                {
+                    "template_id": template_id,
+                    "template_version": 1,
+                    "sha256": "d" * 64,
+                },
+            )
+            trusted = trust_record(
+                filesystem,
+                catalog_id=f"local:sdxl-variant-{index}",
+                scope="public_candidate",
+            )
+            trusted["workflow_binding"] = {
+                "backend": "comfyui",
+                "backend_model_id": "sd_xl_base_1.0.safetensors",
+                "endpoint_identity": "endpoint:comfyui",
+                "backend_identity_token": comfy["identity_token"],
+                "template_id": template_id,
+                "template_version": 1,
+                "workflow_sha256": "d" * 64,
+                "component_bundle_sha256": bundle["bundle_sha256"],
+            }
+            if template_id == REGIONAL_TEMPLATE_ID:
+                trusted["capabilities"]["regional_layout_modes"] = [
+                    "copy-subject-v1"
+                ]
+            elif template_id == TWO_STAGE_TEMPLATE_ID:
+                trusted["capabilities"]["two_stage_layout_modes"] = [
+                    TWO_STAGE_LAYOUT_MODE
+                ]
+                trusted["workflow_binding"]["control_sha256"] = build_control_identity(
+                    self.two_stage_layout(),
+                    "d" * 64,
+                    "base-subject-v1",
+                )
+            trusted["component_bundle"] = bundle
+            trusted["public_metadata"]["components"] = [{
+                "role": "primary_model",
+                "sha256": "c" * 64,
+                "source": "https://example.invalid/component",
+                "license_id": "test-license",
+                "license_url": "https://example.invalid/license",
+                "output_redistribution_status": "approved",
+            }]
+            trusted["capabilities"]["operations"] = ["txt2img"]
+            self.trust.records.append(trusted)
+
     def test_catalog_merges_repository_identity_without_promoting_evidence(self) -> None:
         model = self.catalog.resolve("repo/anime", "public_evidence")
 
@@ -229,6 +338,71 @@ class ModelCatalogTests(unittest.TestCase):
             identity_token(validate_discovery_record(model)),
             model["identity_token"],
         )
+
+    def test_standard_regional_and_two_stage_variants_coexist_for_one_model(self) -> None:
+        self.install_sdxl_variants()
+
+        variants = [
+            item
+            for item in self.catalog.list_models("public_evidence")
+            if item["backend_model_id"] == "sd_xl_base_1.0.safetensors"
+        ]
+
+        self.assertEqual(
+            {item["workflow_template_id"] for item in variants},
+            {"sdxl-txt2img", REGIONAL_TEMPLATE_ID, TWO_STAGE_TEMPLATE_ID},
+        )
+        two_stage = next(
+            item for item in variants
+            if item["workflow_template_id"] == TWO_STAGE_TEMPLATE_ID
+        )
+        self.assertEqual(
+            two_stage["control_sha256"],
+            build_control_identity(
+                self.two_stage_layout(),
+                "d" * 64,
+                "base-subject-v1",
+            ),
+        )
+        self.assertIsNone(next(
+            item for item in variants
+            if item["workflow_template_id"] == "sdxl-txt2img"
+        )["control_sha256"])
+
+    def test_locked_two_stage_route_rejects_control_digest_drift(self) -> None:
+        self.install_sdxl_variants()
+        model = next(
+            item
+            for item in self.catalog.list_models("public_evidence")
+            if item["workflow_template_id"] == TWO_STAGE_TEMPLATE_ID
+        )
+        route = {
+            "model_id": model["id"],
+            "authorization_scope": "public_evidence",
+            **{
+                field: copy.deepcopy(model[field])
+                for field in (
+                    "identity_token",
+                    "identity_strength",
+                    "backend",
+                    "endpoint_identity",
+                    "workflow_template_id",
+                    "workflow_template_version",
+                    "component_bundle_sha256",
+                    "control_sha256",
+                )
+            },
+        }
+        trust = next(
+            item
+            for item in self.trust.records
+            if (item.get("workflow_binding") or {}).get("template_id")
+            == TWO_STAGE_TEMPLATE_ID
+        )
+        trust["workflow_binding"]["control_sha256"] = "f" * 64
+
+        with self.assertRaisesRegex(ConflictError, "model_identity_drifted"):
+            self.catalog.verify_locked_route(route)
 
     def test_catalog_separates_private_and_public_candidate_scope(self) -> None:
         private = {item["id"] for item in self.catalog.list_models("private")}

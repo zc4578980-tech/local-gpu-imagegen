@@ -18,6 +18,7 @@ from .model_identity import (
     validate_component_bundle,
     validate_discovery_record,
 )
+from .two_stage_layout import TWO_STAGE_TEMPLATE_ID
 
 
 TRUST_SCHEMA_VERSION = 1
@@ -272,6 +273,7 @@ class TrustRegistry:
             raise ValidationError("invalid_model_capabilities", "Capabilities must be an object.")
         if workflow_binding is not None and not isinstance(workflow_binding, dict):
             raise ValidationError("invalid_workflow_binding", "Workflow binding must be an object or null.")
+        _validate_workflow_binding_control(workflow_binding, normalized_bundle)
         if type(preference) is not int or not -100 <= preference <= 100:
             raise ValidationError(
                 "invalid_model_preference",
@@ -543,6 +545,16 @@ def _validate_document(value: object) -> dict[str, object]:
                     "Stored component bundle is invalid.",
                 ) from error
             record["component_bundle"] = component_bundle
+        try:
+            _validate_workflow_binding_control(
+                record["workflow_binding"],
+                component_bundle,
+            )
+        except ValidationError as error:
+            raise ArtifactError(
+                "corrupt_trust_registry",
+                "Stored workflow binding is invalid.",
+            ) from error
         bundle_sha256 = _bundle_sha(record)
         legacy_catalog_id = "local:" + token.removeprefix("model:")[:24]
         variant_catalog_id = (
@@ -603,6 +615,53 @@ def _validate_document(value: object) -> dict[str, object]:
             raise ArtifactError("corrupt_trust_registry", "Stored trust data contains credentials.") from error
     _validate_json(document, "corrupt_trust_registry", artifact=True)
     return document
+
+
+def _validate_workflow_binding_control(
+    workflow_binding: object,
+    component_bundle: dict[str, object] | None,
+) -> None:
+    if workflow_binding is None:
+        if (
+            isinstance(component_bundle, dict)
+            and component_bundle.get("workflow", {}).get("template_id")
+            == TWO_STAGE_TEMPLATE_ID
+        ):
+            raise ValidationError(
+                "invalid_workflow_binding",
+                "Two-stage workflow trust requires an exact control SHA-256.",
+            )
+        return
+    if not isinstance(workflow_binding, dict):
+        raise ValidationError(
+            "invalid_workflow_binding",
+            "Workflow binding must be an object or null.",
+        )
+    workflow = (
+        component_bundle.get("workflow")
+        if isinstance(component_bundle, dict)
+        else None
+    )
+    template_id = (
+        workflow.get("template_id")
+        if isinstance(workflow, dict)
+        else workflow_binding.get("template_id")
+    )
+    control_sha256 = workflow_binding.get("control_sha256")
+    if template_id == TWO_STAGE_TEMPLATE_ID:
+        if (
+            not isinstance(control_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", control_sha256) is None
+        ):
+            raise ValidationError(
+                "invalid_workflow_binding",
+                "Two-stage workflow trust requires an exact control SHA-256.",
+            )
+    elif "control_sha256" in workflow_binding:
+        raise ValidationError(
+            "invalid_workflow_binding",
+            "Control SHA-256 is allowed only for the two-stage workflow.",
+        )
 
 
 def _reject_credentials(value: object) -> None:
