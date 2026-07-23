@@ -62,12 +62,16 @@ PUBLIC_ROUTE_KEYS = {
 }
 TWO_STAGE_PUBLIC_ROUTE_KEYS = PUBLIC_ROUTE_KEYS | {"control_sha256"}
 TWO_STAGE_EVIDENCE_KEYS = {
+    "rounds",
+    "stage_budget",
+}
+TWO_STAGE_ROUND_EVIDENCE_KEYS = {
+    "round_number",
     "base",
     "mask",
     "final",
     "control_sha256",
     "subject_seed",
-    "stage_budget",
     "pixel_preservation",
 }
 AUTHORITY_COMPONENT_FIELDS = {
@@ -400,8 +404,11 @@ def _validate_package(
     _validate_host_environment(evidence)
     _validate_backend_model(evidence, authority)
     route = _validate_public_route(evidence.get("route"), authority)
-    _reject_private_values(evidence)
-    _reject_private_values(manifest)
+    _reject_private_values(evidence, allowed_component_path=("route", "component_bundle", "components"))
+    _reject_private_values(
+        manifest,
+        allowed_component_path=("request", "route", "component_bundle", "components"),
+    )
     _reject_private_values(mcp_result)
 
     files = evidence.get("files")
@@ -494,7 +501,7 @@ def _validate_package(
     )
     two_stage_paths: dict[str, str] | None = None
     if two_stage_route:
-        two_stage_paths = _validate_two_stage_evidence(
+        two_stage_paths = _validate_all_two_stage_evidence(
             package,
             evidence.get("two_stage"),
             manifest,
@@ -535,8 +542,8 @@ def _validate_package(
                 "Only the byte-identical final stage may be accepted.",
             )
     mcp_final = mcp_result.get("final")
-    if not isinstance(mcp_final, dict) or mcp_final.get("quality_status") != "accepted":
-        raise EvidenceError("mcp_result_mismatch", "MCP final result does not retain acceptance.")
+    if not isinstance(mcp_final, dict) or mcp_final != final:
+        raise EvidenceError("mcp_result_mismatch", "MCP final result differs from the accepted manifest final.")
 
     if parent_package is not None:
         referenced_files.add("parent-evidence.json")
@@ -554,7 +561,7 @@ def _validate_package(
     return {"profile": evidence["profile"], "run_id": run_id}
 
 
-def _validate_two_stage_evidence(
+def _validate_all_two_stage_evidence(
     package: Path,
     value: object,
     manifest: dict[str, object],
@@ -575,10 +582,7 @@ def _validate_two_stage_evidence(
             constraints.get("two_stage_layout") if isinstance(constraints, dict) else None
         )
     except AssetEngineError as error:
-        raise EvidenceError(
-            "invalid_two_stage_evidence",
-            "Retained two-stage layout is invalid.",
-        ) from error
+        raise EvidenceError("invalid_two_stage_evidence", "Retained two-stage layout is invalid.") from error
     if (
         not isinstance(request, dict)
         or request.get("workflow_template_id") != TWO_STAGE_TEMPLATE_ID
@@ -589,31 +593,127 @@ def _validate_two_stage_evidence(
             "Manifest and evidence routes do not identify the same two-stage workflow.",
         )
 
-    stages = selected.get("stages")
-    mask = selected.get("mask_artifact")
-    backend_result = selected.get("backend_result")
+    retained_rounds = manifest.get("rounds")
+    evidence_rounds = value.get("rounds")
+    if (
+        not isinstance(retained_rounds, list)
+        or not isinstance(evidence_rounds, list)
+        or len(evidence_rounds) != len(retained_rounds)
+    ):
+        raise EvidenceError(
+            "invalid_two_stage_evidence",
+            "Every retained round requires one exact two-stage evidence record.",
+        )
+    component_bundle = route.get("component_bundle")
+    workflow = component_bundle.get("workflow") if isinstance(component_bundle, dict) else None
+    workflow_sha256 = workflow.get("sha256") if isinstance(workflow, dict) else None
+    try:
+        expected_control = build_control_identity(layout, workflow_sha256, "base-subject-v1")
+    except AssetEngineError as error:
+        raise EvidenceError(
+            "invalid_two_stage_evidence",
+            "Two-stage workflow cannot reproduce its control digest.",
+        ) from error
+
+    stage_budget = manifest.get("stage_budget")
+    max_rounds = request.get("max_rounds")
+    if (
+        not isinstance(stage_budget, dict)
+        or set(stage_budget) != {"maximum", "consumed"}
+        or value.get("stage_budget") != stage_budget
+        or type(max_rounds) is not int
+        or type(stage_budget.get("maximum")) is not int
+        or type(stage_budget.get("consumed")) is not int
+        or stage_budget["maximum"] != max_rounds * 2
+        or stage_budget["consumed"] != len(retained_rounds) * 2
+    ):
+        raise EvidenceError(
+            "invalid_two_stage_evidence",
+            "Two-stage budget does not match retained successful stages.",
+        )
+
+    selected_number = selected.get("round_number")
+    selected_report = selected.get("pixel_preservation")
+    if (
+        type(selected_number) is not int
+        or not isinstance(selected_report, dict)
+        or selected_report.get("mismatched_pixels") != 0
+        or selected_report.get("copy_mismatched_pixels") != 0
+    ):
+        raise EvidenceError(
+            "nonzero_pixel_mismatch",
+            "Accepted two-stage evidence requires zero protected-pixel mismatches.",
+        )
+
+    paths_by_round: dict[int, dict[str, str]] = {}
+    for round_value, round_evidence in zip(retained_rounds, evidence_rounds, strict=True):
+        number, paths = _validate_two_stage_round_evidence(
+            package,
+            round_evidence,
+            round_value,
+            layout,
+            expected_control,
+            route,
+            referenced_files,
+        )
+        if number in paths_by_round:
+            raise EvidenceError("invalid_two_stage_evidence", "Two-stage round numbers must be unique.")
+        paths_by_round[number] = paths
+
+    if type(selected_number) is not int or selected_number not in paths_by_round:
+        raise EvidenceError("invalid_two_stage_evidence", "Selected two-stage round provenance is missing.")
+    try:
+        checks = validate_stage_checks(review.get("stage_checks"))
+    except AssetEngineError as error:
+        raise EvidenceError("invalid_review_evidence", "Two-stage review checks are incomplete.") from error
+    if not stage_checks_pass(checks):
+        raise EvidenceError(
+            "invalid_review_evidence",
+            "Accepted two-stage evidence requires every stage check to pass.",
+        )
+    return paths_by_round[selected_number]
+
+
+def _validate_two_stage_round_evidence(
+    package: Path,
+    value: object,
+    round_value: object,
+    layout: dict[str, object],
+    expected_control: str,
+    route: dict[str, object],
+    referenced_files: set[str],
+) -> tuple[int, dict[str, str]]:
+    if (
+        not isinstance(value, dict)
+        or set(value) != TWO_STAGE_ROUND_EVIDENCE_KEYS
+        or not isinstance(round_value, dict)
+        or value.get("round_number") != round_value.get("round_number")
+        or type(value.get("round_number")) is not int
+    ):
+        raise EvidenceError(
+            "invalid_two_stage_evidence",
+            "Two-stage round evidence shape or identity is invalid.",
+        )
+    stages = round_value.get("stages")
+    mask = round_value.get("mask_artifact")
+    backend_result = round_value.get("backend_result")
     if (
         not isinstance(stages, list)
         or len(stages) != 2
         or not all(isinstance(stage, dict) for stage in stages)
         or [stage.get("role") for stage in stages] != ["base", "subject"]
-        or selected.get("stage_units") != 2
+        or round_value.get("stage_units") != 2
         or not isinstance(mask, dict)
         or not isinstance(backend_result, dict)
     ):
         raise EvidenceError(
             "invalid_two_stage_evidence",
-            "Selected round does not retain the exact base, mask, and final stages.",
+            "Round does not retain exact base, mask, and final stages.",
         )
-
     stage_images = [stage.get("image") for stage in stages]
     if not all(isinstance(image, dict) for image in stage_images):
         raise EvidenceError("invalid_two_stage_evidence", "Stage image metadata is missing.")
-    records = {
-        "base": stage_images[0],
-        "mask": mask,
-        "final": stage_images[1],
-    }
+    records = {"base": stage_images[0], "mask": mask, "final": stage_images[1]}
     paths: dict[str, str] = {}
     for role, record in records.items():
         reference = value.get(role)
@@ -625,15 +725,12 @@ def _validate_two_stage_evidence(
         ):
             raise EvidenceError(
                 "invalid_two_stage_evidence",
-                f"Two-stage {role} reference differs from the retained round.",
+                f"Two-stage {role} reference differs from its retained round.",
             )
         path = _validate_artifact(package, record, "image/png")
         referenced_files.add(path)
         paths[role] = path
-    if (
-        len(set(paths.values())) != 3
-        or selected.get("image") != records["final"]
-    ):
+    if len(set(paths.values())) != 3 or round_value.get("image") != records["final"]:
         raise EvidenceError(
             "invalid_two_stage_evidence",
             "Base, mask, and final must be distinct and only final may be the round image.",
@@ -641,17 +738,7 @@ def _validate_two_stage_evidence(
 
     control_sha256 = value.get("control_sha256")
     subject_seed = value.get("subject_seed")
-    component_bundle = route.get("component_bundle")
-    workflow = component_bundle.get("workflow") if isinstance(component_bundle, dict) else None
-    workflow_sha256 = workflow.get("sha256") if isinstance(workflow, dict) else None
-    try:
-        expected_control = build_control_identity(layout, workflow_sha256, "base-subject-v1")
-    except AssetEngineError as error:
-        raise EvidenceError(
-            "invalid_two_stage_evidence",
-            "Two-stage workflow cannot reproduce its control digest.",
-        ) from error
-    base_seed = selected.get("seed")
+    base_seed = round_value.get("seed")
     if (
         not _valid_sha(control_sha256)
         or control_sha256 != expected_control
@@ -671,24 +758,7 @@ def _validate_two_stage_evidence(
             "Two-stage control digest or derived subject seed differs.",
         )
 
-    stage_budget = manifest.get("stage_budget")
-    max_rounds = request.get("max_rounds")
-    if (
-        not isinstance(stage_budget, dict)
-        or set(stage_budget) != {"maximum", "consumed"}
-        or value.get("stage_budget") != stage_budget
-        or type(max_rounds) is not int
-        or type(stage_budget.get("maximum")) is not int
-        or type(stage_budget.get("consumed")) is not int
-        or stage_budget["maximum"] != max_rounds * 2
-        or stage_budget["consumed"] != len(manifest.get("rounds", [])) * 2
-    ):
-        raise EvidenceError(
-            "invalid_two_stage_evidence",
-            "Two-stage budget does not match retained successful stages.",
-        )
-
-    report = selected.get("pixel_preservation")
+    report = round_value.get("pixel_preservation")
     if (
         not isinstance(report, dict)
         or set(report) != {
@@ -699,21 +769,9 @@ def _validate_two_stage_evidence(
         }
         or value.get("pixel_preservation") != report
     ):
-        raise EvidenceError(
-            "pixel_report_mismatch",
-            "Exported pixel report differs from the selected round.",
-        )
-    if report.get("mismatched_pixels") != 0 or report.get("copy_mismatched_pixels") != 0:
-        raise EvidenceError(
-            "nonzero_pixel_mismatch",
-            "Accepted two-stage evidence requires zero protected-pixel mismatches.",
-        )
+        raise EvidenceError("pixel_report_mismatch", "Exported pixel report differs from its retained round.")
     try:
-        recomputed = compare_protected_pixels(
-            package / paths["base"],
-            package / paths["final"],
-            layout,
-        )
+        recomputed = compare_protected_pixels(package / paths["base"], package / paths["final"], layout)
     except AssetEngineError as error:
         raise EvidenceError(
             "pixel_report_mismatch",
@@ -731,19 +789,7 @@ def _validate_two_stage_evidence(
             "invalid_two_stage_mask",
             "Retained two-stage mask violates its exact geometry.",
         ) from error
-    try:
-        checks = validate_stage_checks(review.get("stage_checks"))
-    except AssetEngineError as error:
-        raise EvidenceError(
-            "invalid_review_evidence",
-            "Two-stage review checks are incomplete.",
-        ) from error
-    if not stage_checks_pass(checks):
-        raise EvidenceError(
-            "invalid_review_evidence",
-            "Accepted two-stage evidence requires every stage check to pass.",
-        )
-    return paths
+    return value["round_number"], paths
 
 
 def _validate_revision(
@@ -926,6 +972,7 @@ def _reject_private_values(
     value: object,
     *,
     path: tuple[str, ...] = (),
+    allowed_component_path: tuple[str, ...] | None = None,
 ) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -933,7 +980,7 @@ def _reject_private_values(
                 raise EvidenceError("absolute_evidence_path", "Public evidence contains an absolute path.")
             allowed_component_name = (
                 key == "backend_model_id"
-                and path[-3:] == ("route", "component_bundle", "components")
+                and path == allowed_component_path
             )
             if (
                 key in PRIVATE_EVIDENCE_KEYS
@@ -941,14 +988,18 @@ def _reject_private_values(
                 or isinstance(child, str) and _private_string(child)
             ):
                 raise EvidenceError("private_evidence_value", "Public evidence contains a private runtime value.")
-            _reject_private_values(child, path=(*path, key))
+            _reject_private_values(
+                child,
+                path=(*path, key),
+                allowed_component_path=allowed_component_path,
+            )
     elif isinstance(value, list):
         for child in value:
             if isinstance(child, str) and _is_absolute_path(child):
                 raise EvidenceError("absolute_evidence_path", "Public evidence contains an absolute path.")
             if isinstance(child, str) and _private_string(child):
                 raise EvidenceError("private_evidence_value", "Public evidence contains a private runtime value.")
-            _reject_private_values(child, path=path)
+            _reject_private_values(child, path=path, allowed_component_path=allowed_component_path)
 
 
 def _private_string(value: str) -> bool:

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +20,7 @@ from export_acceptance_evidence import (  # noqa: E402
 )
 from tests.acceptance_evidence_helpers import (  # noqa: E402
     FIXTURE_PATH,
+    add_second_two_stage_round,
     approved_authority,
     build_two_stage_run_source,
     build_run_source,
@@ -26,6 +29,7 @@ from tests.acceptance_evidence_helpers import (  # noqa: E402
     sha256_file,
     write_json,
 )
+from validate_acceptance_evidence import validate_evidence  # noqa: E402
 
 
 class ExportAcceptanceEvidenceTests(unittest.TestCase):
@@ -91,30 +95,85 @@ class ExportAcceptanceEvidenceTests(unittest.TestCase):
         evidence = read_json(self.destination / "evidence.json")
         self.assertIn("two_stage", evidence)
         two_stage = evidence["two_stage"]
-        self.assertEqual(set(two_stage), {
-            "base", "mask", "final", "control_sha256", "subject_seed",
-            "stage_budget", "pixel_preservation",
-        })
+        self.assertEqual(set(two_stage), {"rounds", "stage_budget"})
+        self.assertEqual(len(two_stage["rounds"]), 1)
+        round_evidence = two_stage["rounds"][0]
+        self.assertEqual(round_evidence["round_number"], 1)
         source_manifest = read_json(self.run_dir / "manifest.json")
         self.assertEqual(
-            two_stage["control_sha256"],
+            round_evidence["control_sha256"],
             source_manifest["request"]["route"]["control_sha256"],
         )
-        self.assertEqual(two_stage["subject_seed"], 43)
+        self.assertEqual(round_evidence["subject_seed"], 43)
         self.assertEqual(two_stage["stage_budget"], {"maximum": 4, "consumed": 2})
-        self.assertEqual(two_stage["pixel_preservation"]["mismatched_pixels"], 0)
-        self.assertEqual(two_stage["pixel_preservation"]["copy_mismatched_pixels"], 0)
+        self.assertEqual(round_evidence["pixel_preservation"]["mismatched_pixels"], 0)
+        self.assertEqual(round_evidence["pixel_preservation"]["copy_mismatched_pixels"], 0)
         for role, name in (
             ("base", "round-01-base.png"),
             ("mask", "round-01-mask.png"),
             ("final", "round-01.png"),
         ):
             with self.subTest(role=role):
-                self.assertEqual(set(two_stage[role]), {"path", "sha256"})
-                self.assertEqual(two_stage[role]["path"], name)
-                self.assertEqual(two_stage[role]["sha256"], sha256_file(self.run_dir / name))
+                self.assertEqual(set(round_evidence[role]), {"path", "sha256"})
+                self.assertEqual(round_evidence[role]["path"], name)
+                self.assertEqual(round_evidence[role]["sha256"], sha256_file(self.run_dir / name))
                 self.assertEqual((self.destination / name).read_bytes(), source_bytes[name])
         self.assertEqual(result["source_hashes"], result["export_hashes"])
+
+    def test_exports_and_validates_every_two_stage_round(self) -> None:
+        self.prepare_two_stage_source()
+        add_second_two_stage_round(self.run_dir)
+
+        result = self.export()
+        evidence = read_json(self.destination / "evidence.json")
+
+        self.assertEqual(evidence["selected_round"], 2)
+        self.assertEqual(
+            [item["round_number"] for item in evidence["two_stage"]["rounds"]],
+            [1, 2],
+        )
+        for round_number in (1, 2):
+            for suffix in ("base", "mask"):
+                name = f"round-{round_number:02d}-{suffix}.png"
+                self.assertEqual((self.destination / name).read_bytes(), (self.run_dir / name).read_bytes())
+            name = f"round-{round_number:02d}.png"
+            self.assertEqual((self.destination / name).read_bytes(), (self.run_dir / name).read_bytes())
+        self.assertEqual(result["source_hashes"], result["export_hashes"])
+        self.assertTrue(validate_evidence(self.evidence_root, FIXTURE_PATH, strict=False)["ok"])
+
+    def test_rejects_mcp_final_supporting_artifact_substitution(self) -> None:
+        self.prepare_two_stage_source()
+        manifest = read_json(self.run_dir / "manifest.json")
+        result = read_json(self.run_dir / "mcp-final-result.json")
+        result["final"]["path"] = manifest["rounds"][0]["stages"][0]["image"]["path"]
+        result["final"]["image"] = copy.deepcopy(manifest["rounds"][0]["stages"][0]["image"])
+        write_json(self.run_dir / "mcp-final-result.json", result)
+
+        with self.assertRaisesRegex(EvidenceExportError, "mcp_result_mismatch"):
+            self.export()
+
+    def test_copy_hash_mismatch_never_publishes_destination_and_retry_succeeds(self) -> None:
+        original_copy = shutil.copy2
+        corrupted = False
+
+        def copy_then_corrupt(source: object, target: object, *args: object, **kwargs: object) -> object:
+            nonlocal corrupted
+            result = original_copy(source, target, *args, **kwargs)
+            target_path = Path(target)
+            if not corrupted and target_path.suffix == ".png":
+                target_path.write_bytes(b"corrupted after copy")
+                corrupted = True
+            return result
+
+        with (
+            patch("export_acceptance_evidence.shutil.copy2", side_effect=copy_then_corrupt),
+            patch("export_acceptance_evidence._validate_package"),
+            self.assertRaisesRegex(EvidenceExportError, "artifact_hash_mismatch"),
+        ):
+            self.export()
+
+        self.assertFalse(self.destination.exists())
+        self.assertTrue(self.export()["ok"])
 
     def test_rejects_partial_two_stage_source_before_copy(self) -> None:
         self.prepare_two_stage_source()

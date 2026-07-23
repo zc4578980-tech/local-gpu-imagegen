@@ -298,6 +298,101 @@ def build_two_stage_run_source(
     return run_dir, authority, metadata
 
 
+def add_second_two_stage_round(run_dir: Path) -> None:
+    from local_gpu_imagegen.png_pixels import compare_protected_pixels, validate_saved_soft_mask
+    from local_gpu_imagegen.two_stage_layout import derive_subject_seed
+
+    manifest = read_json(run_dir / "manifest.json")
+    layout = manifest["request"]["constraints"]["two_stage_layout"]
+    width = int(layout["canvas"]["width"])
+    height = int(layout["canvas"]["height"])
+    subject = layout["subject_mask_rect"]
+
+    base_pixels = bytearray(b"\x20\x38\x50" * (width * height))
+    final_pixels = bytearray(base_pixels)
+    mask_pixels = bytearray(width * height * 3)
+    for y in range(int(subject["y"]), int(subject["y"]) + int(subject["height"])):
+        for x in range(int(subject["x"]), int(subject["x"]) + int(subject["width"])):
+            offset = (y * width + x) * 3
+            final_pixels[offset:offset + 3] = b"\xb0\x80\x48"
+            mask_pixels[offset:offset + 3] = b"\xff\xff\xff"
+
+    stage_bytes = {
+        "round-02-base.png": rgb_png_bytes(width, height, bytes(base_pixels)),
+        "round-02-mask.png": rgb_png_bytes(width, height, bytes(mask_pixels)),
+        "round-02.png": rgb_png_bytes(width, height, bytes(final_pixels)),
+        "round-02-preview.jpg": jpeg_bytes(),
+        "final.png": rgb_png_bytes(width, height, bytes(final_pixels)),
+    }
+    for name, data in stage_bytes.items():
+        (run_dir / name).write_bytes(data)
+
+    def artifact(path: str, mime_type: str = "image/png") -> dict[str, object]:
+        return _artifact(path, stage_bytes[path], mime_type) | {
+            "width": width,
+            "height": height,
+        }
+
+    base_seed = 100
+    subject_seed = derive_subject_seed(base_seed)
+    base = artifact("round-02-base.png")
+    mask = artifact("round-02-mask.png")
+    stage_final = artifact("round-02.png")
+    preview = artifact("round-02-preview.jpg", "image/jpeg")
+    accepted_final = artifact("final.png")
+    pixel_report = compare_protected_pixels(
+        run_dir / "round-02-base.png",
+        run_dir / "round-02.png",
+        layout,
+    )
+    validate_saved_soft_mask(run_dir / "round-02-mask.png", layout)
+    control_sha256 = manifest["request"]["route"]["control_sha256"]
+
+    manifest["rounds"].append({
+        "round_number": 2,
+        "status": "generated",
+        "seed": base_seed,
+        "backend": "comfyui",
+        "backend_result": {
+            "backend": "comfyui",
+            "model": MODEL_ID,
+            "path": "round-02.png",
+            "subject_seed": subject_seed,
+            "control_sha256": control_sha256,
+        },
+        "image": stage_final,
+        "preview": preview,
+        "warnings": [],
+        "stages": [
+            {"role": "base", "seed": base_seed, "image": base},
+            {"role": "subject", "seed": subject_seed, "image": stage_final},
+        ],
+        "mask_artifact": mask,
+        "pixel_preservation": pixel_report,
+        "stage_units": 2,
+    })
+    second_review = copy.deepcopy(manifest["reviews"][0])
+    second_review["round_number"] = 2
+    manifest["reviews"].append(second_review)
+    manifest["attempts"].append({
+        "status": "completed",
+        "started_at": TIMESTAMP,
+        "round_number": 2,
+    })
+    manifest["stage_budget"]["consumed"] = 4
+    manifest["final"].update({
+        "round_number": 2,
+        "path": "final.png",
+        "image": accepted_final,
+    })
+    write_json(run_dir / "manifest.json", manifest)
+    write_json(run_dir / "mcp-final-result.json", {
+        "run_id": manifest["run_id"],
+        "state": "finalized",
+        "final": copy.deepcopy(manifest["final"]),
+    })
+
+
 def _artifact(path: str, data: bytes, mime_type: str) -> dict[str, object]:
     return {
         "path": path,

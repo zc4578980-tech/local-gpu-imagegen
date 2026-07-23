@@ -21,6 +21,7 @@ from validate_acceptance_evidence import (  # noqa: E402
 )
 from tests.acceptance_evidence_helpers import (  # noqa: E402
     FIXTURE_PATH,
+    add_second_two_stage_round,
     approved_authority,
     build_complete_matrix,
     build_two_stage_run_source,
@@ -42,7 +43,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def build_two_stage_package(self) -> tuple[Path, Path]:
+    def build_two_stage_package(self, *, rounds: int = 1) -> tuple[Path, Path]:
         self.two_stage_fixture_index += 1
         fixture_id = self.two_stage_fixture_index
         briefs = read_json(FIXTURE_PATH)
@@ -51,17 +52,27 @@ class AcceptanceEvidenceTests(unittest.TestCase):
             self.temp_path / f"two-stage-source-{fixture_id}",
             brief,
         )
+        if rounds == 2:
+            add_second_two_stage_round(source)
         root = self.temp_path / f"two-stage-evidence-{fixture_id}"
         package = root / "runs" / str(brief["id"])
         package.mkdir(parents=True)
         write_json(root / "acceptance-authority.json", authority)
-        for name in (
+        names = [
             "round-01-base.png",
             "round-01-mask.png",
             "round-01.png",
             "round-01-preview.jpg",
             "final.png",
-        ):
+        ]
+        if rounds == 2:
+            names.extend((
+                "round-02-base.png",
+                "round-02-mask.png",
+                "round-02.png",
+                "round-02-preview.jpg",
+            ))
+        for name in names:
             shutil.copyfile(source / name, package / name)
 
         manifest = read_json(source / "manifest.json")
@@ -70,7 +81,18 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         write_json(package / "brief.json", brief)
         write_json(package / "manifest.json", manifest)
         write_json(package / "mcp-final-result.json", read_json(source / "mcp-final-result.json"))
-        selected = manifest["rounds"][0]
+        round_evidence = [
+            {
+                "round_number": selected["round_number"],
+                "base": artifact_reference(selected["stages"][0]["image"]),
+                "mask": artifact_reference(selected["mask_artifact"]),
+                "final": artifact_reference(selected["stages"][1]["image"]),
+                "control_sha256": selected["backend_result"]["control_sha256"],
+                "subject_seed": selected["backend_result"]["subject_seed"],
+                "pixel_preservation": selected["pixel_preservation"],
+            }
+            for selected in manifest["rounds"]
+        ]
         write_json(package / "evidence.json", {
             "schema_version": 1,
             "evidence_class": "real-codex-mcp-run",
@@ -91,18 +113,13 @@ class AcceptanceEvidenceTests(unittest.TestCase):
                 "mcp_final_result": "mcp-final-result.json",
                 "final": "final.png",
             },
-            "selected_round": 1,
+            "selected_round": manifest["final"]["round_number"],
             "quality_status": "accepted",
             "known_limitations": metadata["known_limitations"],
             "decision_summary": metadata["decision_summary"],
             "two_stage": {
-                "base": artifact_reference(selected["stages"][0]["image"]),
-                "mask": artifact_reference(selected["mask_artifact"]),
-                "final": artifact_reference(selected["stages"][1]["image"]),
-                "control_sha256": selected["backend_result"]["control_sha256"],
-                "subject_seed": selected["backend_result"]["subject_seed"],
+                "rounds": round_evidence,
                 "stage_budget": manifest["stage_budget"],
-                "pixel_preservation": selected["pixel_preservation"],
             },
         })
         return root, package
@@ -126,6 +143,24 @@ class AcceptanceEvidenceTests(unittest.TestCase):
 
         self.assertEqual(result["run_count"], 1)
         self.assertTrue(result["ok"])
+
+    def test_accepts_two_stage_package_with_every_round_bound(self) -> None:
+        root, _ = self.build_two_stage_package(rounds=2)
+
+        result = validate_evidence(root, FIXTURE_PATH, strict=False)
+
+        self.assertEqual(result["run_count"], 1)
+        self.assertTrue(result["ok"])
+
+    def test_rejects_tampered_unselected_two_stage_artifact(self) -> None:
+        for role in ("base", "mask"):
+            root, package = self.build_two_stage_package(rounds=2)
+            path = package / f"round-01-{role}.png"
+            path.write_bytes(b"tampered unselected evidence")
+
+            with self.subTest(role=role), self.assertRaisesRegex(EvidenceError, "artifact_hash_mismatch"):
+                validate_evidence(root, FIXTURE_PATH, strict=False)
+            shutil.rmtree(root)
 
     def test_two_stage_validator_rejects_missing_extra_and_changed_stage_files(self) -> None:
         for case in ("missing", "extra", "changed"):
@@ -162,7 +197,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         manifest["rounds"][0]["mask_artifact"]["sha256"] = changed_hash
         write_json(package / "manifest.json", manifest)
         evidence = read_json(package / "evidence.json")
-        evidence["two_stage"]["mask"]["sha256"] = changed_hash
+        evidence["two_stage"]["rounds"][0]["mask"]["sha256"] = changed_hash
         write_json(package / "evidence.json", evidence)
 
         with self.assertRaisesRegex(EvidenceError, "invalid_two_stage_mask"):
@@ -175,10 +210,10 @@ class AcceptanceEvidenceTests(unittest.TestCase):
             evidence = read_json(package / "evidence.json")
             if case == "nonzero":
                 manifest["rounds"][0]["pixel_preservation"]["mismatched_pixels"] = 1
-                evidence["two_stage"]["pixel_preservation"]["mismatched_pixels"] = 1
+                evidence["two_stage"]["rounds"][0]["pixel_preservation"]["mismatched_pixels"] = 1
                 expected = "nonzero_pixel_mismatch"
             else:
-                evidence["two_stage"]["pixel_preservation"]["checked_pixels"] += 1
+                evidence["two_stage"]["rounds"][0]["pixel_preservation"]["checked_pixels"] += 1
                 expected = "pixel_report_mismatch"
             write_json(package / "manifest.json", manifest)
             write_json(package / "evidence.json", evidence)
@@ -194,7 +229,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         manifest["request"]["route"]["control_sha256"] = changed
         manifest["rounds"][0]["backend_result"]["control_sha256"] = changed
         evidence["route"]["control_sha256"] = changed
-        evidence["two_stage"]["control_sha256"] = changed
+        evidence["two_stage"]["rounds"][0]["control_sha256"] = changed
         write_json(package / "manifest.json", manifest)
         write_json(package / "evidence.json", evidence)
 
@@ -207,7 +242,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         evidence = read_json(package / "evidence.json")
         manifest["rounds"][0]["stages"][1]["seed"] = 44
         manifest["rounds"][0]["backend_result"]["subject_seed"] = 44
-        evidence["two_stage"]["subject_seed"] = 44
+        evidence["two_stage"]["rounds"][0]["subject_seed"] = 44
         write_json(package / "manifest.json", manifest)
         write_json(package / "evidence.json", evidence)
 
@@ -238,6 +273,21 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(EvidenceError, "private_evidence_value"):
             validate_evidence(root, FIXTURE_PATH, strict=False)
 
+    def test_nested_untrusted_route_component_bundle_cannot_use_public_exception(self) -> None:
+        root, package = self.build_two_stage_package()
+        manifest = read_json(package / "manifest.json")
+        manifest["request"]["untrusted"] = {
+            "route": {
+                "component_bundle": {
+                    "components": [{"backend_model_id": "private-checkpoint.safetensors"}],
+                },
+            },
+        }
+        write_json(package / "manifest.json", manifest)
+
+        with self.assertRaisesRegex(EvidenceError, "private_evidence_value"):
+            validate_evidence(root, FIXTURE_PATH, strict=False)
+
     def test_two_stage_validator_rejects_partial_and_outside_stage_references(self) -> None:
         root, package = self.build_two_stage_package()
         manifest = read_json(package / "manifest.json")
@@ -252,7 +302,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         manifest["rounds"][0]["stages"][0]["image"]["path"] = "../outside.png"
         write_json(package / "manifest.json", manifest)
         evidence = read_json(package / "evidence.json")
-        evidence["two_stage"]["base"]["path"] = "../outside.png"
+        evidence["two_stage"]["rounds"][0]["base"]["path"] = "../outside.png"
         write_json(package / "evidence.json", evidence)
         with self.assertRaisesRegex(EvidenceError, "evidence_path_escape"):
             validate_evidence(root, FIXTURE_PATH, strict=False)
@@ -262,7 +312,7 @@ class AcceptanceEvidenceTests(unittest.TestCase):
             root, package = self.build_two_stage_package()
             manifest = read_json(package / "manifest.json")
             evidence = read_json(package / "evidence.json")
-            supporting = evidence["two_stage"][role]
+            supporting = evidence["two_stage"]["rounds"][0][role]
             final_record = manifest["final"]
             final_record["path"] = supporting["path"]
             final_record["image"] = {
@@ -282,6 +332,24 @@ class AcceptanceEvidenceTests(unittest.TestCase):
                 validate_evidence(root, FIXTURE_PATH, strict=False)
             shutil.rmtree(root)
 
+    def test_mcp_final_cannot_substitute_base_or_mask(self) -> None:
+        for role in ("base", "mask"):
+            root, package = self.build_two_stage_package()
+            manifest = read_json(package / "manifest.json")
+            mcp = read_json(package / "mcp-final-result.json")
+            supporting = (
+                manifest["rounds"][0]["stages"][0]["image"]
+                if role == "base"
+                else manifest["rounds"][0]["mask_artifact"]
+            )
+            mcp["final"]["path"] = supporting["path"]
+            mcp["final"]["image"] = copy.deepcopy(supporting)
+            write_json(package / "mcp-final-result.json", mcp)
+
+            with self.subTest(role=role), self.assertRaisesRegex(EvidenceError, "mcp_result_mismatch"):
+                validate_evidence(root, FIXTURE_PATH, strict=False)
+            shutil.rmtree(root)
+
     def test_standard_package_rejects_two_stage_evidence_object(self) -> None:
         root = build_complete_matrix(self.temp_path)
         package = root / "runs" / "ui-hero"
@@ -298,9 +366,12 @@ class AcceptanceEvidenceTests(unittest.TestCase):
         self.assertIn("two_stage", schema["properties"])
         two_stage = schema["properties"]["two_stage"]
         self.assertFalse(two_stage["additionalProperties"])
-        self.assertEqual(set(two_stage["required"]), {
-            "base", "mask", "final", "control_sha256", "subject_seed",
-            "stage_budget", "pixel_preservation",
+        self.assertEqual(set(two_stage["required"]), {"rounds", "stage_budget"})
+        round_schema = two_stage["properties"]["rounds"]["items"]
+        self.assertFalse(round_schema["additionalProperties"])
+        self.assertEqual(set(round_schema["required"]), {
+            "round_number", "base", "mask", "final", "control_sha256",
+            "subject_seed", "pixel_preservation",
         })
         self.assertIn("control_sha256", schema["properties"]["route"]["properties"])
 

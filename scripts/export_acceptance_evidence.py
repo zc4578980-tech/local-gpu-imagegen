@@ -161,17 +161,17 @@ def export_run(
             _validate_package(temporary, brief, authority, parent_package)
         except EvidenceError as error:
             raise EvidenceExportError(error.code, str(error)) from error
+        export_hashes = {
+            relative: sha256_file(temporary / relative)
+            for relative in sorted(source_hashes)
+        }
+        if export_hashes != source_hashes:
+            raise EvidenceExportError("artifact_hash_mismatch", "Exported artifact bytes differ from the source run.")
         os.replace(temporary, destination_path)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
 
-    export_hashes = {
-        relative: sha256_file(destination_path / relative)
-        for relative in sorted(source_hashes)
-    }
-    if export_hashes != source_hashes:
-        raise EvidenceExportError("artifact_hash_mismatch", "Exported artifact bytes differ from the source run.")
     return {
         "ok": True,
         "run_id": run_id,
@@ -412,46 +412,67 @@ def _build_two_stage_evidence(
     final: dict[str, object],
 ) -> dict[str, object]:
     rounds = manifest.get("rounds")
-    selected = next(
-        (
-            item
-            for item in rounds
-            if isinstance(item, dict) and item.get("round_number") == final.get("round_number")
-        ),
-        None,
-    ) if isinstance(rounds, list) else None
-    stages = selected.get("stages") if isinstance(selected, dict) else None
-    mask = selected.get("mask_artifact") if isinstance(selected, dict) else None
-    backend_result = selected.get("backend_result") if isinstance(selected, dict) else None
-    pixel_report = selected.get("pixel_preservation") if isinstance(selected, dict) else None
     stage_budget = manifest.get("stage_budget")
     if (
-        not isinstance(stages, list)
+        not isinstance(rounds, list)
+        or not rounds
+        or not isinstance(stage_budget, dict)
+        or set(stage_budget) != {"maximum", "consumed"}
+        or type(stage_budget.get("maximum")) is not int
+        or type(stage_budget.get("consumed")) is not int
+        or not 0 <= stage_budget["consumed"] <= stage_budget["maximum"]
+    ):
+        raise EvidenceExportError(
+            "invalid_two_stage_evidence",
+            "Two-stage round provenance or stage budget is incomplete.",
+        )
+    round_evidence = [_build_two_stage_round_evidence(item) for item in rounds]
+    selected = next(
+        (item for item in round_evidence if item["round_number"] == final.get("round_number")),
+        None,
+    )
+    final_image = final.get("image")
+    if (
+        selected is None
+        or not isinstance(final_image, dict)
+        or final_image.get("sha256") != selected["final"]["sha256"]
+        or selected["pixel_preservation"].get("mismatched_pixels") != 0
+        or selected["pixel_preservation"].get("copy_mismatched_pixels") != 0
+    ):
+        raise EvidenceExportError(
+            "invalid_two_stage_evidence",
+            "Selected two-stage final is not byte-bound to safe round provenance.",
+        )
+    return {"rounds": round_evidence, "stage_budget": copy.deepcopy(stage_budget)}
+
+
+def _build_two_stage_round_evidence(round_value: object) -> dict[str, object]:
+    if not isinstance(round_value, dict):
+        raise EvidenceExportError("invalid_two_stage_evidence", "Two-stage round metadata must be an object.")
+    round_number = round_value.get("round_number")
+    stages = round_value.get("stages")
+    mask = round_value.get("mask_artifact")
+    backend_result = round_value.get("backend_result")
+    pixel_report = round_value.get("pixel_preservation")
+    if (
+        type(round_number) is not int
+        or not 1 <= round_number <= 3
+        or not isinstance(stages, list)
         or len(stages) != 2
         or not all(isinstance(stage, dict) for stage in stages)
         or [stage.get("role") for stage in stages] != ["base", "subject"]
         or not isinstance(mask, dict)
         or not isinstance(backend_result, dict)
         or not isinstance(pixel_report, dict)
-        or not isinstance(stage_budget, dict)
-        or set(stage_budget) != {"maximum", "consumed"}
-        or type(stage_budget.get("maximum")) is not int
-        or type(stage_budget.get("consumed")) is not int
-        or not 0 <= stage_budget["consumed"] <= stage_budget["maximum"]
         or type(backend_result.get("subject_seed")) is not int
         or not 0 <= backend_result["subject_seed"] <= 2**64 - 1
         or not _valid_sha256(backend_result.get("control_sha256"))
-        or pixel_report.get("mismatched_pixels") != 0
-        or pixel_report.get("copy_mismatched_pixels") != 0
     ):
-        raise EvidenceExportError(
-            "invalid_two_stage_evidence",
-            "Selected two-stage round provenance is incomplete or unsafe.",
-        )
+        raise EvidenceExportError("invalid_two_stage_evidence", "Two-stage round provenance is incomplete or unsafe.")
     base = _artifact_reference(stages[0].get("image"))
     stage_final = _artifact_reference(stages[1].get("image"))
     mask_reference = _artifact_reference(mask)
-    selected_image = selected.get("image")
+    selected_image = round_value.get("image")
     if (
         not isinstance(selected_image, dict)
         or _artifact_reference(selected_image) != stage_final
@@ -460,15 +481,15 @@ def _build_two_stage_evidence(
     ):
         raise EvidenceExportError(
             "invalid_two_stage_evidence",
-            "Selected image must be the distinct authoritative final stage.",
+            "Round image must be the distinct authoritative final stage.",
         )
     return {
+        "round_number": round_number,
         "base": base,
         "mask": mask_reference,
         "final": stage_final,
         "control_sha256": backend_result["control_sha256"],
         "subject_seed": backend_result["subject_seed"],
-        "stage_budget": copy.deepcopy(stage_budget),
         "pixel_preservation": copy.deepcopy(pixel_report),
     }
 
@@ -654,10 +675,35 @@ def _match_mcp_result(result: dict[str, object], manifest: dict[str, object]) ->
         or result.get("state") != "finalized"
         or not isinstance(final, dict)
         or not isinstance(manifest_final, dict)
-        or final.get("round_number") != manifest_final.get("round_number")
-        or final.get("quality_status") != manifest_final.get("quality_status")
+        or final != manifest_final
     ):
         raise EvidenceExportError("mcp_result_mismatch", "Original MCP final result differs from the manifest.")
+    rounds = manifest.get("rounds")
+    selected = next(
+        (
+            item for item in rounds
+            if isinstance(item, dict) and item.get("round_number") == manifest_final.get("round_number")
+        ),
+        None,
+    ) if isinstance(rounds, list) else None
+    selected_image = selected.get("image") if isinstance(selected, dict) else None
+    final_image = manifest_final.get("image")
+    if (
+        not isinstance(selected_image, dict)
+        or not isinstance(final_image, dict)
+        or selected_image.get("sha256") != final_image.get("sha256")
+    ):
+        raise EvidenceExportError("mcp_result_mismatch", "MCP final bytes differ from the selected round.")
+    request = manifest.get("request")
+    if isinstance(request, dict) and request.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID:
+        stages = selected.get("stages") if isinstance(selected, dict) else None
+        if (
+            not isinstance(stages, list)
+            or len(stages) != 2
+            or not isinstance(stages[1], dict)
+            or stages[1].get("image") != selected_image
+        ):
+            raise EvidenceExportError("mcp_result_mismatch", "MCP final is not the selected final stage.")
 
 
 def _match_manifest_brief(manifest: dict[str, object], brief: dict[str, object]) -> None:

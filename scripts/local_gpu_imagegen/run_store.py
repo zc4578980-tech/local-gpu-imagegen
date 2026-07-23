@@ -582,6 +582,8 @@ class RunStore:
                 published = True
                 publish()
                 validated_image = self._validate_full_image(run_id, final_image)
+                selected = self._round_by_number(manifest, round_number)
+                self._validate_published_final_image(manifest, selected, round_number, validated_image)
                 final = manifest.get("final")
                 if not isinstance(final, dict):
                     raise ArtifactError("corrupt_manifest", "Final selection metadata is missing.")
@@ -635,6 +637,7 @@ class RunStore:
                 published = True
                 final_image = publish(copy.deepcopy(selected))
                 validated_image = self._validate_full_image(run_id, final_image)
+                self._validate_published_final_image(manifest, selected, round_number, validated_image)
                 final = manifest.get("final")
                 if not isinstance(final, dict):
                     raise ArtifactError("corrupt_manifest", "Final selection metadata is missing.")
@@ -1279,6 +1282,40 @@ class RunStore:
                 {"path": path_value},
             )
         return copy.deepcopy(image)
+
+    def _validate_published_final_image(
+        self,
+        manifest: dict[str, object],
+        selected: dict[str, object] | None,
+        round_number: int,
+        image: dict[str, object],
+    ) -> None:
+        if selected is None or selected.get("round_number") != round_number:
+            raise ArtifactError("final_image_mismatch", "Published final does not identify the selected round.")
+        candidate = self._finalizable_round_image(manifest, selected)
+        if any(image.get(key) != candidate.get(key) for key in ("sha256", "width", "height")):
+            raise ArtifactError("final_image_mismatch", "Published final bytes differ from the selected candidate.")
+
+        forbidden_paths: set[str] = set()
+        for round_value in self._rounds(manifest):
+            if round_value.get("round_number") != round_number:
+                other = round_value.get("image")
+                if isinstance(other, dict) and isinstance(other.get("path"), str):
+                    forbidden_paths.add(other["path"])
+        if self._is_two_stage_manifest(manifest):
+            stages = selected.get("stages")
+            mask = selected.get("mask_artifact")
+            if isinstance(stages, list) and stages and isinstance(stages[0], dict):
+                base = stages[0].get("image")
+                if isinstance(base, dict) and isinstance(base.get("path"), str):
+                    forbidden_paths.add(base["path"])
+            if isinstance(mask, dict) and isinstance(mask.get("path"), str):
+                forbidden_paths.add(mask["path"])
+        if image.get("path") in forbidden_paths:
+            raise ArtifactError(
+                "final_image_mismatch",
+                "Supporting or unselected artifacts cannot be published as final.",
+            )
 
     def _is_full_image(self, image: object) -> bool:
         if not isinstance(image, dict):

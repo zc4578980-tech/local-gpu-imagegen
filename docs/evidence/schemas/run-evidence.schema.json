@@ -108,30 +108,24 @@
     "two_stage": {
       "additionalProperties": false,
       "properties": {
-        "base": {"$ref": "#/$defs/stageArtifact"},
-        "control_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
-        "final": {"$ref": "#/$defs/stageArtifact"},
-        "mask": {"$ref": "#/$defs/stageArtifact"},
-        "pixel_preservation": {
-          "additionalProperties": false,
-          "properties": {
-            "checked_pixels": {"minimum": 1, "type": "integer"},
-            "copy_mismatched_pixels": {"const": 0},
-            "mismatched_pixels": {"const": 0},
-            "protected_rect": {
-              "additionalProperties": false,
-              "properties": {
-                "height": {"minimum": 1, "type": "integer"},
-                "width": {"minimum": 1, "type": "integer"},
-                "x": {"minimum": 0, "type": "integer"},
-                "y": {"minimum": 0, "type": "integer"}
-              },
-              "required": ["x", "y", "width", "height"],
-              "type": "object"
-            }
+        "rounds": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "base": {"$ref": "#/$defs/stageArtifact"},
+              "control_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+              "final": {"$ref": "#/$defs/stageArtifact"},
+              "mask": {"$ref": "#/$defs/stageArtifact"},
+              "pixel_preservation": {"$ref": "#/$defs/pixelPreservation"},
+              "round_number": {"maximum": 3, "minimum": 1, "type": "integer"},
+              "subject_seed": {"maximum": 18446744073709551615, "minimum": 0, "type": "integer"}
+            },
+            "required": ["round_number", "base", "mask", "final", "control_sha256", "subject_seed", "pixel_preservation"],
+            "type": "object"
           },
-          "required": ["protected_rect", "checked_pixels", "mismatched_pixels", "copy_mismatched_pixels"],
-          "type": "object"
+          "maxItems": 3,
+          "minItems": 1,
+          "type": "array"
         },
         "stage_budget": {
           "additionalProperties": false,
@@ -141,10 +135,9 @@
           },
           "required": ["maximum", "consumed"],
           "type": "object"
-        },
-        "subject_seed": {"maximum": 18446744073709551615, "minimum": 0, "type": "integer"}
+        }
       },
-      "required": ["base", "mask", "final", "control_sha256", "subject_seed", "stage_budget", "pixel_preservation"],
+      "required": ["rounds", "stage_budget"],
       "type": "object"
     }
   },
@@ -152,6 +145,27 @@
   "title": "Local GPU Imagegen run evidence",
   "type": "object",
   "$defs": {
+    "pixelPreservation": {
+      "additionalProperties": false,
+      "properties": {
+        "checked_pixels": {"minimum": 1, "type": "integer"},
+        "copy_mismatched_pixels": {"minimum": 0, "type": "integer"},
+        "mismatched_pixels": {"minimum": 0, "type": "integer"},
+        "protected_rect": {
+          "additionalProperties": false,
+          "properties": {
+            "height": {"minimum": 1, "type": "integer"},
+            "width": {"minimum": 1, "type": "integer"},
+            "x": {"minimum": 0, "type": "integer"},
+            "y": {"minimum": 0, "type": "integer"}
+          },
+          "required": ["x", "y", "width", "height"],
+          "type": "object"
+        }
+      },
+      "required": ["protected_rect", "checked_pixels", "mismatched_pixels", "copy_mismatched_pixels"],
+      "type": "object"
+    },
     "stageArtifact": {
       "additionalProperties": false,
       "properties": {

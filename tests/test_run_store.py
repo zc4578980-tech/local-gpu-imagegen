@@ -931,6 +931,64 @@ class RunStoreTransitionTests(unittest.TestCase):
                 self.store.finalize(run_id, 1, "Supporting artifact must not finalize.")
             self.assertEqual(self.store.get(run_id), before)
 
+    def test_two_stage_finalize_published_rejects_base_and_mask_metadata(self) -> None:
+        for role in ("base", "mask"):
+            run_id = self.completed_two_stage_round(key=f"legacy-publisher-{role}")
+            self.store.record_review(run_id, 1, self.two_stage_review())
+            manifest = self.store.get(run_id)
+            selected = manifest["rounds"][0]
+            supporting = (
+                selected["stages"][0]["image"]
+                if role == "base"
+                else selected["mask_artifact"]
+            )
+            rollbacks: list[bool] = []
+
+            with self.subTest(role=role), self.assertRaisesRegex(
+                ArtifactError,
+                "final_image_mismatch",
+            ):
+                self.store.finalize_published(
+                    run_id,
+                    1,
+                    "Supporting artifacts cannot be published.",
+                    supporting,
+                    lambda: None,
+                    lambda: rollbacks.append(True),
+                )
+            self.assertEqual(rollbacks, [True])
+            self.assertEqual(self.store.get(run_id)["state"], "reviewed")
+
+    def test_two_stage_finalize_round_published_rejects_base_and_mask_results(self) -> None:
+        for role in ("base", "mask"):
+            run_id = self.completed_two_stage_round(key=f"round-publisher-{role}")
+            self.store.record_review(run_id, 1, self.two_stage_review())
+            manifest = self.store.get(run_id)
+            selected = manifest["rounds"][0]
+            selected_final = selected["image"]
+            supporting = (
+                selected["stages"][0]["image"]
+                if role == "base"
+                else selected["mask_artifact"]
+            )
+            confirmation = f"finalize:{run_id}:1:{selected_final['sha256']}"
+            rollbacks: list[bool] = []
+
+            with self.subTest(role=role), self.assertRaisesRegex(
+                ArtifactError,
+                "final_image_mismatch",
+            ):
+                self.store.finalize_round_published(
+                    run_id,
+                    1,
+                    "Supporting artifacts cannot be published.",
+                    confirmation,
+                    lambda _selected: copy.deepcopy(supporting),
+                    lambda: rollbacks.append(True),
+                )
+            self.assertEqual(rollbacks, [True])
+            self.assertEqual(self.store.get(run_id)["state"], "reviewed")
+
     def test_two_stage_review_requires_exact_stage_checks(self) -> None:
         run_id = self.completed_two_stage_round(key="stage-checks-valid")
         try:
