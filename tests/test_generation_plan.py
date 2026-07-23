@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import sys
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.errors import ValidationError  # noqa: E402
 from local_gpu_imagegen.generation_plan import (  # noqa: E402
+    PLAN_REQUIRED,
     validate_confirmed_run_request,
     validate_generation_plan,
 )
@@ -74,11 +76,81 @@ class GenerationPlanTests(unittest.TestCase):
             "upscale_policy": "off",
         }
 
+    def regional_contract(self) -> tuple[dict[str, object], dict[str, object]]:
+        layout = {
+            "mode": "copy-subject-v1",
+            "copy_region": {"x": 0.0, "y": 0.0, "width": 0.4, "height": 1.0},
+            "subject_region": {"x": 0.65, "y": 0.0, "width": 0.35, "height": 1.0},
+        }
+        conditioning = {
+            "copy_prompt": "quiet dark-blue copy space",
+            "copy_strength": 1.1,
+            "subject_prompt": "a sailor looking over the sea",
+            "subject_strength": 1.25,
+        }
+        request = copy.deepcopy(self.run_request)
+        request["constraints"]["regional_layout"] = copy.deepcopy(layout)
+        request["initial_regional_conditioning"] = copy.deepcopy(conditioning)
+        request["workflow_template_id"] = "sdxl-regional-txt2img"
+        request["prompt_compiler_id"] = "natural-v1"
+        request["route"]["workflow_template_id"] = "sdxl-regional-txt2img"
+        request["route"]["prompt_compiler_id"] = "natural-v1"
+        request["route"]["requirements"] = {"regional_layout": copy.deepcopy(layout)}
+        request["merged_profile"] = {
+            "refine_mutable": ["regional_conditioning"],
+            "explore_mutable": ["regional_conditioning"],
+        }
+        plan = copy.deepcopy(self.plan)
+        plan["constraints"]["regional_layout"] = copy.deepcopy(layout)
+        plan["parameters"]["regional_conditioning"] = copy.deepcopy(conditioning)
+        plan["workflow_template_id"] = "sdxl-regional-txt2img"
+        plan["prompt_compiler_id"] = "natural-v1"
+        return request, plan
+
     def test_accepts_complete_plan_matching_confirmed_run(self) -> None:
         validated = validate_generation_plan(self.plan, self.run_request, "initial")
         self.assertEqual(validated["positive_prompt"], self.plan["positive_prompt"])
         self.assertEqual(validated["model_choice"], "local:test-model")
         self.assertEqual(validated["upscale_policy"], "off")
+
+    def test_plan_schema_retains_exactly_twenty_top_level_fields(self) -> None:
+        self.assertEqual(len(PLAN_REQUIRED), 20)
+        self.assertEqual(set(self.plan), PLAN_REQUIRED)
+
+    def test_regional_initial_plan_matches_confirmation_and_geometry_is_frozen(self) -> None:
+        request, plan = self.regional_contract()
+
+        validated = validate_generation_plan(plan, request, "initial")
+
+        self.assertEqual(
+            validated["parameters"]["regional_conditioning"],
+            request["initial_regional_conditioning"],
+        )
+        changed = copy.deepcopy(plan)
+        changed["constraints"]["regional_layout"]["copy_region"]["width"] = 0.35
+        with self.assertRaisesRegex(ValidationError, "generation_plan_mismatch"):
+            validate_generation_plan(changed, request, "refine")
+
+    def test_regional_refine_can_change_conditioning_but_standard_route_rejects_it(self) -> None:
+        request, plan = self.regional_contract()
+        changed = copy.deepcopy(plan)
+        changed["parameters"]["regional_conditioning"]["subject_strength"] = 1.4
+
+        validate_generation_plan(changed, request, "refine")
+
+        standard = copy.deepcopy(self.plan)
+        standard["parameters"]["regional_conditioning"] = copy.deepcopy(
+            changed["parameters"]["regional_conditioning"]
+        )
+        with self.assertRaisesRegex(ValidationError, "invalid_regional_conditioning"):
+            validate_generation_plan(standard, self.run_request, "initial")
+
+    def test_confirmed_regional_request_requires_initial_conditioning(self) -> None:
+        request, _plan = self.regional_contract()
+        del request["initial_regional_conditioning"]
+
+        with self.assertRaisesRegex(ValidationError, "invalid_regional_conditioning"):
+            validate_confirmed_run_request(request)
 
     def test_rejects_nested_mode_that_disagrees_with_authoritative_txt2img(self) -> None:
         for nested_mode in ("img2img", "inpaint"):

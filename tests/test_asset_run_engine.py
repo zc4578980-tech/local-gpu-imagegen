@@ -27,7 +27,9 @@ from local_gpu_imagegen.errors import AssetEngineError, ConflictError, Validatio
 from local_gpu_imagegen.preview import MAX_PREVIEW_BYTES, PreviewResult  # noqa: E402
 from local_gpu_imagegen.profile_registry import ProfileRegistry  # noqa: E402
 from local_gpu_imagegen.prompt_compilers import PromptCompilerRegistry  # noqa: E402
+from local_gpu_imagegen.regional_layout import REGIONAL_TEMPLATE_ID  # noqa: E402
 from local_gpu_imagegen.run_store import RunStore  # noqa: E402
+from local_gpu_imagegen.workflow_templates import WorkflowTemplateRegistry  # noqa: E402
 
 
 TEST_MODEL_ID = "test/approved-anime"
@@ -330,6 +332,77 @@ class AssetRunEngineTests(unittest.TestCase):
         arguments["route_token"] = route["route_token"]
         return arguments
 
+    @staticmethod
+    def regional_layout() -> dict[str, object]:
+        return {
+            "mode": "copy-subject-v1",
+            "copy_region": {"x": 0.0, "y": 0.0, "width": 0.4, "height": 1.0},
+            "subject_region": {"x": 0.65, "y": 0.0, "width": 0.35, "height": 1.0},
+        }
+
+    @staticmethod
+    def regional_conditioning() -> dict[str, object]:
+        return {
+            "copy_prompt": "quiet dark-blue copy space",
+            "copy_strength": 1.1,
+            "subject_prompt": "a sailor looking over the sea",
+            "subject_strength": 1.25,
+        }
+
+    def regional_start_arguments(self) -> dict[str, object]:
+        layout = self.regional_layout()
+        arguments: dict[str, object] = {
+            "profile": "standalone-illustration",
+            "style": None,
+            "intent": "A calm coast at dawn.",
+            "constraints": {"width": 256, "height": 256, "regional_layout": layout},
+            "initial_regional_conditioning": self.regional_conditioning(),
+            "model_choice": TEST_MODEL_ID,
+            "backend": "comfyui",
+            "upscale_policy": "off",
+            "max_rounds": 3,
+            "authorization_scope": "private",
+        }
+        route = self.router.issue(arguments)
+        route.update({
+            "requirements": {"regional_layout": copy.deepcopy(layout)},
+            "workflow_template_id": REGIONAL_TEMPLATE_ID,
+            "workflow_template_version": 1,
+            "prompt_compiler_id": "natural-v1",
+            "prompt_compiler_version": 1,
+        })
+        self.router.routes[str(route["route_token"])] = copy.deepcopy(route)
+        arguments["route_token"] = route["route_token"]
+        if "comfyui" not in self.capabilities["available_backends"]:
+            self.capabilities["available_backends"].append("comfyui")
+        self.engine.workflows = WorkflowTemplateRegistry(
+            ROOT / "workflows" / "comfyui",
+            Path(self.temporary_directory.name) / "workflow-state",
+        )
+        self.runner.result_overrides.update({
+            "workflow_template_id": REGIONAL_TEMPLATE_ID,
+            "workflow_template_version": 1,
+            "workflow_job_id": "job:regional-test",
+        })
+        return arguments
+
+    def regional_plan(
+        self,
+        route: dict[str, object],
+        conditioning: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        plan = self.plan(route=route)
+        plan["backend"] = "comfyui"
+        plan["constraints"]["regional_layout"] = copy.deepcopy(
+            route["requirements"]["regional_layout"]
+        )
+        plan["parameters"] = {
+            "regional_conditioning": copy.deepcopy(
+                conditioning if conditioning is not None else self.regional_conditioning()
+            )
+        }
+        return plan
+
     def plan(
         self,
         *,
@@ -521,6 +594,75 @@ class AssetRunEngineTests(unittest.TestCase):
             self.engine.registry.list_catalog()["profiles"]["standalone-illustration"]["defaults"]["aspect_ratio"],
             "mutated",
         )
+
+    def test_regional_start_persists_confirmation_and_executes_exact_backend_data(self) -> None:
+        arguments = self.regional_start_arguments()
+        started = self.engine.start_run(arguments)
+        manifest = self.engine.get_run({"run_id": started["run_id"]})
+        route = manifest["request"]["route"]
+        plan = self.regional_plan(route)
+
+        self.engine.generate_round({
+            "run_id": started["run_id"],
+            "idempotency_key": "regional-initial-1",
+            "action": "initial",
+            "edit_mode": "txt2img",
+            "seed": 42,
+            "change_summary": "Initial confirmed regional composition.",
+            "plan": plan,
+        })
+
+        persisted = self.engine.get_run({"run_id": started["run_id"]})
+        self.assertEqual(
+            persisted["request"]["initial_regional_conditioning"],
+            arguments["initial_regional_conditioning"],
+        )
+        backend_request = self.runner.calls[-1]
+        self.assertEqual(backend_request["regional_layout"], arguments["constraints"]["regional_layout"])
+        self.assertEqual(backend_request["regional_conditioning"], arguments["initial_regional_conditioning"])
+        self.assertEqual(backend_request["workflow"]["template_id"], REGIONAL_TEMPLATE_ID)
+
+    def test_regional_start_rejects_route_geometry_drift_before_creating_run(self) -> None:
+        arguments = self.regional_start_arguments()
+        changed = copy.deepcopy(arguments["constraints"]["regional_layout"])
+        changed["copy_region"]["width"] = 0.35
+        arguments["constraints"]["regional_layout"] = changed
+
+        with self.assertRaisesRegex(ConflictError, "route_confirmation_mismatch"):
+            self.engine.start_run(arguments)
+
+        self.assertFalse((self.output_root / "runs").exists())
+
+    def test_missing_initial_regional_conditioning_creates_no_run(self) -> None:
+        arguments = self.regional_start_arguments()
+        del arguments["initial_regional_conditioning"]
+
+        with self.assertRaisesRegex(ValidationError, "invalid_regional_conditioning"):
+            self.engine.start_run(arguments)
+
+        self.assertFalse((self.output_root / "runs").exists())
+
+    def test_invalid_regional_generation_creates_no_attempt_or_backend_call(self) -> None:
+        arguments = self.regional_start_arguments()
+        started = self.engine.start_run(arguments)
+        manifest = self.engine.get_run({"run_id": started["run_id"]})
+        invalid = self.regional_conditioning()
+        invalid["subject_strength"] = 3.0
+
+        with self.assertRaisesRegex(ValidationError, "invalid_regional_conditioning"):
+            self.engine.generate_round({
+                "run_id": started["run_id"],
+                "idempotency_key": "invalid-regional-1",
+                "action": "initial",
+                "edit_mode": "txt2img",
+                "seed": 42,
+                "change_summary": "Invalid regional request.",
+                "plan": self.regional_plan(manifest["request"]["route"], invalid),
+            })
+
+        persisted = self.engine.get_run({"run_id": started["run_id"]})
+        self.assertEqual(persisted["attempts"], [])
+        self.assertEqual(self.runner.calls, [])
 
     def test_revision_and_mask_injection_preserves_existing_constructor_arguments(self) -> None:
         revisions = object()

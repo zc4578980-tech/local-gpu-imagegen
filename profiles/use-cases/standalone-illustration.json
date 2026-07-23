@@ -21,6 +21,6 @@
     "detail_quality": {"weight": 2, "critical": true, "description": "Important requested details are clear and deliberate."}
   },
   "hard_failures": ["missing_subject", "severe_anatomy", "unreadable_text", "watermark", "explicit_constraint_violation"],
-  "refine_mutable": ["denoise_strength", "steps", "guidance_scale"],
-  "explore_mutable": ["seed", "steps", "guidance_scale"]
+  "refine_mutable": ["denoise_strength", "steps", "guidance_scale", "regional_conditioning"],
+  "explore_mutable": ["seed", "steps", "guidance_scale", "regional_conditioning"]
 }

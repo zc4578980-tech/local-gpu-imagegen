@@ -23,6 +23,11 @@ from .postprocess import (
     remove_postprocess_artifact,
 )
 from .profile_registry import ProfileRegistry
+from .regional_layout import (
+    REGIONAL_TEMPLATE_ID,
+    validate_regional_conditioning,
+    validate_regional_layout,
+)
 from .revisions import RevisionService
 from .run_store import AttemptHandle, RunStore
 from .visual_review import (
@@ -936,6 +941,36 @@ def _validate_start_route(
                 "Confirmed route does not match the displayed run boundary.",
                 {"field": field},
             )
+    route_requirements = route.get("requirements")
+    route_layout_value = (
+        route_requirements.get("regional_layout")
+        if isinstance(route_requirements, dict)
+        else None
+    )
+    regional_route = route.get("workflow_template_id") == REGIONAL_TEMPLATE_ID
+    if regional_route:
+        route_layout = validate_regional_layout(route_layout_value)
+        confirmed_layout = validate_regional_layout(
+            constraints.get("regional_layout")
+        )
+        validate_regional_conditioning(
+            arguments.get("initial_regional_conditioning")
+        )
+        if route_layout != confirmed_layout:
+            raise ConflictError(
+                "route_confirmation_mismatch",
+                "Confirmed route does not match the displayed regional layout.",
+                {"field": "regional_layout"},
+            )
+    elif (
+        route_layout_value is not None
+        or "regional_layout" in constraints
+        or "initial_regional_conditioning" in arguments
+    ):
+        raise ValidationError(
+            "invalid_regional_conditioning",
+            "Standard routes cannot accept regional data.",
+        )
 
 
 def _backend_request(
@@ -988,6 +1023,21 @@ def _backend_request(
                 "invalid_workflow_template",
                 "Confirmed ComfyUI workflow is unavailable.",
             )
+        workflow_options: dict[str, object] = {}
+        if template_id == REGIONAL_TEMPLATE_ID:
+            constraints = plan["constraints"]
+            assert isinstance(constraints, dict)
+            regional_layout = validate_regional_layout(
+                constraints.get("regional_layout")
+            )
+            regional_conditioning = validate_regional_conditioning(
+                parameters.get("regional_conditioning")
+            )
+            workflow_options = {
+                "regional_layout": regional_layout,
+                "regional_conditioning": regional_conditioning,
+            }
+            request.update(copy.deepcopy(workflow_options))
         request["workflow"] = workflows.resolve(
             template_id,
             str(model.get("backend_model_id")),
@@ -1003,6 +1053,7 @@ def _backend_request(
                 "width": width,
                 "height": height,
             },
+            **workflow_options,
         )
     return request
 

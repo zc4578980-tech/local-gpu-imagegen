@@ -112,6 +112,7 @@ class McpServerUnitTests(unittest.TestCase):
             "local_gpu_start_run": {
                 "intent", "profile", "subtype", "style", "constraints", "model_choice", "backend",
                 "authorization_scope", "route_token", "max_rounds", "upscale_policy",
+                "initial_regional_conditioning",
             },
             "local_gpu_get_run": {"run_id"},
             "local_gpu_branch_run": {
@@ -150,6 +151,7 @@ class McpServerUnitTests(unittest.TestCase):
                         "catalog_id",
                     },
                     "local_gpu_recommend_models": {"regional_layout"},
+                    "local_gpu_start_run": {"initial_regional_conditioning"},
                     "local_gpu_branch_run": {"denoising_strength"},
                     "local_gpu_prepare_mask": {"user_mask_path", "geometry", "feather_pixels"},
                     "local_gpu_generate_round": {"mask_id"},
@@ -769,6 +771,12 @@ class McpServerUnitTests(unittest.TestCase):
                 get_engine.assert_not_called()
 
     def test_start_run_forwards_public_v04_fields_and_model_choice_exactly(self) -> None:
+        initial_regional_conditioning = {
+            "copy_prompt": "quiet copy space",
+            "copy_strength": 1.1,
+            "subject_prompt": "a sailor looking over the sea",
+            "subject_strength": 1.25,
+        }
         arguments = {
             "intent": "A calm coast at dawn.",
             "profile": "standalone-illustration",
@@ -781,6 +789,7 @@ class McpServerUnitTests(unittest.TestCase):
             "route_token": "route:test",
             "max_rounds": 3,
             "upscale_policy": "off",
+            "initial_regional_conditioning": initial_regional_conditioning,
         }
         engine = Mock()
         engine.start_run.return_value = {
@@ -796,6 +805,43 @@ class McpServerUnitTests(unittest.TestCase):
 
         self.assertFalse(result["isError"])
         engine.start_run.assert_called_once_with(arguments)
+        self.assertIs(
+            engine.start_run.call_args.args[0]["initial_regional_conditioning"],
+            initial_regional_conditioning,
+        )
+
+    def test_start_run_rejects_unknown_regional_conditioning_field_before_engine_work(self) -> None:
+        arguments = {
+            "intent": "A calm coast at dawn.",
+            "profile": "standalone-illustration",
+            "subtype": "character",
+            "style": None,
+            "constraints": {},
+            "model_choice": "test/approved-anime",
+            "backend": "comfyui",
+            "authorization_scope": "private",
+            "route_token": "route:test",
+            "max_rounds": 2,
+            "upscale_policy": "off",
+            "initial_regional_conditioning": {
+                "copy_prompt": "quiet copy space",
+                "copy_strength": 1.1,
+                "subject_prompt": "a sailor",
+                "subject_strength": 1.25,
+                "extra": True,
+            },
+        }
+
+        with patch.object(mcp_server, "get_asset_engine") as get_engine:
+            result = mcp_server.handle_tool_call({"name": "local_gpu_start_run", "arguments": arguments})
+
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["structuredContent"]["error"]["code"], "unknown_argument")
+        self.assertEqual(
+            result["structuredContent"]["error"]["details"]["fields"],
+            ["initial_regional_conditioning.extra"],
+        )
+        get_engine.assert_not_called()
 
     def test_finalize_run_rejects_missing_or_invalid_round_before_engine_work(self) -> None:
         calls = (

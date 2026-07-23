@@ -396,6 +396,12 @@ def tool_schema() -> list[dict[str, Any]]:
         "height": {"type": "number", "minimum": 0, "maximum": 1},
         "points": {"type": "array", "minItems": 3, "items": point},
     }, ["type"])
+    regional_conditioning = _object_schema({
+        "copy_prompt": {"type": "string", "minLength": 1},
+        "copy_strength": {"type": "number", "minimum": 0, "maximum": 2},
+        "subject_prompt": {"type": "string", "minLength": 1},
+        "subject_strength": {"type": "number", "minimum": 0, "maximum": 2},
+    }, ["copy_prompt", "copy_strength", "subject_prompt", "subject_strength"])
     visual_check = _object_schema({
         "status": {
             "type": "string",
@@ -563,6 +569,7 @@ def tool_schema() -> list[dict[str, Any]]:
                 "subtype": {"type": "string", "enum": _registered_subtype_ids()},
                 "style": {"type": ["string", "null"], "enum": [None, *_registered_style_ids()]},
                 "constraints": json_object,
+                "initial_regional_conditioning": regional_conditioning,
                 "model_choice": {"type": "string", "minLength": 1},
                 "backend": {"type": "string", "enum": ["webui", "diffusers", "comfyui"]},
                 "authorization_scope": {"type": "string", "enum": ["private", "public_evidence"]},
@@ -802,7 +809,7 @@ def _validate_nested_object(field: str, value: dict[str, Any], schema: dict[str,
             return tool_error(
                 "missing_argument",
                 "validation",
-                f"postprocess requires {name}.",
+                f"{field} requires {name}.",
                 {"field": nested_field},
             )
     for name, nested_value in value.items():
@@ -926,6 +933,17 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
         postprocess = arguments["postprocess"]
         assert isinstance(postprocess, dict)
         nested_error = _validate_nested_object("postprocess", postprocess, properties["postprocess"])
+        if nested_error is not None:
+            return nested_error
+
+    if tool["name"] == "local_gpu_start_run" and "initial_regional_conditioning" in arguments:
+        conditioning = arguments["initial_regional_conditioning"]
+        assert isinstance(conditioning, dict)
+        nested_error = _validate_nested_object(
+            "initial_regional_conditioning",
+            conditioning,
+            properties["initial_regional_conditioning"],
+        )
         if nested_error is not None:
             return nested_error
 
