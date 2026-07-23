@@ -149,6 +149,124 @@ class WorkflowTemplateTests(unittest.TestCase):
             graph[resolved["output_node"]]["inputs"]["filename_prefix"],
             "local-gpu-imagegen",
         )
+        self.assertNotIn("layout_mode", resolved)
+        self.assertEqual(
+            resolved["workflow_sha256"],
+            "05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d36000e",
+        )
+
+    def test_reviewed_sdxl_regional_template_binds_all_confirmed_values(self) -> None:
+        layout = {
+            "mode": "copy-subject-v1",
+            "copy_region": {
+                "x": 0.0,
+                "y": 0.0,
+                "width": 0.45,
+                "height": 1.0,
+            },
+            "subject_region": {
+                "x": 0.68,
+                "y": 0.0,
+                "width": 0.30,
+                "height": 1.0,
+            },
+        }
+        conditioning = {
+            "copy_prompt": "empty dark copy space",
+            "copy_strength": 1.15,
+            "subject_prompt": "complete telescope",
+            "subject_strength": 1.25,
+        }
+
+        rendered = self.registry.resolve(
+            "sdxl-regional-txt2img",
+            SDXL_MODEL,
+            "txt2img",
+            parameters(),
+            regional_layout=layout,
+            regional_conditioning=conditioning,
+        )
+
+        graph = rendered["graph"]
+        self.assertEqual(rendered["layout_mode"], "copy-subject-v1")
+        self.assertEqual(graph["8"]["inputs"]["text"], "empty dark copy space")
+        self.assertEqual(
+            graph["10"]["inputs"],
+            {
+                "conditioning": ["8", 0],
+                "width": 0.45,
+                "height": 1.0,
+                "x": 0.0,
+                "y": 0.0,
+                "strength": 1.15,
+            },
+        )
+        self.assertEqual(graph["11"]["inputs"]["text"], "complete telescope")
+        self.assertEqual(
+            graph["12"]["inputs"],
+            {
+                "conditioning": ["11", 0],
+                "width": 0.30,
+                "height": 1.0,
+                "x": 0.68,
+                "y": 0.0,
+                "strength": 1.25,
+            },
+        )
+
+    def test_regional_template_requires_data_and_standard_rejects_it(self) -> None:
+        layout = {
+            "mode": "copy-subject-v1",
+            "copy_region": {"x": 0.0, "y": 0.0, "width": 0.45, "height": 1.0},
+            "subject_region": {"x": 0.68, "y": 0.0, "width": 0.30, "height": 1.0},
+        }
+        conditioning = {
+            "copy_prompt": "empty dark copy space",
+            "copy_strength": 1.15,
+            "subject_prompt": "complete telescope",
+            "subject_strength": 1.25,
+        }
+        with self.assertRaisesRegex(ValidationError, "invalid_regional_layout"):
+            self.registry.resolve(
+                "sdxl-regional-txt2img",
+                SDXL_MODEL,
+                "txt2img",
+                parameters(),
+            )
+        with self.assertRaisesRegex(ValidationError, "invalid_regional_conditioning"):
+            self.registry.resolve(
+                "sdxl-txt2img",
+                SDXL_MODEL,
+                "txt2img",
+                parameters(),
+                regional_layout=layout,
+                regional_conditioning=conditioning,
+            )
+
+    def test_regional_nodes_remain_forbidden_in_imported_workflows(self) -> None:
+        graph = safe_graph()
+        graph["20"] = {
+            "class_type": "ConditioningCombine",
+            "inputs": {
+                "conditioning_1": ["6", 0],
+                "conditioning_2": ["7", 0],
+            },
+        }
+
+        with self.assertRaisesRegex(ValidationError, "unsafe_comfy_workflow"):
+            validate_imported_workflow(graph, binding(), [MODEL])
+
+    def test_inspect_shipped_regional_template_keeps_reviewed_static_values(self) -> None:
+        inspected = self.registry.inspect_shipped(
+            "sdxl-regional-txt2img",
+            SDXL_MODEL,
+            "txt2img",
+            parameters(),
+        )
+
+        self.assertEqual(inspected["layout_mode"], "copy-subject-v1")
+        self.assertEqual(inspected["graph"]["10"]["inputs"]["width"], 0.45)
+        self.assertEqual(inspected["graph"]["12"]["inputs"]["strength"], 1.25)
 
     def test_reviewed_split_model_templates_render_exact_model_contracts(self) -> None:
         cases = (

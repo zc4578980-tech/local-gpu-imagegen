@@ -1,0 +1,295 @@
+{
+  "schema_version": 1,
+  "template_id": "sdxl-regional-txt2img",
+  "template_version": 1,
+  "operation": "txt2img",
+  "model_families": [
+    "sdxl"
+  ],
+  "layout_mode": "copy-subject-v1",
+  "allowed_node_classes": [
+    "CheckpointLoaderSimple",
+    "CLIPTextEncode",
+    "ConditioningSetAreaPercentage",
+    "ConditioningCombine",
+    "EmptyLatentImage",
+    "KSampler",
+    "VAEDecode",
+    "SaveImage"
+  ],
+  "output_node": "16",
+  "bindings": {
+    "model": [
+      "4",
+      "inputs",
+      "ckpt_name"
+    ],
+    "positive_prompt": [
+      "6",
+      "inputs",
+      "text"
+    ],
+    "negative_prompt": [
+      "7",
+      "inputs",
+      "text"
+    ],
+    "seed": [
+      "3",
+      "inputs",
+      "seed"
+    ],
+    "steps": [
+      "3",
+      "inputs",
+      "steps"
+    ],
+    "guidance_scale": [
+      "3",
+      "inputs",
+      "cfg"
+    ],
+    "sampler": [
+      "3",
+      "inputs",
+      "sampler_name"
+    ],
+    "scheduler": [
+      "3",
+      "inputs",
+      "scheduler"
+    ],
+    "width": [
+      "5",
+      "inputs",
+      "width"
+    ],
+    "height": [
+      "5",
+      "inputs",
+      "height"
+    ]
+  },
+  "regional_bindings": {
+    "copy_prompt": [
+      "8",
+      "inputs",
+      "text"
+    ],
+    "copy_x": [
+      "10",
+      "inputs",
+      "x"
+    ],
+    "copy_y": [
+      "10",
+      "inputs",
+      "y"
+    ],
+    "copy_width": [
+      "10",
+      "inputs",
+      "width"
+    ],
+    "copy_height": [
+      "10",
+      "inputs",
+      "height"
+    ],
+    "copy_strength": [
+      "10",
+      "inputs",
+      "strength"
+    ],
+    "subject_prompt": [
+      "11",
+      "inputs",
+      "text"
+    ],
+    "subject_x": [
+      "12",
+      "inputs",
+      "x"
+    ],
+    "subject_y": [
+      "12",
+      "inputs",
+      "y"
+    ],
+    "subject_width": [
+      "12",
+      "inputs",
+      "width"
+    ],
+    "subject_height": [
+      "12",
+      "inputs",
+      "height"
+    ],
+    "subject_strength": [
+      "12",
+      "inputs",
+      "strength"
+    ]
+  },
+  "graph": {
+    "3": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 0,
+        "steps": 30,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "denoise": 1.0,
+        "model": [
+          "4",
+          0
+        ],
+        "positive": [
+          "14",
+          0
+        ],
+        "negative": [
+          "7",
+          0
+        ],
+        "latent_image": [
+          "5",
+          0
+        ]
+      }
+    },
+    "4": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "sd_xl_base_1.0.safetensors"
+      }
+    },
+    "5": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "6": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "4",
+          1
+        ]
+      }
+    },
+    "7": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "4",
+          1
+        ]
+      }
+    },
+    "8": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "4",
+          1
+        ]
+      }
+    },
+    "10": {
+      "class_type": "ConditioningSetAreaPercentage",
+      "inputs": {
+        "conditioning": [
+          "8",
+          0
+        ],
+        "width": 0.45,
+        "height": 1.0,
+        "x": 0.0,
+        "y": 0.0,
+        "strength": 1.15
+      }
+    },
+    "11": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "4",
+          1
+        ]
+      }
+    },
+    "12": {
+      "class_type": "ConditioningSetAreaPercentage",
+      "inputs": {
+        "conditioning": [
+          "11",
+          0
+        ],
+        "width": 0.30,
+        "height": 1.0,
+        "x": 0.68,
+        "y": 0.0,
+        "strength": 1.25
+      }
+    },
+    "13": {
+      "class_type": "ConditioningCombine",
+      "inputs": {
+        "conditioning_1": [
+          "6",
+          0
+        ],
+        "conditioning_2": [
+          "10",
+          0
+        ]
+      }
+    },
+    "14": {
+      "class_type": "ConditioningCombine",
+      "inputs": {
+        "conditioning_1": [
+          "13",
+          0
+        ],
+        "conditioning_2": [
+          "12",
+          0
+        ]
+      }
+    },
+    "15": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "3",
+          0
+        ],
+        "vae": [
+          "4",
+          2
+        ]
+      }
+    },
+    "16": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "local-gpu-imagegen",
+        "images": [
+          "15",
+          0
+        ]
+      }
+    }
+  }
+}

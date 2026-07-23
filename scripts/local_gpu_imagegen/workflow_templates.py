@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -11,6 +12,12 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .artifacts import atomic_write_json
 from .errors import ArtifactError, ConflictError, ValidationError
+from .regional_layout import (
+    LAYOUT_MODE,
+    REGIONAL_TEMPLATE_ID,
+    validate_regional_conditioning,
+    validate_regional_layout,
+)
 
 
 SAFE_NODE_INPUTS = {
@@ -43,6 +50,19 @@ SAFE_NODE_INPUTS = {
     "SaveImage": frozenset({"filename_prefix", "images"}),
 }
 SAFE_NODE_CLASSES = frozenset(SAFE_NODE_INPUTS)
+REGIONAL_NODE_INPUTS = {
+    "ConditioningSetAreaPercentage": frozenset({
+        "conditioning",
+        "width",
+        "height",
+        "x",
+        "y",
+        "strength",
+    }),
+    "ConditioningCombine": frozenset({"conditioning_1", "conditioning_2"}),
+}
+REGIONAL_NODE_CLASSES = frozenset(REGIONAL_NODE_INPUTS)
+SHIPPED_REGIONAL_NODE_INPUTS = {**SAFE_NODE_INPUTS, **REGIONAL_NODE_INPUTS}
 MODEL_LOADER_INPUTS = {
     "CheckpointLoaderSimple": "ckpt_name",
     "UNETLoader": "unet_name",
@@ -84,6 +104,20 @@ REQUIRED_BINDINGS = frozenset({
     "output",
 })
 PARAMETER_KEYS = REQUIRED_BINDINGS - {"model", "output"}
+REGIONAL_BINDING_KEYS = frozenset({
+    "copy_prompt",
+    "copy_x",
+    "copy_y",
+    "copy_width",
+    "copy_height",
+    "copy_strength",
+    "subject_prompt",
+    "subject_x",
+    "subject_y",
+    "subject_width",
+    "subject_height",
+    "subject_strength",
+})
 OPERATIONS = frozenset({"txt2img", "img2img", "inpaint"})
 MAX_NODES = 64
 MAX_STEPS = 80
@@ -107,6 +141,9 @@ class WorkflowTemplateRegistry:
         model_id: str,
         operation: str,
         parameters: dict[str, object],
+        *,
+        regional_layout: object = None,
+        regional_conditioning: object = None,
     ) -> dict[str, object]:
         if not isinstance(template_id, str):
             raise ValidationError(
@@ -117,6 +154,60 @@ class WorkflowTemplateRegistry:
             template = self.load_registered(template_id)
         else:
             template = self._load_shipped(template_id)
+        graph, normalized_model = self._render_standard_bindings(
+            template,
+            model_id,
+            operation,
+            parameters,
+        )
+        layout_mode = template.get("layout_mode")
+        if layout_mode is None:
+            if regional_layout is not None or regional_conditioning is not None:
+                raise ValidationError(
+                    "invalid_regional_conditioning",
+                    "Standard workflows reject regional data.",
+                )
+        elif layout_mode == LAYOUT_MODE:
+            layout = validate_regional_layout(regional_layout)
+            conditioning = validate_regional_conditioning(regional_conditioning)
+            _bind_regional_values(
+                graph,
+                template["regional_bindings"],
+                layout,
+                conditioning,
+            )
+        else:
+            raise ArtifactError(
+                "invalid_workflow_template",
+                "Reviewed layout mode is unsupported.",
+            )
+        self._validate_rendered(template, graph, normalized_model)
+        return _rendered_result(template, graph)
+
+    def inspect_shipped(
+        self,
+        template_id: str,
+        model_id: str,
+        operation: str,
+        parameters: dict[str, object],
+    ) -> dict[str, object]:
+        template = self._load_shipped(template_id)
+        graph, normalized_model = self._render_standard_bindings(
+            template,
+            model_id,
+            operation,
+            parameters,
+        )
+        self._validate_rendered(template, graph, normalized_model)
+        return _rendered_result(template, graph)
+
+    @staticmethod
+    def _render_standard_bindings(
+        template: dict[str, object],
+        model_id: str,
+        operation: str,
+        parameters: dict[str, object],
+    ) -> tuple[dict[str, object], str]:
         if operation != template["operation"]:
             raise ValidationError(
                 "unsupported_workflow_operation",
@@ -129,22 +220,24 @@ class WorkflowTemplateRegistry:
         _set_binding(graph, bindings["model"], normalized_model)
         for key, value in normalized_parameters.items():
             _set_binding(graph, bindings[key], value)
-        validate_imported_workflow(
+        return graph, normalized_model
+
+    @staticmethod
+    def _validate_rendered(
+        template: dict[str, object],
+        graph: dict[str, object],
+        normalized_model: str,
+    ) -> None:
+        validator = (
+            _validate_reviewed_regional_workflow
+            if template.get("layout_mode")
+            else validate_imported_workflow
+        )
+        validator(
             graph,
-            {**bindings, "output": [template["output_node"]]},
+            {**template["bindings"], "output": [template["output_node"]]},
             [normalized_model],
         )
-        families = template["model_families"]
-        model_family = "sd15" if "sd15" in families else families[0]
-        return {
-            "template_id": template["template_id"],
-            "template_version": template["template_version"],
-            "workflow_sha256": template["workflow_sha256"],
-            "operation": template["operation"],
-            "model_family": model_family,
-            "output_node": template["output_node"],
-            "graph": graph,
-        }
 
     def register_import(
         self,
@@ -230,6 +323,153 @@ class WorkflowTemplateRegistry:
         return matches[0]
 
 
+def _rendered_result(
+    template: dict[str, object],
+    graph: dict[str, object],
+) -> dict[str, object]:
+    families = template["model_families"]
+    model_family = "sd15" if "sd15" in families else families[0]
+    result = {
+        "template_id": template["template_id"],
+        "template_version": template["template_version"],
+        "workflow_sha256": template["workflow_sha256"],
+        "operation": template["operation"],
+        "model_family": model_family,
+        "output_node": template["output_node"],
+        "graph": graph,
+    }
+    if template.get("layout_mode") is not None:
+        result["layout_mode"] = template["layout_mode"]
+    return result
+
+
+def _bind_regional_values(
+    graph: dict[str, object],
+    bindings: dict[str, list[str]],
+    layout: dict[str, object],
+    conditioning: dict[str, object],
+) -> None:
+    copy_region = layout["copy_region"]
+    subject_region = layout["subject_region"]
+    values = {
+        "copy_prompt": conditioning["copy_prompt"],
+        "copy_x": copy_region["x"],
+        "copy_y": copy_region["y"],
+        "copy_width": copy_region["width"],
+        "copy_height": copy_region["height"],
+        "copy_strength": conditioning["copy_strength"],
+        "subject_prompt": conditioning["subject_prompt"],
+        "subject_x": subject_region["x"],
+        "subject_y": subject_region["y"],
+        "subject_width": subject_region["width"],
+        "subject_height": subject_region["height"],
+        "subject_strength": conditioning["subject_strength"],
+    }
+    for key, value in values.items():
+        _set_binding(graph, bindings[key], value)
+
+
+def _validate_regional_bindings(
+    value: object,
+    graph: dict[str, object],
+    standard_bindings: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    if not isinstance(value, dict) or set(value) != REGIONAL_BINDING_KEYS:
+        raise _unsafe("Regional workflow bindings are incomplete or unexpected.")
+    expected_inputs = {
+        "copy_prompt": ("CLIPTextEncode", "text"),
+        "copy_x": ("ConditioningSetAreaPercentage", "x"),
+        "copy_y": ("ConditioningSetAreaPercentage", "y"),
+        "copy_width": ("ConditioningSetAreaPercentage", "width"),
+        "copy_height": ("ConditioningSetAreaPercentage", "height"),
+        "copy_strength": ("ConditioningSetAreaPercentage", "strength"),
+        "subject_prompt": ("CLIPTextEncode", "text"),
+        "subject_x": ("ConditioningSetAreaPercentage", "x"),
+        "subject_y": ("ConditioningSetAreaPercentage", "y"),
+        "subject_width": ("ConditioningSetAreaPercentage", "width"),
+        "subject_height": ("ConditioningSetAreaPercentage", "height"),
+        "subject_strength": ("ConditioningSetAreaPercentage", "strength"),
+    }
+    targets = {tuple(path) for path in standard_bindings.values()}
+    normalized: dict[str, list[str]] = {}
+    for key, path in value.items():
+        if (
+            not isinstance(path, list)
+            or len(path) != 3
+            or any(not isinstance(item, str) or not item for item in path)
+            or tuple(path) in targets
+        ):
+            raise _unsafe("Regional workflow binding paths are invalid.")
+        node = graph.get(path[0])
+        expected_class, expected_input = expected_inputs[key]
+        if (
+            path[1] != "inputs"
+            or path[2] != expected_input
+            or not isinstance(node, dict)
+            or node.get("class_type") != expected_class
+            or not isinstance(node.get("inputs"), dict)
+            or path[2] not in node["inputs"]
+            or isinstance(node["inputs"][path[2]], (dict, list))
+        ):
+            raise _unsafe("Regional workflow binding targets the wrong scalar input.")
+        targets.add(tuple(path))
+        normalized[key] = list(path)
+
+    copy_area = {
+        normalized[key][0]
+        for key in normalized
+        if key.startswith("copy_") and key != "copy_prompt"
+    }
+    subject_area = {
+        normalized[key][0]
+        for key in normalized
+        if key.startswith("subject_") and key != "subject_prompt"
+    }
+    copy_prompt_node = normalized["copy_prompt"][0]
+    subject_prompt_node = normalized["subject_prompt"][0]
+    if (
+        len(copy_area) != 1
+        or len(subject_area) != 1
+        or copy_area == subject_area
+        or copy_prompt_node == subject_prompt_node
+    ):
+        raise _unsafe("Regional workflow zones must bind distinct reviewed nodes.")
+    copy_area_node = graph[next(iter(copy_area))]
+    subject_area_node = graph[next(iter(subject_area))]
+    if (
+        copy_area_node["inputs"].get("conditioning") != [copy_prompt_node, 0]
+        or subject_area_node["inputs"].get("conditioning")
+        != [subject_prompt_node, 0]
+    ):
+        raise _unsafe("Regional workflow prompt and area edges are inconsistent.")
+    return normalized
+
+
+def _regional_layout_from_graph(
+    graph: dict[str, object],
+    bindings: dict[str, list[str]],
+) -> dict[str, object]:
+    def bound(key: str) -> object:
+        path = bindings[key]
+        return graph[path[0]][path[1]][path[2]]
+
+    return {
+        "mode": LAYOUT_MODE,
+        "copy_region": {
+            "x": bound("copy_x"),
+            "y": bound("copy_y"),
+            "width": bound("copy_width"),
+            "height": bound("copy_height"),
+        },
+        "subject_region": {
+            "x": bound("subject_x"),
+            "y": bound("subject_y"),
+            "width": bound("subject_width"),
+            "height": bound("subject_height"),
+        },
+    }
+
+
 def workflow_component_bindings(graph: object) -> list[dict[str, str]]:
     if not isinstance(graph, dict):
         raise ValidationError(
@@ -286,6 +526,33 @@ def validate_imported_workflow(
     binding: object,
     available_models: Collection[str],
 ) -> dict[str, object]:
+    return _validate_workflow(
+        graph,
+        binding,
+        available_models,
+        SAFE_NODE_INPUTS,
+    )
+
+
+def _validate_reviewed_regional_workflow(
+    graph: object,
+    binding: object,
+    available_models: Collection[str],
+) -> dict[str, object]:
+    return _validate_workflow(
+        graph,
+        binding,
+        available_models,
+        SHIPPED_REGIONAL_NODE_INPUTS,
+    )
+
+
+def _validate_workflow(
+    graph: object,
+    binding: object,
+    available_models: Collection[str],
+    allowed_node_inputs: dict[str, frozenset[str]],
+) -> dict[str, object]:
     if not isinstance(graph, dict) or not 1 <= len(graph) <= MAX_NODES:
         raise _unsafe("Workflow graph size is outside the reviewed limit.")
     if isinstance(available_models, (str, bytes)) or not isinstance(available_models, Collection):
@@ -309,14 +576,14 @@ def validate_imported_workflow(
         inputs = node.get("inputs")
         if (
             not isinstance(class_type, str)
-            or class_type not in SAFE_NODE_CLASSES
+            or class_type not in allowed_node_inputs
             or any(term in class_type.lower() for term in FORBIDDEN_TERMS)
             or not isinstance(inputs, dict)
         ):
             raise _unsafe("Workflow contains an unknown or unapproved node.", node_id)
         if any(
             not isinstance(key, str)
-            or key not in SAFE_NODE_INPUTS[class_type]
+            or key not in allowed_node_inputs[class_type]
             or any(term in key.lower() for term in FORBIDDEN_TERMS)
             for key in inputs
         ):
@@ -338,7 +605,7 @@ def validate_imported_workflow(
 
 
 def _validate_shipped_document(value: object) -> dict[str, object]:
-    fields = {
+    standard_fields = {
         "schema_version",
         "template_id",
         "template_version",
@@ -349,11 +616,16 @@ def _validate_shipped_document(value: object) -> dict[str, object]:
         "bindings",
         "graph",
     }
-    if not isinstance(value, dict) or set(value) != fields:
+    regional_fields = standard_fields | {"layout_mode", "regional_bindings"}
+    if not isinstance(value, dict) or set(value) not in {
+        frozenset(standard_fields),
+        frozenset(regional_fields),
+    }:
         raise ArtifactError(
             "invalid_workflow_template",
             "Reviewed workflow template fields are invalid.",
         )
+    is_regional = set(value) == regional_fields
     if (
         value["schema_version"] != 1
         or type(value["template_version"]) is not int
@@ -370,10 +642,13 @@ def _validate_shipped_document(value: object) -> dict[str, object]:
         )
     allowed = value["allowed_node_classes"]
     graph = value["graph"]
+    allowed_node_inputs = (
+        SHIPPED_REGIONAL_NODE_INPUTS if is_regional else SAFE_NODE_INPUTS
+    )
     if (
         not isinstance(allowed, list)
         or len(set(allowed)) != len(allowed)
-        or any(item not in SAFE_NODE_CLASSES for item in allowed)
+        or any(item not in allowed_node_inputs for item in allowed)
         or not isinstance(graph, dict)
         or set(allowed) != {
             node.get("class_type") for node in graph.values() if isinstance(node, dict)
@@ -383,13 +658,50 @@ def _validate_shipped_document(value: object) -> dict[str, object]:
             "invalid_workflow_template",
             "Reviewed workflow node allowlist is invalid.",
         )
+    if is_regional and (
+        value["template_id"] != REGIONAL_TEMPLATE_ID
+        or value["layout_mode"] != LAYOUT_MODE
+        or value["operation"] != "txt2img"
+        or value["model_families"] != ["sdxl"]
+        or sum(
+            node.get("class_type") == "ConditioningSetAreaPercentage"
+            for node in graph.values()
+            if isinstance(node, dict)
+        )
+        != 2
+        or sum(
+            node.get("class_type") == "ConditioningCombine"
+            for node in graph.values()
+            if isinstance(node, dict)
+        )
+        != 2
+    ):
+        raise ArtifactError(
+            "invalid_workflow_template",
+            "Reviewed regional workflow metadata or node counts are invalid.",
+        )
     available = _primary_model_names(graph)
     try:
-        validated = validate_imported_workflow(
+        validator = (
+            _validate_reviewed_regional_workflow
+            if is_regional
+            else validate_imported_workflow
+        )
+        validated = validator(
             graph,
             {**value["bindings"], "output": [value["output_node"]]},
             available,
         )
+        regional_bindings = None
+        if is_regional:
+            regional_bindings = _validate_regional_bindings(
+                value["regional_bindings"],
+                validated["graph"],
+                validated["binding"],
+            )
+            validate_regional_layout(
+                _regional_layout_from_graph(validated["graph"], regional_bindings)
+            )
     except ValidationError as error:
         raise ArtifactError(
             "invalid_workflow_template",
@@ -400,6 +712,8 @@ def _validate_shipped_document(value: object) -> dict[str, object]:
     document["bindings"] = {
         key: path for key, path in validated["binding"].items() if key != "output"
     }
+    if is_regional:
+        document["regional_bindings"] = regional_bindings
     document["workflow_sha256"] = _canonical_hash(value)
     return document
 
@@ -522,19 +836,42 @@ def _validate_edges(graph: dict[str, object]) -> None:
 def _enforce_resource_limits(graph: dict[str, object]) -> None:
     for node_id, node in graph.items():
         inputs = node["inputs"]
+        class_type = node["class_type"]
         if "batch_size" in inputs and inputs["batch_size"] != 1:
             raise _unsafe("Workflow batch size must be exactly one.", node_id)
         if "steps" in inputs and (
             type(inputs["steps"]) is not int or not 1 <= inputs["steps"] <= MAX_STEPS
         ):
             raise _unsafe("Workflow steps exceed the reviewed limit.", node_id)
-        for key in ("width", "height"):
-            if key in inputs and (
-                type(inputs[key]) is not int
-                or not MIN_DIMENSION <= inputs[key] <= MAX_DIMENSION
-                or inputs[key] % 8 != 0
+        if class_type in {"EmptyLatentImage", "EmptySD3LatentImage"}:
+            for key in ("width", "height"):
+                if key not in inputs:
+                    continue
+                if (
+                    type(inputs[key]) is not int
+                    or not MIN_DIMENSION <= inputs[key] <= MAX_DIMENSION
+                    or inputs[key] % 8 != 0
+                ):
+                    raise _unsafe(
+                        "Workflow dimensions are outside the reviewed limit.",
+                        node_id,
+                    )
+        if class_type == "ConditioningSetAreaPercentage":
+            if any(
+                not _finite_number(inputs[key])
+                for key in ("x", "y", "width", "height", "strength")
             ):
-                raise _unsafe("Workflow dimensions are outside the reviewed limit.", node_id)
+                raise _unsafe("Regional workflow scalars must be finite.", node_id)
+            if (
+                not 0.0 <= float(inputs["x"]) < 1.0
+                or not 0.0 <= float(inputs["y"]) < 1.0
+                or not 0.0 < float(inputs["width"]) <= 1.0
+                or not 0.0 < float(inputs["height"]) <= 1.0
+                or not 0.0 <= float(inputs["strength"]) <= 2.0
+                or float(inputs["x"]) + float(inputs["width"]) > 1.0
+                or float(inputs["y"]) + float(inputs["height"]) > 1.0
+            ):
+                raise _unsafe("Regional workflow scalars are outside limits.", node_id)
         if "seed" in inputs and (
             type(inputs["seed"]) is not int or not 0 <= inputs["seed"] <= MAX_SEED
         ):
@@ -547,7 +884,6 @@ def _enforce_resource_limits(graph: dict[str, object]) -> None:
             not _number(inputs["denoise"]) or not 0 <= float(inputs["denoise"]) <= 1
         ):
             raise _unsafe("Workflow denoise is outside the reviewed limit.", node_id)
-        class_type = node["class_type"]
         for field in ("ckpt_name", "unet_name", "clip_name", "vae_name"):
             if field in inputs and (
                 not isinstance(inputs[field], str)
@@ -746,6 +1082,10 @@ def _valid_families(value: object) -> bool:
 
 def _number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _finite_number(value: object) -> bool:
+    return _number(value) and math.isfinite(float(value))
 
 
 def _canonical_hash(value: object) -> str:
