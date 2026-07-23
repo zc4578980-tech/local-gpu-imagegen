@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import errno
 import hashlib
 import json
@@ -580,6 +581,28 @@ class RunStoreTransitionTests(unittest.TestCase):
             "mismatched_pixels": 0,
         }
 
+    def assert_partial_rejection_is_atomic(
+        self,
+        run_id: str,
+        handle: AttemptHandle,
+        retained_stages: list[dict[str, object]],
+    ) -> None:
+        lock_path = Path(self.temp.name) / "runs" / run_id / ".run.lock"
+        before = self.store.get(run_id)
+        lock_before = lock_path.read_bytes()
+
+        with self.assertRaisesRegex(ValidationError, "invalid_retained_stages"):
+            self.store.record_partial_attempt(
+                handle,
+                retained_stages,
+                {"code": "invalid", "message": "Retained stage provenance is invalid."},
+            )
+
+        self.assertEqual(self.store.get(run_id), before)
+        self.assertEqual(before["stage_budget"]["consumed"], 0)
+        self.assertIsNotNone(before["active_attempt"])
+        self.assertEqual(lock_path.read_bytes(), lock_before)
+
     def complete_initial(self, key: str = "initial-1") -> dict[str, object]:
         handle = self.store.begin_attempt(self.manifest["run_id"], key, INITIAL)
         return self.store.complete_attempt(handle, {
@@ -736,6 +759,67 @@ class RunStoreTransitionTests(unittest.TestCase):
         self.assertEqual(manifest["rounds"], [])
         self.assertEqual(manifest["attempts"][-1]["retained_stages"], retained)
         self.assertEqual(manifest["stage_budget"], {"maximum": 2, "consumed": 2})
+
+    def test_partial_attempt_rejects_wrong_base_seed_atomically(self) -> None:
+        run_id, handle = self.started_two_stage_attempt(key="partial-wrong-base-seed")
+        base, _, _ = self.two_stage_artifacts(run_id)
+
+        self.assert_partial_rejection_is_atomic(
+            run_id,
+            handle,
+            [{"role": "base", "seed": 41, "image": base}],
+        )
+        self.store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
+
+    def test_partial_attempt_rejects_wrong_subject_seed_atomically(self) -> None:
+        run_id, handle = self.started_two_stage_attempt(key="partial-wrong-subject-seed")
+        base, _, final = self.two_stage_artifacts(run_id)
+
+        self.assert_partial_rejection_is_atomic(
+            run_id,
+            handle,
+            [
+                {"role": "base", "seed": 42, "image": base},
+                {"role": "subject", "seed": 44, "image": final},
+            ],
+        )
+        self.store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
+
+    def test_partial_attempt_rejects_replacement_for_active_stage_prefix_atomically(self) -> None:
+        run_id, handle = self.started_two_stage_attempt(key="partial-active-prefix-mismatch")
+        base, mask, final = self.two_stage_artifacts(run_id)
+        self.store.mark_attempt_artifacts(
+            handle, base, mask, final, self.two_stage_backend_result()
+        )
+        replacement = self.write_image_for(run_id, "replacement-base.png", b"replacement base")
+
+        self.assert_partial_rejection_is_atomic(
+            run_id,
+            handle,
+            [{"role": "base", "seed": 42, "image": replacement}],
+        )
+        self.store.fail_attempt(handle, {"code": "cancelled", "message": "cleanup"})
+
+    def test_partial_attempt_accepts_each_exact_active_stage_prefix(self) -> None:
+        for prefix_length in (1, 2):
+            run_id, handle = self.started_two_stage_attempt(
+                key=f"partial-active-prefix-{prefix_length}"
+            )
+            base, mask, final = self.two_stage_artifacts(run_id)
+            marked = self.store.mark_attempt_artifacts(
+                handle, base, mask, final, self.two_stage_backend_result()
+            )
+            exact_prefix = copy.deepcopy(marked["active_attempt"]["stages"][:prefix_length])
+
+            manifest = self.store.record_partial_attempt(
+                handle,
+                exact_prefix,
+                {"code": "stage_invalid", "message": "Only verified stages are retained."},
+            )
+
+            with self.subTest(prefix_length=prefix_length):
+                self.assertEqual(manifest["attempts"][-1]["retained_stages"], exact_prefix)
+                self.assertEqual(manifest["stage_budget"]["consumed"], prefix_length)
 
     def test_partial_attempt_rejects_missing_or_duplicate_stage_artifacts(self) -> None:
         run_id, handle = self.started_two_stage_attempt(key="partial-missing")

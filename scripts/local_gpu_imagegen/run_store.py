@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .artifacts import atomic_write_json, ensure_within, sha256_file, validate_json_serializable
 from .errors import ArtifactError, AssetEngineError, ConflictError, StateError, ValidationError
-from .two_stage_layout import TWO_STAGE_TEMPLATE_ID
+from .two_stage_layout import TWO_STAGE_TEMPLATE_ID, derive_subject_seed
 from .visual_review import (
     require_finalization_confirmation,
     review_is_eligible,
@@ -482,7 +482,11 @@ class RunStore:
                     "two_stage_run_required",
                     "Partial stage attempts apply only to the reviewed two-stage workflow.",
                 )
-            normalized_stages = self._validate_retained_stages(handle.run_id, retained_stages)
+            normalized_stages = self._validate_retained_stages(
+                handle.run_id,
+                retained_stages,
+                active,
+            )
             self._consume_stage_units(manifest, len(normalized_stages))
             archived = copy.deepcopy(active)
             archived["status"] = "partial"
@@ -1090,6 +1094,7 @@ class RunStore:
         self,
         run_id: str,
         retained_stages: object,
+        active: dict[str, object],
     ) -> list[dict[str, object]]:
         if not isinstance(retained_stages, list) or not 1 <= len(retained_stages) <= 2:
             raise ValidationError(
@@ -1098,6 +1103,14 @@ class RunStore:
             )
         validate_json_serializable(retained_stages)
         expected_roles = ["base", "subject"][:len(retained_stages)]
+        base_seed = active.get("seed")
+        try:
+            expected_seeds = [base_seed, derive_subject_seed(base_seed)]
+        except ValidationError as error:
+            raise ArtifactError(
+                "corrupt_manifest",
+                "Active two-stage attempt seed is invalid.",
+            ) from error
         normalized: list[dict[str, object]] = []
         paths: set[str] = set()
         for index, stage in enumerate(retained_stages):
@@ -1105,6 +1118,7 @@ class RunStore:
                 not isinstance(stage, dict)
                 or set(stage) != {"role", "seed", "image"}
                 or stage.get("role") != expected_roles[index]
+                or stage.get("seed") != expected_seeds[index]
                 or type(stage.get("seed")) is not int
             ):
                 raise ValidationError(
@@ -1125,6 +1139,18 @@ class RunStore:
                 "seed": stage["seed"],
                 "image": image,
             })
+        if "stages" in active:
+            active_stages = active["stages"]
+            if not isinstance(active_stages, list):
+                raise ArtifactError(
+                    "corrupt_manifest",
+                    "Active two-stage attempt stage records are invalid.",
+                )
+            if normalized != active_stages[:len(normalized)]:
+                raise ValidationError(
+                    "invalid_retained_stages",
+                    "Retained stages must match the active attempt stage prefix.",
+                )
         return normalized
 
     def _validate_attempt_transition(self, manifest: dict[str, object], request: dict[str, object]) -> None:
