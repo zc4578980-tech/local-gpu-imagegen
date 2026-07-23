@@ -13,14 +13,14 @@ Alphabetized entry under Image Generation:
 PR body:
 
 ```text
-Adds local-gpu-imagegen, a Python stdio MCP server that lets Agents use an existing local image-generation stack through confirmed model routes, bounded generation/review budgets, and immutable preserve/change revisions. It does not bundle model weights or download them silently. The preview retains exact limitations for visual quality, performance, VRAM, and the incomplete 9+3 acceptance matrix.
+Adds local-gpu-imagegen, a Python stdio MCP server that lets Agents use an existing local image-generation stack through confirmed model routes, bounded generation/review budgets, immutable preserve/change revisions, and an optional frozen copy/subject SDXL composition route. It does not bundle model weights or download them silently. Regional lifecycle behavior is model-free verified; visual quality, performance, VRAM, and the complete 9+3 acceptance matrix remain unverified.
 ```
 
 ## Glama
 
 - Name: `local-gpu-imagegen`
 - Repository: `https://github.com/zc4578980-tech/local-gpu-imagegen`
-- Package: `local-gpu-imagegen==0.6.1` on PyPI
+- Package: `local-gpu-imagegen==0.7.0` on PyPI
 - Transport: `stdio`
 - Install/run: `uvx local-gpu-imagegen serve`
 - Description: `Auditable Agent control plane for trusted local image generation across ComfyUI, AUTOMATIC1111/Forge, and Diffusers.`

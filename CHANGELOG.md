@@ -6,6 +6,21 @@ All notable changes will be documented in this file.
 
 No unreleased changes.
 
+## [0.7.0] - 2026-07-23
+
+### Added
+
+- A fail-closed `copy-subject-v1` layout contract with normalized non-overlapping copy/subject regions, displayed percentage confirmation, and frozen geometry across a run.
+- A reviewed `sdxl-regional-txt2img-v1` ComfyUI graph whose live node signatures, workflow digest, model identity, and component bundle remain route-bound.
+- Regional prompts and strengths in the existing twenty-field generation plan, with prompt/strength hot refinement and no silent fallback to ordinary SDXL txt2img.
+- A deterministic model-free vertical slice covering regional recommendation, confirmation, two retained rounds, structured constraint-violation reviews, budget exhaustion, and packaged workflow assets.
+
+### Evidence Boundary
+
+- Regional routing and lifecycle behavior are verified without a model, network, ComfyUI process, or GPU. Genuine regional image quality and compliance with the requested composition remain pending.
+- No model weights, trust mutation, private output, hosted-client generation evidence, or publication action is included in this preview candidate.
+- The retained `0.6.1` wheel and its SHA-256 remain unchanged; the `0.7.0` candidate was built and checkout-independently verified as a separate local artifact.
+
 ## [0.6.1] - 2026-07-22
 
 ### Added

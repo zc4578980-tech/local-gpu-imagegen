@@ -5,7 +5,7 @@ from collections.abc import Iterable
 
 
 _STALE_ACTIVE_VERSION = re.compile(
-    r"\b(?:v|version\s*)?0\.(?:3|4|6)(?:\.0)?(?!\.\d)\b",
+    r"\b(?:v|version\s*)?(?:0\.(?:3|4)(?:\.0)?|0\.6(?:\.[01])?)(?!\.\d)\b",
     re.IGNORECASE,
 )
 _ASSERTION_BOUNDARY = re.compile(

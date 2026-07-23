@@ -94,7 +94,7 @@ class PackagingTests(unittest.TestCase):
     def test_metadata_defines_preview_cli(self) -> None:
         document = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         project = document["project"]
-        self.assertEqual(project["version"], "0.6.1")
+        self.assertEqual(project["version"], "0.7.0")
         self.assertEqual(project["license"], "MIT")
         self.assertEqual(
             project["scripts"]["local-gpu-imagegen"],

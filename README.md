@@ -8,11 +8,11 @@ An auditable Agent control plane for the image models you already run locally. D
 
 ![Simulated brief-to-candidate protocol loop](docs/demo/preview-loop.gif)
 
-> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. Version 0.6.1 is a preview candidate: model-free tests cover the protocol and backend contracts, while the genuine showcase, named-client session evidence, a complete real 9+3 visual matrix, and measured quality/performance remain pending.
+> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. Version 0.7.0 is a preview candidate: model-free tests cover the protocol, backend contracts, and fixed two-region SDXL conditioning lifecycle, while genuine regional image-quality acceptance, named-client session evidence, a complete real 9+3 visual matrix, and measured quality/performance remain pending.
 
 ## Quick Start
 
-After `0.6.1` is published to PyPI, Python 3.11 or 3.12 is enough to verify the control plane and request official Codex setup. Neither command generates an image or downloads a model.
+After `0.7.0` is published to PyPI, Python 3.11 or 3.12 is enough to verify the control plane and request official Codex setup. Neither command generates an image or downloads a model.
 
 ```shell
 uvx local-gpu-imagegen verify
@@ -34,6 +34,7 @@ Before PyPI publication, install the verified wheel or a source checkout, then u
 - **Agent-guided workflow:** a bundled Agent Skill turns a natural-language brief into a catalog-gated, confirmed run.
 - **Bring your existing models:** bounded discovery merges WebUI/Forge and ComfyUI inventory with explicit user-local trust; scanning never loads or downloads weights.
 - **Frozen, explainable routing:** one model/backend/workflow/compiler identity is persisted and rechecked, with no silent model switch.
+- **Confirmed regional composition:** a reviewed SDXL ComfyUI route freezes one copy region and one subject region, then permits prompt/strength refinement without silently moving either region.
 - **Durable review loop:** a persisted manifest tracks one to three successful generation rounds, evidence-based reviews, final selection, and recovery actions.
 - **Three delivery Profiles:** standalone illustrations, presentation visuals, and UI visual assets share one deterministic run and review contract.
 - **Auditable hot revision:** an immutable child run records a preserve/change contract and uses prompt refinement, img2img, or explicitly confirmed inpainting.
@@ -58,7 +59,7 @@ Expected result:
   "ok": true,
   "transport": "stdio",
   "python": "<current-python>",
-  "server": {"name": "local-gpu-imagegen", "version": "0.6.1"},
+  "server": {"name": "local-gpu-imagegen", "version": "0.7.0"},
   "protocolVersion": "2024-11-05",
   "tools": [
     "local_gpu_branch_run",
@@ -143,6 +144,8 @@ The Skill will not guess from a checkpoint filename or silently select a backend
 
 After a reviewed or finalized candidate, the user can describe what to keep and what to change. The Skill presents an auditable preserve/change contract, asks for a separate one-to-three-round revision budget, and creates an immutable child run only after confirmation. It chooses the least destructive mode: same-seed prompt refinement, then low-strength img2img, then inpainting with explicit mask-overlay confirmation. No-mask preservation is best-effort.
 
+For the optional `copy-subject-v1` route, the Agent displays both normalized regions as decimals and percentages, both regional prompts and strengths, the exact `sdxl-regional-txt2img` route, and the successful-round budget before confirmation. The geometry is frozen for that run. Refinement may change regional prompts or strengths, but moving a region requires a newly confirmed root or child; unavailable or drifted regional capability never falls back to prompt-only `sdxl-txt2img`.
+
 The adaptive sequence is discovery -> trust when needed -> scoped catalog -> brief -> exact-route recommendation -> post-display confirmation -> start -> read persisted run -> construct complete plan -> generate -> full-resolution inspect -> review -> refine/explore or display candidate -> wait for a later user message -> finalize. The configured `max_rounds` must be from `1` through `3`, and urgency or sunk cost never extends it.
 
 ### Visual Profiles And Scope
@@ -163,7 +166,7 @@ Trust is stored outside the repository under the OS user-state directory, overri
 
 No model weights are bundled. The repository catalog includes the auditable ID `civitai/anything-v5@30163` for an already reviewed local WebUI checkpoint, and downloads remain unapproved. Other local models can enter the private catalog only through discovery and explicit trust; model quality still comes from the user's model. This project adds safer routing, durable review, and hot revision rather than claiming a superior prompt translator.
 
-ComfyUI ships reviewed `sd15-txt2img-v1`, `sdxl-txt2img-v1`, `z-image-turbo-txt2img-v1`, and `anima-txt2img-v1` workflow files. Discovery distinguishes `CheckpointLoaderSimple`, `UNETLoader`, `CLIPLoader`, and `VAELoader`. A private backend-bound route may still bind only the primary loader, but public-evidence eligibility for a split workflow requires current API identities plus filesystem SHA-256 identities for every frozen component. A pure split-model installation may have no checkpoint choices. Shell, Python/script/process execution, network/download/webhook/fetch nodes, commands, unknown custom nodes, unbound parameters, and resource overruns are rejected.
+ComfyUI ships reviewed `sd15-txt2img-v1`, `sdxl-txt2img-v1`, `sdxl-regional-txt2img-v1`, `z-image-turbo-txt2img-v1`, and `anima-txt2img-v1` workflow files. Discovery distinguishes `CheckpointLoaderSimple`, `UNETLoader`, `CLIPLoader`, and `VAELoader`. A private backend-bound route may still bind only the primary loader, but public-evidence eligibility for a split workflow requires current API identities plus filesystem SHA-256 identities for every frozen component. A pure split-model installation may have no checkpoint choices. Shell, Python/script/process execution, network/download/webhook/fetch nodes, commands, unknown custom nodes, unbound parameters, and resource overruns are rejected.
 
 The workflow files do not include, install, trust, or license model weights. Z-Image and Anima still require exact local discovery, user approval, and a confirmed route. Anima is an optional anime route and must not be presented as a commercial or public-evidence default under its upstream weight restrictions. ComfyUI adapter: contract-tested; local Z-Image and Anima adapter executions: observed; public acceptance evidence: not retained.
 
@@ -325,7 +328,7 @@ python -m unittest discover -s tests -v
 python .\scripts\verify_mcp.py
 ```
 
-Coverage includes protocol initialization/listing/ping, the exact fifteen-tool contract, bounded discovery/trust/routing, WebUI and ComfyUI adapter contracts, durable root/child transitions, mask confirmation, idempotency, stale-attempt recovery, atomic publication, bounded preview handling, the mocked/model-free anime loop, all nine fixed briefs and three child revisions, fake-runner postprocessing, and download policy.
+Coverage includes protocol initialization/listing/ping, the exact fifteen-tool contract, bounded discovery/trust/routing, WebUI and ComfyUI adapter contracts, durable root/child transitions, fixed two-region SDXL route/conditioning/exhaustion behavior, mask confirmation, idempotency, stale-attempt recovery, atomic publication, bounded preview handling, the mocked/model-free anime loop, all nine fixed briefs and three child revisions, fake-runner postprocessing, and download policy.
 
 ## Project Status
 
@@ -340,6 +343,7 @@ Verified:
 - contract-tested WebUI and ComfyUI adapter success/failure paths
 - durable manifest transitions, idempotency, recovery, review, finalization, and cleanup contracts
 - three Profile contracts plus immutable preserve/change child runs and confirmed geometry/user masks
+- fixed copy/subject geometry, regional conditioning, route drift rejection, and a two-round model-free regional vertical slice
 - a fake-backend contract matrix covering nine fixed briefs and three child revisions
 - local-only Diffusers hub policy by default
 - installable `serve`, `doctor`, `verify`, `config`, and read-only-by-default `setup` CLI contracts, including an isolated wheel smoke test

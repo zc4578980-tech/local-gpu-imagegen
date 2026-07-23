@@ -15,6 +15,7 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 | `TrustRegistry` | Stores exact private/public-candidate approvals and observations in user-local atomic state | Acceptance authority or repository metadata |
 | `ModelCatalog` / `CapabilityRouter` | Merge current inventory/trust/readiness and issue one deterministic frozen route plus at most two alternatives | Silent fallback or weakened hard requirements |
 | `WorkflowTemplateRegistry` | Validates, copies, hashes, and resolves reviewed ComfyUI graphs | Arbitrary custom-node execution |
+| `regional_layout.py` | Normalizes one copy region plus one subject region and validates their conditioning contract | Arbitrary region graphs or visual-quality judgment |
 | `BackendRegistry` | Dispatches exact WebUI/ComfyUI adapters and the Diffusers compatibility runner | Route selection |
 | `AssetRunEngine` | Confirmed root/child orchestration, edit-mode mapping, previews, review, and final publication | Filesystem locking details |
 | `RunStore` | Atomic manifest updates, attempt ownership, idempotency, recovery, and cleanup | Backend execution |
@@ -35,8 +36,8 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 5. `local_gpu_discover_models` freezes an `api_only`, `selected_folders`, `common_locations`, or `full_drive` plan. Broader scopes execute only after exact confirmation.
 6. Discovery `index` reads bounded metadata without loading weights; `fingerprint` hashes only selected indexed candidates. Trust changes require a separate exact confirmation and write only user-local state.
 7. `local_gpu_list_profiles` merges repository templates, current inventory, trust, workflow availability, and readiness for `private` or `public_evidence` scope.
-8. `local_gpu_recommend_models` applies hard capability filters and returns one route plus at most two alternatives. The Agent displays the exact route and obtains a new post-display confirmation.
-9. `AssetRunEngine` consumes the single-use `route_token`, persists endpoint/model/workflow/compiler identity, and rechecks it before backend work.
+8. `local_gpu_recommend_models` applies hard capability filters and returns one route plus at most two alternatives. A regional request also binds normalized copy/subject geometry to the reviewed `sdxl-regional-txt2img` capability. The Agent displays the exact route and obtains a new post-display confirmation.
+9. `AssetRunEngine` consumes the single-use `route_token`, persists endpoint/model/workflow/compiler identity and any regional geometry, and rechecks them before backend work.
 10. Revision services copy the reviewed parent source or validate a confirmed mask; a child inherits the parent route and cannot override it.
 11. The exact WebUI, ComfyUI, or Diffusers compatibility adapter returns one normalized result. Only a validated PNG and matching identity consume a successful round.
 12. Structured data is returned as MCP `structuredContent` plus text content; tool failures use `isError: true`, while protocol failures use JSON-RPC error envelopes.
@@ -56,6 +57,12 @@ The client then creates a `selected_folders` `fingerprint` plan whose `selected_
 `TrustRegistry` defaults to the OS user-state directory and can be moved with `LOCAL_GPU_IMAGEGEN_STATE_DIR`. `backend_binding` identifies only the model currently reported by one endpoint and remains `private`. For reviewed split workflows, a non-mutating inspection joins current ComfyUI loader identities to explicitly fingerprinted filesystem identities, then hashes the primary model, text encoder, VAE, and workflow identity into one canonical component bundle. The bundle digest is frozen in trust confirmation, catalog resolution, route tokens, manifests, and public evidence. Public candidacy additionally requires component-by-component source/license/redistribution metadata and still cannot bypass acceptance authority.
 
 A route freezes authorization scope, backend, endpoint identity, model ID and identity token, workflow/template version, prompt compiler/version, operation, dimensions, and normalized requirements. The route is part of run idempotency. Identity drift, compiler drift, or a backend result that reports another route fails before a successful round is retained. Root and child runs enforce no silent model switch.
+
+## Regional Layout Contract
+
+The optional `copy-subject-v1` contract contains exactly one normalized `copy_region` and one non-overlapping `subject_region`. Each rectangle uses bounded `x`, `y`, `width`, and `height` fractions. Recommendation binds that geometry to the `sdxl-regional-txt2img` route and a reviewed two-conditioning ComfyUI graph; the standard `sdxl-txt2img` route rejects regional data.
+
+After the Agent displays decimals, percentages, regional prompts/strengths, route identity, dimensions, policies, and budget, a later confirmation authorizes the run. The initial generation plan must reproduce the confirmed conditioning exactly. Later rounds may change regional prompts or strengths, while geometry remains frozen. Geometry drift, missing live node signatures, workflow drift, overlap, ambiguity, or a prompt-only fallback fails before attempt creation or backend invocation. This contract is verified through a deterministic fake-backend vertical slice; genuine GPU image quality and compliance with the requested composition remain unverified.
 
 ## Durable Run State
 
@@ -90,6 +97,7 @@ Run responses expose `recoverable_next_actions`, derived from persisted state. A
 | Discovery plan | plan expired or scope changed | `discovery_plan_expired` or `discovery_plan_changed`; no scan starts |
 | Endpoint policy | public endpoint or unconfirmed LAN transmission | `public_endpoint_rejected` or `network_scan_confirmation_required` |
 | Capability route | no hard-match model or stale route | `no_eligible_model`, `route_confirmation_expired`, or `model_identity_drifted` |
+| Regional route | overlap, unavailable live signatures, geometry drift, or wrong template | `invalid_regional_layout`, `regional_layout_unavailable`, `generation_plan_mismatch`, or `invalid_regional_conditioning`; no attempt starts |
 | ComfyUI workflow | unknown/unsafe node, binding, or changed registered copy | `invalid_workflow_template` or `workflow_registration_drifted` |
 | ComfyUI job | submission, timeout, disappearance, rejection, or cancel | distinct `comfyui_*` result/error states; no fabricated success |
 | Readiness state | CUDA/WebUI not ready | successful tool result with `ready: false` |
@@ -106,7 +114,7 @@ Readiness is deliberately separated from execution failure. A healthy diagnostic
 
 High-level runs require an exact current discovery identity, the requested trust/authority scope, and a confirmed route. No model weights are bundled. The repository template `civitai/anything-v5@30163` describes one reviewed existing local WebUI checkpoint; other models require explicit user-local trust and do not become public-evidence authority merely because a backend reports them. Model quality still comes from the user's model.
 
-The ComfyUI adapter executes the shipped `sd15-txt2img-v1`, `sdxl-txt2img-v1`, `z-image-turbo-txt2img-v1`, and `anima-txt2img-v1` workflows or a normalized local copy that passes the same allowlist. Primary model identity is bound to either `CheckpointLoaderSimple.ckpt_name` or `UNETLoader.unet_name`, including the loader identity in discovery and route tokens. The split-model templates pin reviewed `CLIPLoader`, `VAELoader`, conditioning, latent, sampling, decode, and output nodes. Shell, Python, script/process, command execution, HTTP/download/fetch/webhook behavior, unknown custom nodes, unbound fields, traversal paths, and resource overruns are rejected before submission.
+The ComfyUI adapter executes the shipped `sd15-txt2img-v1`, `sdxl-txt2img-v1`, `sdxl-regional-txt2img-v1`, `z-image-turbo-txt2img-v1`, and `anima-txt2img-v1` workflows or a normalized local copy that passes the same allowlist. Primary model identity is bound to either `CheckpointLoaderSimple.ckpt_name` or `UNETLoader.unet_name`, including the loader identity in discovery and route tokens. The split-model templates pin reviewed `CLIPLoader`, `VAELoader`, conditioning, latent, sampling, decode, and output nodes. The regional template additionally requires its exact live node signatures and binds the two fixed conditioning regions. Shell, Python, script/process, command execution, HTTP/download/fetch/webhook behavior, unknown custom nodes, unbound fields, traversal paths, and resource overruns are rejected before submission.
 
 The templates grant no model trust or license authority and do not install weights. Local development validation retained successful project-adapter calls for Z-Image and Anima; those two calls are not public acceptance evidence and do not prove visual quality, portability, commercial rights, or the complete 9+3 matrix.
 
@@ -126,4 +134,4 @@ Success preserves the original `final.png`, atomically publishes `final-upscaled
 
 The server implements the narrow protocol surface it uses: initialize, ping, tools/list, and tools/call over newline-delimited stdio JSON-RPC. The public verification script launches this exact path without relying on an AI client, output directory, model, or GPU import. Named-client compatibility and release acceptance remain separate integration responsibilities.
 
-Public v0.6.1 contract evidence is Mocked/model-free. The deterministic matrix uses real registry/engine/store/revision/mask logic for nine fixed briefs and three child revisions, but fake backend and postprocessor boundaries; it is not real Codex, vision, model, GPU, or Real-ESRGAN acceptance evidence and does not prove visual quality. WebUI and ComfyUI adapters are contract-tested. The genuine SDXL demo and named-client records remain pending until their retained artifacts validate; no complete real 9+3 acceptance matrix is retained.
+Public v0.7.0 contract evidence is mocked/model-free. The deterministic matrix uses real registry/engine/store/revision/mask logic for nine fixed briefs and three child revisions, and the regional vertical slice uses the real catalog/router/engine/workflow registry across two exhausted rounds, but both use fake backend boundaries. This is not real Codex, vision, model, GPU, or Real-ESRGAN acceptance evidence and does not prove visual quality. WebUI and ComfyUI adapters are contract-tested. Genuine regional SDXL acceptance and named-client records remain pending until retained artifacts validate; no complete real 9+3 acceptance matrix is retained.
