@@ -30,6 +30,14 @@ class FakeAdapter:
     def generate(self, request: dict[str, object]) -> dict[str, object]:
         return {"backend": self.backend_id, "request": request}
 
+    def layout_capability(self, mode: str) -> dict[str, object]:
+        return {
+            "mode": mode,
+            "available": True,
+            "endpoint_identity": self.endpoint_identity,
+            "reason": None,
+        }
+
     def cancel_or_query(
         self,
         job_id: str,
@@ -147,6 +155,19 @@ class BoundedJsonClientTests(unittest.TestCase):
 
 
 class BackendRegistryTests(unittest.TestCase):
+    def test_general_layout_capability_preserves_regional_alias(self) -> None:
+        comfyui = FakeAdapter("comfyui")
+        registry = BackendRegistry([comfyui])
+
+        self.assertEqual(
+            registry.layout_capability("copy-subject-two-stage-v1"),
+            comfyui.layout_capability("copy-subject-two-stage-v1"),
+        )
+        self.assertEqual(
+            registry.regional_layout_capability("copy-subject-v1"),
+            comfyui.layout_capability("copy-subject-v1"),
+        )
+
     def test_dispatches_only_registered_adapters_or_explicit_compatibility_runners(self) -> None:
         webui = FakeAdapter("webui")
         registry = BackendRegistry(

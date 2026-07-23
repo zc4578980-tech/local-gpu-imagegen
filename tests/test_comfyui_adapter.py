@@ -22,6 +22,12 @@ from local_gpu_imagegen.errors import (  # noqa: E402
 )
 from local_gpu_imagegen.workflow_templates import WorkflowTemplateRegistry  # noqa: E402
 from tests.fake_backend_server import FakeBackendServer, FakeResponse  # noqa: E402
+from tests.test_two_stage_layout import exact_node_info  # noqa: E402
+from tests.test_workflow_templates import (  # noqa: E402
+    approved_two_stage_conditioning,
+    approved_two_stage_layout,
+    two_stage_parameters,
+)
 
 
 PNG_BYTES = base64.b64decode(
@@ -45,6 +51,10 @@ class ComfyUIAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.output = Path(self.temporary_directory.name) / "output.png"
+        self.two_stage_outputs = {
+            role: str(Path(self.temporary_directory.name) / f"{role}.pending.png")
+            for role in ("base", "mask", "final")
+        }
         self.server_context = FakeBackendServer()
         self.server = self.server_context.__enter__()
         self.server.routes[("GET", "/system_stats")] = FakeResponse.json({
@@ -167,6 +177,44 @@ class ComfyUIAdapterTests(unittest.TestCase):
             }
         })
 
+    def install_two_stage_object_info(self) -> None:
+        for class_name, document in exact_node_info().items():
+            self.server.routes[("GET", f"/object_info/{class_name}")] = (
+                FakeResponse.json({class_name: document})
+            )
+
+    @staticmethod
+    def three_output_history() -> dict[str, object]:
+        return {
+            "prompt-1": {
+                "status": {"status_str": "success", "completed": True},
+                "outputs": {
+                    node_id: {
+                        "images": [{
+                            "filename": f"{role}.png",
+                            "subfolder": "",
+                            "type": "output",
+                        }]
+                    }
+                    for role, node_id in {
+                        "base": "19",
+                        "mask": "20",
+                        "final": "21",
+                    }.items()
+                },
+            }
+        }
+
+    def install_three_output_result(self) -> None:
+        self.server.routes[("GET", "/history/prompt-1")] = FakeResponse.json(
+            self.three_output_history()
+        )
+        for role in ("base", "mask", "final"):
+            self.server.routes[(
+                "GET",
+                f"/view?filename={role}.png&subfolder=&type=output",
+            )] = FakeResponse(body=PNG_BYTES, headers={"Content-Type": "image/png"})
+
     @staticmethod
     def regional_layout() -> dict[str, object]:
         return {
@@ -220,6 +268,29 @@ class ComfyUIAdapterTests(unittest.TestCase):
             workflow=workflow,
             regional_layout=layout,
             regional_conditioning=conditioning,
+            prompt_compiler_id="natural-v1",
+            **settings,
+            **changes,
+        )
+
+    def two_stage_request(self, **changes: object) -> dict[str, object]:
+        layout = approved_two_stage_layout()
+        conditioning = approved_two_stage_conditioning()
+        settings = two_stage_parameters()
+        workflow = self.registry.resolve(
+            "sdxl-two-stage-copy-subject",
+            MODEL,
+            "txt2img",
+            settings,
+            two_stage_layout=layout,
+            two_stage_conditioning=conditioning,
+        )
+        return self.request(
+            workflow=workflow,
+            two_stage_layout=layout,
+            two_stage_conditioning=conditioning,
+            output_path=self.two_stage_outputs["final"],
+            output_paths=copy.deepcopy(self.two_stage_outputs),
             prompt_compiler_id="natural-v1",
             **settings,
             **changes,
@@ -287,7 +358,7 @@ class ComfyUIAdapterTests(unittest.TestCase):
     def test_regional_capability_requires_both_exact_required_signatures(self) -> None:
         self.install_regional_object_info()
 
-        available = self.adapter.regional_layout_capability("copy-subject-v1")
+        available = self.adapter.layout_capability("copy-subject-v1")
 
         self.assertEqual(available, {
             "mode": "copy-subject-v1",
@@ -301,7 +372,7 @@ class ComfyUIAdapterTests(unittest.TestCase):
         drifted.body = drifted.body.replace(b"conditioning_2", b"conditioning_x")
         self.server.routes[("GET", "/object_info/ConditioningCombine")] = drifted
 
-        unavailable = self.adapter.regional_layout_capability("copy-subject-v1")
+        unavailable = self.adapter.layout_capability("copy-subject-v1")
 
         self.assertFalse(unavailable["available"])
         self.assertEqual(unavailable["reason"], "regional_layout_unavailable")
@@ -323,11 +394,111 @@ class ComfyUIAdapterTests(unittest.TestCase):
         )
 
     def test_unsupported_regional_mode_does_not_probe_comfyui(self) -> None:
-        result = self.adapter.regional_layout_capability("arbitrary-regions")
+        result = self.adapter.layout_capability("arbitrary-regions")
 
         self.assertEqual(result["reason"], "unsupported_layout_mode")
         self.assertFalse(result["available"])
         self.assertEqual(self.server.requests, [])
+
+    def test_two_stage_capability_requires_all_six_exact_live_signatures(self) -> None:
+        self.install_two_stage_object_info()
+
+        result = self.adapter.layout_capability("copy-subject-two-stage-v1")
+
+        self.assertEqual(result, {
+            "mode": "copy-subject-two-stage-v1",
+            "available": True,
+            "endpoint_identity": self.adapter.endpoint_identity,
+            "reason": None,
+        })
+        del self.server.routes[("GET", "/object_info/MaskToImage")]
+
+        unavailable = self.adapter.layout_capability("copy-subject-two-stage-v1")
+
+        self.assertFalse(unavailable["available"])
+
+    def test_two_stage_generate_rechecks_before_prompt_submission(self) -> None:
+        self.install_two_stage_object_info()
+        document = exact_node_info()["ImageCompositeMasked"]
+        required = document["input"]["required"]
+        required["resize_image"] = required.pop("resize_source")
+        self.server.routes[(
+            "GET",
+            "/object_info/ImageCompositeMasked",
+        )] = FakeResponse.json({"ImageCompositeMasked": document})
+
+        with self.assertRaisesRegex(ConflictError, "two_stage_layout_drifted"):
+            self.adapter.generate(self.two_stage_request())
+
+        self.assertFalse(any(item["path"] == "/prompt" for item in self.server.requests))
+
+    def test_two_stage_generate_downloads_exact_role_outputs(self) -> None:
+        self.install_two_stage_object_info()
+        self.install_three_output_result()
+        request = self.two_stage_request()
+
+        result = self.adapter.generate(request)
+
+        self.assertEqual(set(result["stage_outputs"]), {"base", "final"})
+        self.assertEqual(result["subject_seed"], 2026072304)
+        self.assertEqual(
+            result["control_sha256"],
+            request["workflow"]["control_sha256"],
+        )
+        self.assertEqual(result["path"], result["stage_outputs"]["final"]["path"])
+        self.assertTrue(Path(result["stage_outputs"]["base"]["path"]).is_file())
+        self.assertTrue(Path(result["mask_output"]["path"]).is_file())
+        self.assertTrue(Path(result["stage_outputs"]["final"]["path"]).is_file())
+
+    def test_two_stage_history_rejects_missing_extra_duplicate_or_unsafe_roles(self) -> None:
+        self.install_two_stage_object_info()
+        valid = self.three_output_history()
+        missing = copy.deepcopy(valid)
+        del missing["prompt-1"]["outputs"]["20"]
+        extra = copy.deepcopy(valid)
+        extra["prompt-1"]["outputs"]["22"] = copy.deepcopy(
+            extra["prompt-1"]["outputs"]["21"]
+        )
+        duplicate = copy.deepcopy(valid)
+        duplicate["prompt-1"]["outputs"]["19"]["images"].append(
+            copy.deepcopy(duplicate["prompt-1"]["outputs"]["19"]["images"][0])
+        )
+        unsafe = copy.deepcopy(valid)
+        unsafe["prompt-1"]["outputs"]["21"]["images"][0]["filename"] = "../final.png"
+        for history in (missing, extra, duplicate, unsafe):
+            self.server.routes[("GET", "/history/prompt-1")] = FakeResponse.json(history)
+            self.server.requests.clear()
+            with self.subTest(history=history), self.assertRaisesRegex(
+                ArtifactError, "invalid_comfyui_output"
+            ):
+                self.adapter.generate(self.two_stage_request())
+
+    def test_two_stage_graph_and_request_drift_fail_before_submission(self) -> None:
+        self.install_two_stage_object_info()
+        requests: list[dict[str, object]] = []
+        mutations = (
+            lambda request: request["workflow"].update(template_version=2),
+            lambda request: request["workflow"].update(template_version=True),
+            lambda request: request["workflow"].update(control_sha256="f" * 64),
+            lambda request: request["workflow"]["graph"].update({
+                "22": copy.deepcopy(request["workflow"]["graph"]["21"]),
+            }),
+            lambda request: request["workflow"]["graph"]["7"]["inputs"].update(text="drifted"),
+            lambda request: request["workflow"]["graph"]["15"]["inputs"].update(seed=9),
+            lambda request: request["workflow"]["output_nodes"].update(mask="21"),
+        )
+        for mutate in mutations:
+            request = self.two_stage_request()
+            mutate(request)
+            requests.append(request)
+
+        for request in requests:
+            self.server.requests.clear()
+            with self.subTest(request=request), self.assertRaises(
+                (ConflictError, ValidationError)
+            ):
+                self.adapter.generate(request)
+            self.assertFalse(any(item["path"] == "/prompt" for item in self.server.requests))
 
     def test_discovery_uses_checkpoint_choices_without_mutation(self) -> None:
         records = self.adapter.discover()

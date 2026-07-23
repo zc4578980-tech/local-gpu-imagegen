@@ -28,6 +28,15 @@ from ..regional_layout import (
     validate_regional_layout,
     validate_regional_node_info,
 )
+from ..two_stage_layout import (
+    TWO_STAGE_LAYOUT_MODE,
+    TWO_STAGE_TEMPLATE_ID,
+    build_control_identity,
+    derive_subject_seed,
+    validate_two_stage_conditioning,
+    validate_two_stage_layout,
+    validate_two_stage_node_info,
+)
 from ..workflow_templates import (
     COMPONENT_LOADER_INPUTS,
     FORBIDDEN_TERMS,
@@ -39,6 +48,8 @@ from ..workflow_templates import (
     MODEL_LOADER_INPUTS,
     REGIONAL_NODE_INPUTS,
     SAFE_NODE_INPUTS,
+    TWO_STAGE_OUTPUT_NODES,
+    _validate_rendered_two_stage_workflow,
 )
 from .base import BoundedJsonClient
 
@@ -51,6 +62,14 @@ SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 MODES = frozenset({"txt2img", "img2img", "inpaint"})
 REGIONAL_SAFE_NODE_INPUTS = {**SAFE_NODE_INPUTS, **REGIONAL_NODE_INPUTS}
 DISAPPEARED_GRACE_POLLS = 4
+TWO_STAGE_LIVE_CLASSES = (
+    "VAEEncodeForInpaint",
+    "SolidMask",
+    "MaskComposite",
+    "FeatherMask",
+    "ImageCompositeMasked",
+    "MaskToImage",
+)
 
 
 class ComfyUIAdapter:
@@ -135,8 +154,8 @@ class ComfyUIAdapter:
                 records.append(record)
         return records
 
-    def regional_layout_capability(self, mode: str) -> dict[str, object]:
-        if mode != LAYOUT_MODE:
+    def layout_capability(self, mode: str) -> dict[str, object]:
+        if mode not in {LAYOUT_MODE, TWO_STAGE_LAYOUT_MODE}:
             return {
                 "mode": mode,
                 "available": False,
@@ -144,11 +163,19 @@ class ComfyUIAdapter:
                 "reason": "unsupported_layout_mode",
             }
         try:
-            area = self.client.get_json(
-                "/object_info/ConditioningSetAreaPercentage"
-            )
-            combine = self.client.get_json("/object_info/ConditioningCombine")
-            validate_regional_node_info(area, combine)
+            if mode == LAYOUT_MODE:
+                area = self.client.get_json(
+                    "/object_info/ConditioningSetAreaPercentage"
+                )
+                combine = self.client.get_json("/object_info/ConditioningCombine")
+                validate_regional_node_info(area, combine)
+            else:
+                node_info: dict[str, object] = {}
+                for class_name in TWO_STAGE_LIVE_CLASSES:
+                    value = self.client.get_json(f"/object_info/{class_name}")
+                    if isinstance(value, dict):
+                        node_info[class_name] = value.get(class_name)
+                validate_two_stage_node_info(node_info)
         except AssetEngineError as error:
             return {
                 "mode": mode,
@@ -165,12 +192,20 @@ class ComfyUIAdapter:
 
     def generate(self, request: dict[str, object]) -> dict[str, object]:
         normalized = _validate_request(request, self.endpoint_identity)
-        if normalized["workflow"].get("layout_mode") == LAYOUT_MODE:
-            capability = self.regional_layout_capability(LAYOUT_MODE)
+        layout_mode = normalized["workflow"].get("layout_mode")
+        if layout_mode == LAYOUT_MODE:
+            capability = self.layout_capability(LAYOUT_MODE)
             if capability["available"] is not True:
                 raise ConflictError(
                     "regional_layout_drifted",
                     "Required ComfyUI regional nodes changed before submission.",
+                )
+        elif layout_mode == TWO_STAGE_LAYOUT_MODE:
+            capability = self.layout_capability(TWO_STAGE_LAYOUT_MODE)
+            if capability["available"] is not True:
+                raise ConflictError(
+                    "two_stage_layout_drifted",
+                    "Required ComfyUI two-stage nodes changed before submission.",
                 )
         submitted = self.client.post_json(
             "/prompt",
@@ -181,19 +216,10 @@ class ComfyUIAdapter:
         )
         job_id = _require_job_id(submitted)
         history = self._poll(job_id)
-        output = _owned_output(
-            history,
-            job_id,
-            str(normalized["workflow"]["output_node"]),
-        )
-        image = self.client.get_bytes(_view_path(output), max_bytes=MAX_IMAGE_BYTES)
-        output_path = Path(str(normalized["output_path"]))
-        _write_validated_png(output_path, image)
         model = normalized["model"]
         workflow = normalized["workflow"]
-        return {
+        result = {
             "ok": True,
-            "path": str(output_path.absolute()),
             "backend": self.backend_id,
             "mode": normalized["mode"],
             "model": model["backend_model_id"],
@@ -213,6 +239,40 @@ class ComfyUIAdapter:
             "scheduler": normalized["scheduler"],
             "seed": normalized["seed"],
         }
+        if layout_mode == TWO_STAGE_LAYOUT_MODE:
+            roles = _owned_outputs(history, job_id, workflow["output_nodes"])
+            output_paths = normalized["output_paths"]
+            written: dict[str, dict[str, str]] = {}
+            for role in ("base", "mask", "final"):
+                image = self.client.get_bytes(
+                    _view_path(roles[role]),
+                    max_bytes=MAX_IMAGE_BYTES,
+                )
+                output_path = Path(output_paths[role])
+                _write_validated_png(output_path, image)
+                written[role] = {"path": str(output_path.absolute())}
+            result.update({
+                "path": written["final"]["path"],
+                "stage_outputs": {
+                    "base": written["base"],
+                    "final": written["final"],
+                },
+                "mask_output": written["mask"],
+                "subject_seed": derive_subject_seed(normalized["seed"]),
+                "control_sha256": workflow["control_sha256"],
+            })
+            return result
+
+        output = _owned_output(
+            history,
+            job_id,
+            str(workflow["output_node"]),
+        )
+        image = self.client.get_bytes(_view_path(output), max_bytes=MAX_IMAGE_BYTES)
+        output_path = Path(str(normalized["output_path"]))
+        _write_validated_png(output_path, image)
+        result["path"] = str(output_path.absolute())
+        return result
 
     def cancel_or_query(
         self,
@@ -403,6 +463,38 @@ def _validate_request(value: object, endpoint_identity: str) -> dict[str, object
     result = copy.deepcopy(value)
     result["model"] = model
     result["workflow"] = workflow
+    if workflow.get("layout_mode") == TWO_STAGE_LAYOUT_MODE:
+        output_paths = value.get("output_paths")
+        if (
+            not isinstance(output_paths, dict)
+            or set(output_paths) != {"base", "mask", "final"}
+            or any(
+                not isinstance(output_paths[role], str)
+                or not output_paths[role].strip()
+                for role in ("base", "mask", "final")
+            )
+        ):
+            raise ValidationError(
+                "invalid_backend_request",
+                "Two-stage ComfyUI output paths are invalid.",
+            )
+        identities = {
+            str(Path(output_paths[role]).resolve())
+            for role in ("base", "mask", "final")
+        }
+        if (
+            len(identities) != 3
+            or Path(str(value["output_path"])).resolve()
+            != Path(output_paths["final"]).resolve()
+        ):
+            raise ValidationError(
+                "invalid_backend_request",
+                "Two-stage ComfyUI output paths must be distinct and final-bound.",
+            )
+        result["output_paths"] = {
+            role: output_paths[role]
+            for role in ("base", "mask", "final")
+        }
     return result
 
 
@@ -411,6 +503,17 @@ def _validate_resolved_workflow(
     model: dict[str, object],
     request: dict[str, object],
 ) -> dict[str, object]:
+    is_two_stage = (
+        isinstance(value, dict)
+        and (
+            value.get("template_id") == TWO_STAGE_TEMPLATE_ID
+            or value.get("layout_mode") == TWO_STAGE_LAYOUT_MODE
+            or "output_nodes" in value
+            or "control_sha256" in value
+        )
+    )
+    if is_two_stage:
+        return _validate_resolved_two_stage_workflow(value, model, request)
     required = {
         "template_id",
         "template_version",
@@ -607,6 +710,114 @@ def _validate_resolved_workflow(
         raise ConflictError(
             "workflow_parameter_mismatch",
             "Resolved ComfyUI prompts do not match confirmed prompts.",
+        )
+    return copy.deepcopy(value)
+
+
+def _validate_resolved_two_stage_workflow(
+    value: object,
+    model: dict[str, object],
+    request: dict[str, object],
+) -> dict[str, object]:
+    fields = {
+        "template_id",
+        "template_version",
+        "workflow_sha256",
+        "operation",
+        "model_family",
+        "output_nodes",
+        "graph",
+        "layout_mode",
+        "control_sha256",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValidationError(
+            "unsafe_comfy_workflow",
+            "Resolved two-stage ComfyUI workflow fields are invalid.",
+        )
+    if (
+        value["template_id"] != TWO_STAGE_TEMPLATE_ID
+        or type(value["template_version"]) is not int
+        or value["template_version"] != 1
+        or value["layout_mode"] != TWO_STAGE_LAYOUT_MODE
+        or value["operation"] != request["mode"]
+        or value["operation"] != "txt2img"
+        or value["model_family"] != "sdxl"
+        or not isinstance(value["workflow_sha256"], str)
+        or SHA256_PATTERN.fullmatch(value["workflow_sha256"]) is None
+        or not isinstance(value["control_sha256"], str)
+        or SHA256_PATTERN.fullmatch(value["control_sha256"]) is None
+        or value["output_nodes"] != TWO_STAGE_OUTPUT_NODES
+    ):
+        raise ValidationError(
+            "unsafe_comfy_workflow",
+            "Resolved two-stage ComfyUI workflow metadata is invalid.",
+        )
+    if "regional_layout" in request or "regional_conditioning" in request:
+        raise ValidationError(
+            "invalid_two_stage_conditioning",
+            "Two-stage ComfyUI requests reject regional data.",
+        )
+    layout = validate_two_stage_layout(request.get("two_stage_layout"))
+    conditioning = validate_two_stage_conditioning(
+        request.get("two_stage_conditioning")
+    )
+    if (
+        request["width"] != layout["canvas"]["width"]
+        or request["height"] != layout["canvas"]["height"]
+        or value["control_sha256"]
+        != build_control_identity(
+            layout,
+            value["workflow_sha256"],
+            "base-subject-v1",
+        )
+    ):
+        raise ConflictError(
+            "workflow_parameter_mismatch",
+            "Resolved two-stage control does not match confirmed parameters.",
+        )
+    metadata = model.get("metadata")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("loader_class") != "CheckpointLoaderSimple"
+        or metadata.get("loader_input") != "ckpt_name"
+    ):
+        raise ConflictError(
+            "backend_model_mismatch",
+            "Resolved two-stage model binding is invalid.",
+        )
+    graph = value["graph"]
+    _validate_rendered_two_stage_workflow(
+        graph,
+        str(model["backend_model_id"]),
+        two_stage_layout=layout,
+    )
+    assert isinstance(graph, dict)
+    inputs = {node_id: node["inputs"] for node_id, node in graph.items()}
+    expected_base = {
+        "seed": request["seed"],
+        "steps": request["steps"],
+        "cfg": request["guidance_scale"],
+        "sampler_name": request["sampler"],
+        "scheduler": request["scheduler"],
+        "denoise": 1.0,
+    }
+    expected_subject = {
+        **expected_base,
+        "seed": derive_subject_seed(request["seed"]),
+        "denoise": conditioning["subject_denoise"],
+    }
+    if (
+        inputs["3"]["text"] != request["positive_prompt"]
+        or inputs["4"]["text"] != request["negative_prompt"]
+        or inputs["7"]["text"] != conditioning["subject_prompt"]
+        or inputs["8"]["text"] != conditioning["subject_negative_prompt"]
+        or any(inputs["5"].get(key) != expected for key, expected in expected_base.items())
+        or any(inputs["15"].get(key) != expected for key, expected in expected_subject.items())
+    ):
+        raise ConflictError(
+            "workflow_parameter_mismatch",
+            "Resolved two-stage graph does not match confirmed parameters.",
         )
     return copy.deepcopy(value)
 
@@ -918,11 +1129,58 @@ def _owned_output(
     job_id: str,
     output_node: str,
 ) -> dict[str, str]:
+    outputs = _history_outputs(history, job_id)
+    if set(outputs) != {output_node}:
+        raise ArtifactError(
+            "invalid_comfyui_output",
+            "ComfyUI returned an unexpected output node.",
+            {"job_id": job_id},
+        )
+    return _one_owned_png(outputs[output_node], job_id)
+
+
+def _owned_outputs(
+    history: dict[str, object],
+    job_id: str,
+    roles: dict[str, str],
+) -> dict[str, dict[str, str]]:
+    if set(roles) != {"base", "mask", "final"} or len(set(roles.values())) != 3:
+        raise ArtifactError(
+            "invalid_comfyui_output",
+            "Two-stage output roles are invalid.",
+        )
+    outputs = _history_outputs(history, job_id)
+    if set(outputs) != set(roles.values()):
+        raise ArtifactError(
+            "invalid_comfyui_output",
+            "ComfyUI returned unexpected output nodes.",
+        )
+    return {
+        role: _one_owned_png(outputs[node_id], job_id)
+        for role, node_id in roles.items()
+    }
+
+
+def _history_outputs(
+    history: dict[str, object],
+    job_id: str,
+) -> dict[str, object]:
     try:
         outputs = history[job_id]["outputs"]
-        if not isinstance(outputs, dict) or set(outputs) != {output_node}:
-            raise TypeError("wrong output node")
-        images = outputs[output_node]["images"]
+        if not isinstance(outputs, dict):
+            raise TypeError("wrong output object")
+        return outputs
+    except (KeyError, TypeError) as error:
+        raise ArtifactError(
+            "invalid_comfyui_output",
+            "ComfyUI did not return owned outputs for the completed job.",
+            {"job_id": job_id},
+        ) from error
+
+
+def _one_owned_png(value: object, job_id: str) -> dict[str, str]:
+    try:
+        images = value["images"]
         if not isinstance(images, list) or len(images) != 1:
             raise TypeError("wrong image count")
         output = images[0]

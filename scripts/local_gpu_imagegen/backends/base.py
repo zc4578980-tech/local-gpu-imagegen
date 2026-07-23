@@ -36,7 +36,7 @@ class BackendAdapter(Protocol):
     def generate(self, request: dict[str, object]) -> dict[str, object]:
         raise NotImplementedError
 
-    def regional_layout_capability(self, mode: str) -> dict[str, object]:
+    def layout_capability(self, mode: str) -> dict[str, object]:
         raise NotImplementedError
 
     def cancel_or_query(
@@ -332,15 +332,15 @@ class BackendRegistry:
             records.extend(self.get(backend_id).discover())
         return records
 
-    def regional_layout_capability(self, mode: str) -> dict[str, object]:
+    def layout_capability(self, mode: str) -> dict[str, object]:
         adapter = self._adapters.get("comfyui")
-        capability = getattr(adapter, "regional_layout_capability", None)
+        capability = getattr(adapter, "layout_capability", None)
         if not callable(capability):
             return {
                 "mode": mode,
                 "available": False,
                 "endpoint_identity": None,
-                "reason": "regional_layout_unavailable",
+                "reason": _layout_unavailable_reason(mode),
             }
         result = capability(mode)
         if (
@@ -354,9 +354,12 @@ class BackendRegistry:
                 "mode": mode,
                 "available": False,
                 "endpoint_identity": getattr(adapter, "endpoint_identity", None),
-                "reason": "regional_layout_unavailable",
+                "reason": _layout_unavailable_reason(mode),
             }
         return dict(result)
+
+    def regional_layout_capability(self, mode: str) -> dict[str, object]:
+        return self.layout_capability(mode)
 
     def generate(self, request: dict[str, object]) -> dict[str, object]:
         backend_id = request.get("backend")
@@ -398,3 +401,11 @@ def _request_path(value: str) -> str:
             "Backend request path must stay on the frozen origin.",
         )
     return value
+
+
+def _layout_unavailable_reason(mode: str) -> str:
+    if mode == "copy-subject-v1":
+        return "regional_layout_unavailable"
+    if mode == "copy-subject-two-stage-v1":
+        return "two_stage_layout_unavailable"
+    return "unsupported_layout_mode"

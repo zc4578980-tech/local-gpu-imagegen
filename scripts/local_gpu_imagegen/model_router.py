@@ -37,6 +37,7 @@ class CapabilityRouter:
         catalog: object,
         compilers: PromptCompilerRegistry,
         *,
+        layout_capability_provider: Callable[[str], dict[str, object]] | None = None,
         regional_capability_provider: Callable[[str], dict[str, object]] | None = None,
         clock: Callable[[], float] = time.time,
         ttl_seconds: float = 300,
@@ -48,8 +49,17 @@ class CapabilityRouter:
             )
         if (
             (
+                layout_capability_provider is not None
+                and not callable(layout_capability_provider)
+            )
+            or (
                 regional_capability_provider is not None
                 and not callable(regional_capability_provider)
+            )
+            or (
+                layout_capability_provider is not None
+                and regional_capability_provider is not None
+                and layout_capability_provider is not regional_capability_provider
             )
             or not callable(clock)
             or not isinstance(ttl_seconds, (int, float))
@@ -62,7 +72,13 @@ class CapabilityRouter:
             )
         self.catalog = catalog
         self.compilers = compilers
-        self.regional_capability_provider = regional_capability_provider
+        provider = (
+            layout_capability_provider
+            if layout_capability_provider is not None
+            else regional_capability_provider
+        )
+        self.layout_capability_provider = provider
+        self.regional_capability_provider = provider
         self.clock = clock
         self.ttl_seconds = float(ttl_seconds)
         self._issued: dict[str, dict[str, object]] = {}
@@ -72,7 +88,7 @@ class CapabilityRouter:
         regional_capability = None
         regional_layout = normalized.get("regional_layout")
         if isinstance(regional_layout, dict):
-            regional_capability = self._regional_capability(
+            regional_capability = self._layout_capability(
                 str(regional_layout["mode"])
             )
             if regional_capability["available"] is not True:
@@ -108,8 +124,8 @@ class CapabilityRouter:
             "reason": None if routes else "no_eligible_model",
         }
 
-    def _regional_capability(self, mode: str) -> dict[str, object]:
-        provider = self.regional_capability_provider
+    def _layout_capability(self, mode: str) -> dict[str, object]:
+        provider = self.layout_capability_provider
         if provider is None:
             return {
                 "mode": mode,

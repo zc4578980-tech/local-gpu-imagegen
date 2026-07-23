@@ -70,7 +70,7 @@ def build_services(
     router = CapabilityRouter(
         catalog,
         compilers,
-        regional_capability_provider=backends.regional_layout_capability,
+        layout_capability_provider=backends.layout_capability,
     )
     engine = AssetRunEngine(
         ProfileRegistry(root / "profiles"),
