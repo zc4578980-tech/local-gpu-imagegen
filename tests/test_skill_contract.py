@@ -262,6 +262,21 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("change only regional prompts or strengths", self.text)
         self.assertIn("explicit_constraint_violation", self.text)
 
+    def test_single_pass_route_is_only_negative_evidence_and_never_substitutes_for_two_stage(self) -> None:
+        section = _section(
+            self.text,
+            "## Regional Copy-Subject Route",
+            "## Two-Stage Copy-Subject Route",
+        )
+        _assert_ordered(section, (
+            "`copy-subject-v1`",
+            "retained negative evidence",
+            "experimental compatibility",
+            "does not establish a visual-quality improvement",
+            "not a substitute or fallback for `sdxl-two-stage-copy-subject`",
+            "`sdxl-two-stage-copy-subject` is the required exact route for the controlled two-stage workflow",
+        ))
+
     def test_two_stage_route_teaches_exact_confirmation_generation_and_review_contract(self) -> None:
         section = _section(self.text, "## Two-Stage Copy-Subject Route", "## Run Sequence")
         _assert_ordered(section, (

@@ -75,7 +75,12 @@ Do not call `local_gpu_start_run` before that post-display confirmation.
 
 ## Regional Copy-Subject Route
 
-Use `copy-subject-v1` when the user requires one copy-safe region and one separated subject region. Follow this order:
+Use this decision contract before selecting a copy/subject route:
+
+- Use `copy-subject-v1` only for an ordinary separated-region request where the user accepts retained negative evidence and experimental compatibility. It does not establish a visual-quality improvement and is not a substitute or fallback for `sdxl-two-stage-copy-subject`.
+- When the request requires pixel-protected copy space, separate base/subject stages, or the controlled workflow below, `sdxl-two-stage-copy-subject` is the required exact route for the controlled two-stage workflow. Resolve that route or stop.
+
+When the decision selects the experimental single-pass route, follow this order:
 
 1. Ask only for missing copy side/size, subject side/size, regional prompt intent, `copy_strength`, `subject_strength`, and round budget.
 2. Normalize exactly one `copy_region` and one `subject_region`. Reject overlap, ambiguity, out-of-bounds geometry, or any additional region.
