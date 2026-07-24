@@ -592,6 +592,10 @@ def tool_schema() -> list[dict[str, Any]]:
                     "type": "string",
                     "enum": _shipped_workflow_template_ids(),
                 },
+                "registered_workflow_id": {
+                    "type": "string",
+                    "pattern": "^imported:[0-9a-f]{64}$",
+                },
                 "workflow_path": {"type": "string", "minLength": 1},
                 "workflow_binding": json_object,
                 "catalog_id": {
@@ -1122,14 +1126,26 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
                 "workflow_path and workflow_binding must be provided together.",
                 {"fields": ["workflow_path", "workflow_binding"]},
             )
-        if "workflow_template_id" in arguments and "workflow_path" in arguments:
+        workflow_sources = [
+            "workflow_template_id" in arguments,
+            "registered_workflow_id" in arguments,
+            "workflow_path" in arguments,
+        ]
+        if sum(workflow_sources) > 1:
             return tool_error(
                 "invalid_workflow_binding",
                 "validation",
-                "Choose either one shipped workflow template or one imported workflow, not both.",
-                {"fields": ["workflow_template_id", "workflow_path", "workflow_binding"]},
+                "Choose one shipped, registered, or legacy imported workflow source.",
+                {
+                    "fields": [
+                        "workflow_template_id",
+                        "registered_workflow_id",
+                        "workflow_path",
+                        "workflow_binding",
+                    ],
+                },
             )
-        has_workflow = "workflow_template_id" in arguments or "workflow_path" in arguments
+        has_workflow = any(workflow_sources)
         has_components = "component_identity_tokens" in arguments
         if has_components and not has_workflow:
             return tool_error(
@@ -1141,7 +1157,7 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
             return tool_error(
                 "invalid_component_bundle",
                 "Workflow inspection requires a reviewed workflow and selected component identities.",
-                {"fields": ["workflow_template_id", "workflow_path", "component_identity_tokens"]},
+                {"fields": ["workflow_template_id", "registered_workflow_id", "workflow_path", "component_identity_tokens"]},
             )
 
     if tool["name"] == "local_gpu_branch_run":
@@ -1519,6 +1535,45 @@ def _registered_workflow_binding(
     return trust_binding, public_registration, component_bundle
 
 
+def _registered_id_workflow_binding(
+    services: Any,
+    record: dict[str, object],
+    registered_workflow_id: str,
+    component_identity_tokens: list[str] | None,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    registered = services.workflows.load_registered(registered_workflow_id)
+    if component_identity_tokens is None:
+        raise AssetEngineError(
+            "invalid_component_bundle",
+            "Registered workflow trust requires exact selected component identities.",
+            "validation",
+        )
+    selected, component_bundle = _workflow_component_bundle(
+        services,
+        record,
+        registered["graph"],
+        registered,
+        component_identity_tokens,
+    )
+    trust_binding = {
+        "backend": "comfyui",
+        "endpoint_identity": selected["endpoint_identity"],
+        "backend_model_id": selected["backend_model_id"],
+        "backend_identity_token": identity_token(selected),
+        "template_id": registered["template_id"],
+        "template_version": registered["template_version"],
+        "workflow_sha256": registered["workflow_sha256"],
+        "component_bundle_sha256": component_bundle["bundle_sha256"],
+    }
+    public_registration = {
+        "source": "registered",
+        "template_id": registered["template_id"],
+        "template_version": registered["template_version"],
+        "workflow_sha256": registered["workflow_sha256"],
+    }
+    return trust_binding, public_registration, component_bundle
+
+
 def _shipped_workflow_binding(
     services: Any,
     record: dict[str, object],
@@ -1679,6 +1734,13 @@ def _trust_call(services: Any, arguments: dict[str, Any]) -> dict[str, object]:
             arguments["capabilities"],
             component_tokens,
             arguments.get("two_stage_layout"),
+        )
+    elif "registered_workflow_id" in arguments:
+        workflow_binding, registered_workflow, component_bundle = _registered_id_workflow_binding(
+            services,
+            record,
+            arguments["registered_workflow_id"],
+            component_tokens,
         )
     elif "workflow_path" in arguments:
         workflow_binding, registered_workflow, component_bundle = _registered_workflow_binding(

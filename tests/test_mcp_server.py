@@ -125,7 +125,7 @@ class McpServerUnitTests(unittest.TestCase):
             },
             "local_gpu_set_model_trust": {
                 "action", "identity_token", "confirmation", "capabilities", "public_metadata",
-                "workflow_template_id", "workflow_path", "workflow_binding", "preference",
+                "workflow_template_id", "registered_workflow_id", "workflow_path", "workflow_binding", "preference",
                 "component_identity_tokens", "catalog_id", "two_stage_layout",
             },
             "local_gpu_inspect_workflow": {"workflow_path"},
@@ -175,7 +175,7 @@ class McpServerUnitTests(unittest.TestCase):
                     },
                     "local_gpu_set_model_trust": {
                         "confirmation", "capabilities", "public_metadata", "workflow_template_id",
-                        "workflow_path", "workflow_binding", "preference", "component_identity_tokens",
+                        "registered_workflow_id", "workflow_path", "workflow_binding", "preference", "component_identity_tokens",
                         "catalog_id", "two_stage_layout",
                     },
                     "local_gpu_recommend_models": {"regional_layout", "two_stage_layout"},
@@ -700,6 +700,151 @@ class McpServerUnitTests(unittest.TestCase):
         self.assertTrue(registered["template_id"].startswith("imported:"))
         self.assertIsNone(bundle)
 
+    def test_registered_workflow_id_binds_exact_component_bundle(self) -> None:
+        registered = {
+            "template_id": "imported:" + "a" * 64,
+            "template_version": 1,
+            "workflow_sha256": "b" * 64,
+            "graph": {
+                "1": {
+                    "class_type": "UNETLoader",
+                    "inputs": {"unet_name": "z_image_turbo_nvfp4.safetensors"},
+                },
+                "2": {
+                    "class_type": "CLIPLoader",
+                    "inputs": {"clip_name": "qwen_3_4b_fp4.safetensors"},
+                },
+                "3": {
+                    "class_type": "VAELoader",
+                    "inputs": {"vae_name": "ae.safetensors"},
+                },
+            },
+        }
+        filesystem = [
+            {
+                "backend": "filesystem",
+                "endpoint_identity": "filesystem:E:/AI",
+                "backend_model_id": name,
+                "format": ".safetensors",
+                "byte_size": index,
+                "modified_ns": index,
+                "sha256": hex_digit * 64,
+                "identity_strength": "cryptographic",
+                "metadata": {},
+            }
+            for index, (name, hex_digit) in enumerate(
+                (
+                    ("z_image_turbo_nvfp4.safetensors", "1"),
+                    ("qwen_3_4b_fp4.safetensors", "2"),
+                    ("ae.safetensors", "3"),
+                ),
+                start=1,
+            )
+        ]
+        api = [
+            {
+                "backend": "comfyui",
+                "endpoint_identity": "endpoint:comfyui",
+                "backend_model_id": name,
+                "format": ".safetensors",
+                "byte_size": None,
+                "modified_ns": None,
+                "sha256": None,
+                "identity_strength": "backend_binding",
+                "metadata": {"loader_class": loader_class, "loader_input": loader_input},
+            }
+            for name, loader_class, loader_input in (
+                ("z_image_turbo_nvfp4.safetensors", "UNETLoader", "unet_name"),
+                ("qwen_3_4b_fp4.safetensors", "CLIPLoader", "clip_name"),
+                ("ae.safetensors", "VAELoader", "vae_name"),
+            )
+        ]
+        services = Mock()
+        services.discovery.inventory.return_value = [*filesystem, *api]
+        services.workflows.load_registered.return_value = registered
+
+        trust_binding, public_registration, bundle = mcp_server._registered_id_workflow_binding(
+            services,
+            filesystem[0],
+            registered["template_id"],
+            [mcp_server.identity_token(item) for item in filesystem],
+        )
+
+        services.workflows.load_registered.assert_called_once_with(registered["template_id"])
+        self.assertEqual(trust_binding["backend_model_id"], api[0]["backend_model_id"])
+        self.assertEqual(trust_binding["backend_identity_token"], mcp_server.identity_token(api[0]))
+        self.assertEqual(trust_binding["template_id"], registered["template_id"])
+        self.assertEqual(trust_binding["workflow_sha256"], registered["workflow_sha256"])
+        self.assertEqual(trust_binding["component_bundle_sha256"], bundle["bundle_sha256"])
+        self.assertEqual(public_registration["source"], "registered")
+        self.assertEqual(public_registration["template_id"], registered["template_id"])
+        self.assertEqual(bundle["workflow"]["template_id"], registered["template_id"])
+
+    def test_registered_workflow_id_trust_dispatch_uses_loaded_registration(self) -> None:
+        registered = {
+            "template_id": "imported:" + "a" * 64,
+            "template_version": 1,
+            "workflow_sha256": "b" * 64,
+            "graph": {
+                "1": {
+                    "class_type": "CheckpointLoaderSimple",
+                    "inputs": {"ckpt_name": "model.safetensors"},
+                },
+            },
+        }
+        filesystem = {
+            "backend": "filesystem",
+            "endpoint_identity": "filesystem:E:/AI",
+            "backend_model_id": "model.safetensors",
+            "format": ".safetensors",
+            "byte_size": 1,
+            "modified_ns": 1,
+            "sha256": "c" * 64,
+            "identity_strength": "cryptographic",
+            "metadata": {},
+        }
+        api = {
+            "backend": "comfyui",
+            "endpoint_identity": "endpoint:comfyui",
+            "backend_model_id": "model.safetensors",
+            "format": ".safetensors",
+            "byte_size": None,
+            "modified_ns": None,
+            "sha256": None,
+            "identity_strength": "backend_binding",
+            "metadata": {
+                "loader_class": "CheckpointLoaderSimple",
+                "loader_input": "ckpt_name",
+            },
+        }
+        services = Mock()
+        services.discovery.inventory.return_value = [filesystem, api]
+        services.workflows.load_registered.return_value = registered
+        services.trust.confirmation_value.side_effect = (
+            lambda action, *_args, **_kwargs: f"{action}:confirmed"
+        )
+        arguments = {
+            "action": "inspect_workflow_binding",
+            "identity_token": mcp_server.identity_token(filesystem),
+            "capabilities": {"operations": ["txt2img"]},
+            "registered_workflow_id": registered["template_id"],
+            "component_identity_tokens": [mcp_server.identity_token(filesystem)],
+        }
+
+        with patch.object(mcp_server, "get_runtime_services", return_value=services):
+            result = mcp_server.handle_tool_call({
+                "name": "local_gpu_set_model_trust",
+                "arguments": arguments,
+            })
+
+        self.assertFalse(result["isError"])
+        data = result["structuredContent"]
+        self.assertEqual(data["registered_workflow"]["source"], "registered")
+        self.assertEqual(data["registered_workflow"]["template_id"], registered["template_id"])
+        self.assertEqual(data["component_bundle"]["workflow"]["template_id"], registered["template_id"])
+        self.assertEqual(data["confirmations"]["approve_private"], "approve_private:confirmed")
+        services.workflows.load_registered.assert_called_once_with(registered["template_id"])
+
     def test_shipped_workflow_trust_binds_exact_unet_identity_without_import(self) -> None:
         record = {
             "backend": "comfyui",
@@ -1117,11 +1262,26 @@ class McpServerUnitTests(unittest.TestCase):
             "confirmation": "approve_private:model:test",
             "capabilities": {},
             "workflow_template_id": "z-image-turbo-txt2img",
+            "registered_workflow_id": "imported:" + "a" * 64,
             "workflow_path": "workflow.json",
             "workflow_binding": {},
         })
 
         self.assertEqual(error["structuredContent"]["error"]["code"], "invalid_workflow_binding")
+
+    def test_registered_workflow_id_requires_selected_components_for_trust(self) -> None:
+        tool = next(
+            item for item in mcp_server.tool_schema()
+            if item["name"] == "local_gpu_set_model_trust"
+        )
+        error = mcp_server.validate_tool_arguments(tool, {
+            "action": "inspect_workflow_binding",
+            "identity_token": "model:test",
+            "capabilities": {},
+            "registered_workflow_id": "imported:" + "a" * 64,
+        })
+
+        self.assertEqual(error["structuredContent"]["error"]["code"], "invalid_component_bundle")
 
     def test_start_run_rejects_empty_intent_before_engine_work(self) -> None:
         arguments = {
