@@ -52,7 +52,7 @@ API-only discovery (when current inventory is absent)
 -> separate local_gpu_set_model_trust with `registered_workflow_id`
 ```
 
-The supported graphs are single checkpoint or split model API workflows. Inspection displays `source_sha256`, `workflow_sha256`, and component identities; registration does not grant model trust. UI format, custom nodes, regional/two-stage onboarding, and implicit backend startup remain outside this path. The real-client onboarding evidence is pending.
+The supported graphs are single checkpoint or split model API workflows. Inspection displays `source_sha256`, `workflow_sha256`, and component identities; registration does not grant model trust. UI format, custom nodes, regional/two-stage onboarding, and implicit backend startup remain outside this path. Zero-GPU real-client onboarding evidence is retained, without prompt submission or GPU generation.
 
 ## Roll Back Client Setup
 

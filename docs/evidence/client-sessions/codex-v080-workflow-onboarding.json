@@ -1,0 +1,113 @@
+{
+  "schema_version": "1.0",
+  "evidence_class": "named_client_session",
+  "session_purpose": "workflow_onboarding",
+  "client": {
+    "name": "codex",
+    "version": "codex-cli 0.144.5",
+    "session_mode": "ephemeral"
+  },
+  "installed_wheel": true,
+  "hosted_client_session": true,
+  "server": {
+    "name": "local-gpu-imagegen",
+    "version": "0.8.0",
+    "protocol_version": "2024-11-05",
+    "wheel_sha256": "563e1c06ca59ca5eac82264a2edfd74a9e00457aa9427fabd3c04466d78a09bf"
+  },
+  "started_at": "2026-07-24T16:10:50.000Z",
+  "completed_at": "2026-07-24T16:10:56.500Z",
+  "tool_calls": [
+    {
+      "sequence": 1,
+      "name": "local_gpu_discover_models",
+      "result": {
+        "backend": "comfyui",
+        "candidate_count": 12,
+        "phase": "api_only_execute",
+        "target_identity_strength": "backend_binding",
+        "target_model_identity": "model:bf138fd524d2b0d788281b449aca74aa1963d92a31141ca3058ab1d050cfe4a6",
+        "target_model_present": true
+      },
+      "result_sha256": "abd936c38bb95c6c46a7f7f6af78cbdf5c413bed2ad328700ab482b35dcbe087"
+    },
+    {
+      "sequence": 2,
+      "name": "local_gpu_inspect_workflow",
+      "result": {
+        "component_identities": [
+          "model:bf138fd524d2b0d788281b449aca74aa1963d92a31141ca3058ab1d050cfe4a6"
+        ],
+        "confirmation_sha256": "7f5c49f0fa9c2cf7f41afc76012ee35b996ab1700f099cbb85e2693449592aa1",
+        "proposal_digest": "ef78046ca32d20eece9d60560804b64b69303b3568acbe673965d432a57eacfa",
+        "registrable": true,
+        "source_sha256": "3c856060552c4ff286f30a50612fc234953d973454d950b399dec797965e7305",
+        "status": "registerable",
+        "topology": "single_checkpoint",
+        "workflow_sha256": "f314f0219fb9da189cad0a81a1f390d543e572c23a6da631964dcc4203efbc47"
+      },
+      "result_sha256": "ec699db50d7594fea3a261b9d378f96d0eeb9d8eff64658d576af6827874671c"
+    },
+    {
+      "sequence": 3,
+      "name": "local_gpu_discover_models",
+      "result": {
+        "candidate_count": 1,
+        "phase": "selected_fingerprint_execute",
+        "target_byte_size": 6938078334,
+        "target_identity_strength": "cryptographic",
+        "target_model_identity": "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4f97a5",
+        "target_model_present": true,
+        "target_sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b"
+      },
+      "result_sha256": "f9eb3a3490062f37b796f6fe6af6429a6eb725fbf7018a2a64dbd8798c28d5e3"
+    },
+    {
+      "sequence": 4,
+      "name": "local_gpu_register_workflow",
+      "result": {
+        "registered_workflow_id": "imported:f314f0219fb9da189cad0a81a1f390d543e572c23a6da631964dcc4203efbc47",
+        "source_sha256": "3c856060552c4ff286f30a50612fc234953d973454d950b399dec797965e7305",
+        "template_version": 1,
+        "topology": "single_checkpoint",
+        "workflow_sha256": "f314f0219fb9da189cad0a81a1f390d543e572c23a6da631964dcc4203efbc47"
+      },
+      "result_sha256": "d2ae437e79199c6efc1e45ec2e7027e8f2117375e475d87dcbfaa9151f9ca131"
+    },
+    {
+      "sequence": 5,
+      "name": "local_gpu_set_model_trust",
+      "result": {
+        "action": "inspect_workflow_binding",
+        "approve_private_confirmation_sha256": "6b39693b245859f38fa08fc987c74afd245c837446f2c5981ff21f113a134ad3",
+        "component_bundle_sha256": "3f3759079974e594985ee1b8e50f4edeaef7814e0e68bef69594073f27290e63",
+        "model_identity": "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4f97a5",
+        "registered_workflow_id": "imported:f314f0219fb9da189cad0a81a1f390d543e572c23a6da631964dcc4203efbc47",
+        "workflow_sha256": "f314f0219fb9da189cad0a81a1f390d543e572c23a6da631964dcc4203efbc47"
+      },
+      "result_sha256": "4362419c7a85bf2319ac16210e39843a046b96d1e66c30e728454690eb477a2a"
+    },
+    {
+      "sequence": 6,
+      "name": "local_gpu_set_model_trust",
+      "result": {
+        "action": "approve_private",
+        "catalog_id": "local:cbfdd02bcbb2fcd98dcf919b",
+        "component_bundle_sha256": "3f3759079974e594985ee1b8e50f4edeaef7814e0e68bef69594073f27290e63",
+        "identity_strength": "cryptographic",
+        "model_identity": "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4f97a5",
+        "registered_workflow_id": "imported:f314f0219fb9da189cad0a81a1f390d543e572c23a6da631964dcc4203efbc47",
+        "scope": "private",
+        "workflow_sha256": "f314f0219fb9da189cad0a81a1f390d543e572c23a6da631964dcc4203efbc47"
+      },
+      "result_sha256": "9ae46e23227a48b274563dc21a9cafc3cccbfbcb42703c5ea2b5994c3750a687"
+    }
+  ],
+  "sanitization": {
+    "prompts_omitted": true,
+    "account_identifiers_omitted": true,
+    "credentials_omitted": true,
+    "machine_paths_omitted": true,
+    "raw_transcript_retained": false
+  }
+}

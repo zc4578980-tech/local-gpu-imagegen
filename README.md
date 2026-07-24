@@ -189,7 +189,7 @@ API-only discovery (when current inventory is absent)
 -> separate local_gpu_set_model_trust with `registered_workflow_id`
 ```
 
-Inspection reads one explicit local JSON file, accepts a bare API graph or a unique `prompt` wrapper, and reports `source_sha256`, `workflow_sha256`, topology, inferred binding, owned output, and component identities. Registerable results include `register_workflow:<source_sha256>:<proposal_digest>`; diagnostic results have no confirmation. UI format is not converted; registration does not grant model trust or public authority, and real-client onboarding evidence is pending.
+Inspection reads one explicit local JSON file, accepts a bare API graph or a unique `prompt` wrapper, and reports `source_sha256`, `workflow_sha256`, topology, inferred binding, owned output, and component identities. Registerable results include `register_workflow:<source_sha256>:<proposal_digest>`; diagnostic results have no confirmation. UI format is not converted; registration does not grant model trust or public authority. Zero-GPU real-client onboarding evidence is retained; generation evidence remains separate.
 
 No model weights are bundled. The repository catalog includes the auditable ID `civitai/anything-v5@30163` for an already reviewed local WebUI checkpoint, and downloads remain unapproved. Other local models can enter the private catalog only through discovery and explicit trust; model quality still comes from the user's model. This project adds safer routing, durable review, and hot revision rather than claiming a superior prompt translator.
 

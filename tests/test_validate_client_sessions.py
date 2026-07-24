@@ -88,6 +88,92 @@ def valid_session(
                 },
             ),
         ]
+    if purpose == "workflow_onboarding":
+        document["server"]["version"] = "0.8.0"
+        workflow_sha256 = "f" * 64
+        source_sha256 = "e" * 64
+        registered_id = f"imported:{workflow_sha256}"
+        api_identity = "model:" + "a" * 64
+        filesystem_identity = "model:" + "b" * 64
+        bundle_sha256 = "c" * 64
+        document["tool_calls"] = [
+            tool_call(
+                1,
+                "local_gpu_discover_models",
+                {
+                    "phase": "api_only_execute",
+                    "backend": "comfyui",
+                    "target_model_present": True,
+                    "candidate_count": 12,
+                    "target_identity_strength": "backend_binding",
+                    "target_model_identity": api_identity,
+                },
+            ),
+            tool_call(
+                2,
+                "local_gpu_inspect_workflow",
+                {
+                    "status": "registerable",
+                    "registrable": True,
+                    "source_sha256": source_sha256,
+                    "workflow_sha256": workflow_sha256,
+                    "proposal_digest": "d" * 64,
+                    "confirmation_sha256": "1" * 64,
+                    "topology": "single_checkpoint",
+                    "component_identities": [api_identity],
+                },
+            ),
+            tool_call(
+                3,
+                "local_gpu_discover_models",
+                {
+                    "phase": "selected_fingerprint_execute",
+                    "target_model_present": True,
+                    "candidate_count": 1,
+                    "target_identity_strength": "cryptographic",
+                    "target_model_identity": filesystem_identity,
+                    "target_sha256": "2" * 64,
+                    "target_byte_size": 6938078334,
+                },
+            ),
+            tool_call(
+                4,
+                "local_gpu_register_workflow",
+                {
+                    "registered_workflow_id": registered_id,
+                    "template_version": 1,
+                    "source_sha256": source_sha256,
+                    "workflow_sha256": workflow_sha256,
+                    "topology": "single_checkpoint",
+                },
+            ),
+            tool_call(
+                5,
+                "local_gpu_set_model_trust",
+                {
+                    "action": "inspect_workflow_binding",
+                    "model_identity": filesystem_identity,
+                    "registered_workflow_id": registered_id,
+                    "workflow_sha256": workflow_sha256,
+                    "component_bundle_sha256": bundle_sha256,
+                    "approve_private_confirmation_sha256": "3" * 64,
+                },
+            ),
+            tool_call(
+                6,
+                "local_gpu_set_model_trust",
+                {
+                    "action": "approve_private",
+                    "catalog_id": "local:" + "4" * 24,
+                    "model_identity": filesystem_identity,
+                    "scope": "private",
+                    "identity_strength": "cryptographic",
+                    "registered_workflow_id": registered_id,
+                    "workflow_sha256": workflow_sha256,
+                    "component_bundle_sha256": bundle_sha256,
+                },
+            ),
+        ]
     return document
 
 
@@ -142,6 +228,17 @@ class ClientSessionEvidenceTests(unittest.TestCase):
             [],
         )
 
+    def test_accepts_workflow_onboarding_zero_gpu_sequence(self) -> None:
+        from validate_client_sessions import validate_session
+
+        self.assertEqual(
+            validate_session(
+                valid_session("codex", "workflow_onboarding"),
+                expected_server_version="0.8.0",
+            ),
+            [],
+        )
+
     def test_rejects_invalid_purpose_and_missing_golden_generation_calls(self) -> None:
         from validate_client_sessions import validate_session
 
@@ -189,6 +286,63 @@ class ClientSessionEvidenceTests(unittest.TestCase):
                     "invalid_golden_generation_result",
                     validate_session(document, expected_server_version="0.7.0"),
                 )
+
+    def test_rejects_workflow_onboarding_reordered_or_generation_sequence(self) -> None:
+        from validate_client_sessions import validate_session
+
+        document = valid_session("codex", "workflow_onboarding")
+        document["tool_calls"][3], document["tool_calls"][4] = (
+            document["tool_calls"][4],
+            document["tool_calls"][3],
+        )
+        for sequence, call in enumerate(document["tool_calls"], start=1):
+            call["sequence"] = sequence
+        self.assertIn(
+            "invalid_workflow_onboarding_sequence",
+            validate_session(document, expected_server_version="0.8.0"),
+        )
+
+        generated = valid_session("codex", "workflow_onboarding")
+        generated["tool_calls"][2] = tool_call(
+            3,
+            "local_gpu_generate_round",
+            {"run_id": "public-demo-run", "state": "generated", "round_number": 1, "image_sha256": "5" * 64},
+        )
+        self.assertIn(
+            "forbidden_workflow_onboarding_generation_call",
+            validate_session(generated, expected_server_version="0.8.0"),
+        )
+
+    def test_rejects_workflow_onboarding_drifted_hashes_and_trust_identity(self) -> None:
+        from validate_client_sessions import validate_session
+
+        document = valid_session("codex", "workflow_onboarding")
+        document["tool_calls"][3] = tool_call(
+            4,
+            "local_gpu_register_workflow",
+            {
+                **document["tool_calls"][3]["result"],
+                "workflow_sha256": "6" * 64,
+            },
+        )
+        self.assertIn(
+            "invalid_workflow_onboarding_registration",
+            validate_session(document, expected_server_version="0.8.0"),
+        )
+
+        document = valid_session("codex", "workflow_onboarding")
+        document["tool_calls"][5] = tool_call(
+            6,
+            "local_gpu_set_model_trust",
+            {
+                **document["tool_calls"][5]["result"],
+                "model_identity": "model:" + "7" * 64,
+            },
+        )
+        self.assertIn(
+            "invalid_workflow_onboarding_trust_approval",
+            validate_session(document, expected_server_version="0.8.0"),
+        )
 
     def test_release_set_requires_exact_named_clients_and_one_golden_session(self) -> None:
         valid = [
@@ -307,7 +461,7 @@ class ClientSessionEvidenceTests(unittest.TestCase):
         self.assertIn("session_purpose", schema["properties"])
         self.assertEqual(
             schema["properties"]["session_purpose"]["enum"],
-            ["compatibility", "golden_generation"],
+            ["compatibility", "golden_generation", "workflow_onboarding"],
         )
         self.assertIn("session_purpose", schema["required"])
         self.assertEqual(schema["properties"]["client"]["properties"]["name"]["enum"], ["codex", "claude-code"])

@@ -406,7 +406,7 @@ class PublicDocumentationTests(unittest.TestCase):
             "`workflow_sha256`",
             "`registered_workflow_id`",
             "registration does not grant model trust",
-            "real-client onboarding evidence is pending",
+            "Zero-GPU real-client onboarding evidence is retained",
         ):
             self.assertIn(required, public)
 

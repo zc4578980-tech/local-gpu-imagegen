@@ -43,10 +43,23 @@ SESSION_MODES = {
     "codex": "ephemeral",
     "claude-code": "no_session_persistence",
 }
-SESSION_PURPOSES = {"compatibility", "golden_generation"}
+SESSION_PURPOSES = {"compatibility", "golden_generation", "workflow_onboarding"}
 GOLDEN_GENERATION_TOOLS = {
     "local_gpu_start_run",
     "local_gpu_generate_round",
+}
+WORKFLOW_ONBOARDING_TOOLS = (
+    "local_gpu_discover_models",
+    "local_gpu_inspect_workflow",
+    "local_gpu_discover_models",
+    "local_gpu_register_workflow",
+    "local_gpu_set_model_trust",
+    "local_gpu_set_model_trust",
+)
+WORKFLOW_ONBOARDING_FORBIDDEN_TOOLS = {
+    "local_gpu_generate_image",
+    "local_gpu_generate_round",
+    "local_gpu_start_run",
 }
 RUN_LIFECYCLE_TOOLS = {
     "local_gpu_start_run",
@@ -221,6 +234,7 @@ def validate_session(
 
     calls = document.get("tool_calls")
     observed_tools: set[str] = set()
+    workflow_onboarding_calls: list[dict[str, object]] = []
     if not isinstance(calls, list) or not calls:
         findings.add("invalid_tool_calls")
     else:
@@ -240,6 +254,8 @@ def validate_session(
                 findings.add("unknown_tool")
             else:
                 observed_tools.add(name)
+            if purpose == "workflow_onboarding" and isinstance(call, dict):
+                workflow_onboarding_calls.append(call)
             result = call.get("result")
             if not isinstance(result, dict):
                 findings.add("invalid_tool_result")
@@ -273,15 +289,19 @@ def validate_session(
             ):
                 findings.add("result_sha256_mismatch")
         if (
-            not observed_tools.intersection(RUN_LIFECYCLE_TOOLS)
+            purpose != "workflow_onboarding"
+            and not observed_tools.intersection(RUN_LIFECYCLE_TOOLS)
             or (
                 purpose != "golden_generation"
+                and purpose != "workflow_onboarding"
                 and "local_gpu_imagegen_check" not in observed_tools
             )
         ):
             findings.add("missing_required_tool_calls")
         if purpose == "golden_generation" and not GOLDEN_GENERATION_TOOLS <= observed_tools:
             findings.add("missing_golden_generation_calls")
+        if purpose == "workflow_onboarding":
+            findings.update(_validate_workflow_onboarding_calls(workflow_onboarding_calls))
 
     sanitization = document.get("sanitization")
     if (
@@ -298,6 +318,100 @@ def validate_session(
     if client_name is None:
         findings.add("invalid_client")
     return sorted(findings)
+
+
+def _validate_workflow_onboarding_calls(calls: list[dict[str, object]]) -> set[str]:
+    findings: set[str] = set()
+    names = [call.get("name") for call in calls]
+    if names != list(WORKFLOW_ONBOARDING_TOOLS):
+        findings.add("invalid_workflow_onboarding_sequence")
+    if any(name in WORKFLOW_ONBOARDING_FORBIDDEN_TOOLS for name in names):
+        findings.add("forbidden_workflow_onboarding_generation_call")
+    results = [call.get("result") for call in calls]
+    if len(results) != len(WORKFLOW_ONBOARDING_TOOLS) or any(
+        not isinstance(result, dict) for result in results
+    ):
+        findings.add("invalid_workflow_onboarding_result")
+        return findings
+
+    api, inspected, fingerprint, registered, trust_inspect, approved = results
+    if (
+        api.get("phase") != "api_only_execute"
+        or api.get("backend") != "comfyui"
+        or api.get("target_model_present") is not True
+        or api.get("target_identity_strength") != "backend_binding"
+        or not _model_identity(api.get("target_model_identity"))
+    ):
+        findings.add("invalid_workflow_onboarding_discovery")
+    if (
+        inspected.get("status") != "registerable"
+        or inspected.get("registrable") is not True
+        or inspected.get("topology") not in {"single_checkpoint", "split_model"}
+        or not SHA256_RE.fullmatch(str(inspected.get("source_sha256", "")))
+        or not SHA256_RE.fullmatch(str(inspected.get("workflow_sha256", "")))
+        or not SHA256_RE.fullmatch(str(inspected.get("proposal_digest", "")))
+        or not SHA256_RE.fullmatch(str(inspected.get("confirmation_sha256", "")))
+        or not _model_identity_list(inspected.get("component_identities"))
+    ):
+        findings.add("invalid_workflow_onboarding_inspection")
+    if (
+        fingerprint.get("phase") != "selected_fingerprint_execute"
+        or fingerprint.get("target_model_present") is not True
+        or fingerprint.get("target_identity_strength") != "cryptographic"
+        or not _model_identity(fingerprint.get("target_model_identity"))
+        or not SHA256_RE.fullmatch(str(fingerprint.get("target_sha256", "")))
+        or type(fingerprint.get("target_byte_size")) is not int
+        or int(fingerprint.get("target_byte_size", 0)) <= 0
+    ):
+        findings.add("invalid_workflow_onboarding_fingerprint")
+    workflow_sha256 = inspected.get("workflow_sha256")
+    source_sha256 = inspected.get("source_sha256")
+    registered_id = registered.get("registered_workflow_id")
+    if (
+        not isinstance(registered_id, str)
+        or registered_id != f"imported:{workflow_sha256}"
+        or registered.get("source_sha256") != source_sha256
+        or registered.get("workflow_sha256") != workflow_sha256
+        or registered.get("topology") != inspected.get("topology")
+        or type(registered.get("template_version")) is not int
+        or int(registered.get("template_version", 0)) <= 0
+    ):
+        findings.add("invalid_workflow_onboarding_registration")
+    bundle_sha256 = trust_inspect.get("component_bundle_sha256")
+    if (
+        trust_inspect.get("action") != "inspect_workflow_binding"
+        or trust_inspect.get("registered_workflow_id") != registered_id
+        or trust_inspect.get("workflow_sha256") != workflow_sha256
+        or trust_inspect.get("model_identity") != fingerprint.get("target_model_identity")
+        or not SHA256_RE.fullmatch(str(bundle_sha256 or ""))
+        or not SHA256_RE.fullmatch(str(trust_inspect.get("approve_private_confirmation_sha256", "")))
+    ):
+        findings.add("invalid_workflow_onboarding_trust_inspection")
+    if (
+        approved.get("action") != "approve_private"
+        or approved.get("scope") != "private"
+        or approved.get("identity_strength") != "cryptographic"
+        or approved.get("registered_workflow_id") != registered_id
+        or approved.get("workflow_sha256") != workflow_sha256
+        or approved.get("component_bundle_sha256") != bundle_sha256
+        or approved.get("model_identity") != fingerprint.get("target_model_identity")
+        or not isinstance(approved.get("catalog_id"), str)
+        or re.fullmatch(r"local:[0-9a-f]{24}", str(approved.get("catalog_id"))) is None
+    ):
+        findings.add("invalid_workflow_onboarding_trust_approval")
+    return findings
+
+
+def _model_identity(value: object) -> bool:
+    return isinstance(value, str) and value.startswith("model:") and SHA256_RE.fullmatch(value[6:]) is not None
+
+
+def _model_identity_list(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(_model_identity(item) for item in value)
+    )
 
 
 def validate_release_set(

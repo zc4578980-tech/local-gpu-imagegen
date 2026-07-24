@@ -80,7 +80,8 @@
     "session_purpose": {
       "enum": [
         "compatibility",
-        "golden_generation"
+        "golden_generation",
+        "workflow_onboarding"
       ],
       "type": "string"
     },
