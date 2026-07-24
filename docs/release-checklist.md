@@ -12,13 +12,17 @@ This checklist covers repository release readiness. It does not grant model, wor
 ## Evidence gate
 
 - [ ] Retained Codex and Claude Code records validate as one `0.7.0` release set, with at least one genuine installed-wheel generation session.
-- [ ] One ordinary-route SDXL root retains its original PNG and MCP result, passes full-resolution structured review, and is finalized by a later byte-bound user confirmation.
-- [ ] The ordinary-route public demo validates under `docs/demo/real/`, including public rights, exact artifact hashes, route identity, and sanitized client binding.
-- [ ] README evidence appears before the simulated protocol material and is derived from the validated manifest.
-- [ ] Regional and two-stage routes remain labeled experimental, outside the golden path and release blockers, with no visual-quality improvement claim.
+- [x] One installed Codex session retains a genuine generation result bound to the exact ordinary-route run, round, and image hash; Claude Code generation evidence remains pending.
+- [x] One ordinary-route SDXL root retains its original PNG and MCP result, passes full-resolution structured review, and is finalized by a later byte-bound user confirmation.
+- [x] The ordinary-route public demo validates under `docs/demo/real/`, including public rights, exact artifact hashes, route identity, and sanitized client binding.
+- [x] README evidence appears before the simulated protocol material and is derived from the validated manifest.
+- [x] Regional and two-stage routes remain labeled experimental, outside the golden path and release blockers, with no visual-quality improvement claim.
 
 ## Publication gate
 
+- [ ] The genuine-image social preview is generated, validated at 1280x640, and visually reviewed without mutating remote metadata.
+- [ ] The evidence-backed pessimistic first-30-day forecast is at least `100 GitHub Stars`.
+- [ ] Explicit authority is granted for each remote metadata change and publication action.
 - [ ] README, changelog, package metadata, plugin metadata, `server.json`, GitHub copy, directory copy, and release notes agree on version, fifteen tools, three backends, the ordinary golden path, and open limitations.
 - [ ] Windows and Ubuntu jobs on Python 3.11 and 3.12 are green at the exact release commit.
 - [ ] The exact locally verified wheel is published without rebuilding and its public digest matches.

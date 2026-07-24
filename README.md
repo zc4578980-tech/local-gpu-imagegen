@@ -4,20 +4,30 @@
 
 Connect Codex or Claude Code to the image models you already run locally, with one installable command path and no silent model downloads or switches.
 
+![A solitary lighthouse generated through the validated ordinary local SDXL route](docs/demo/real/final.png)
+
+Original finalized 1024x1024 PNG from ordinary `sdxl-txt2img`; SHA-256 `36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4`. Inspect the [validated showcase manifest](docs/demo/real/showcase-manifest.json) for the route, prompts, settings, review, client binding, rights, and limitations.
+
 ```shell
 uvx local-gpu-imagegen verify
 uvx local-gpu-imagegen setup codex --apply
 ```
 
+[Five-minute Quickstart](docs/quickstart.md)
+
+> Create one complete lighthouse environment illustration with no people, text, logo, or watermark. Reuse my existing local backend and model, keep downloads and model switching disabled, use at most two successful rounds, and ask me before finalization.
+
+This path requires an existing local image backend and model; there are no silent model downloads or switches.
+
 `setup` is read-only without `--apply`. The apply path delegates to the client's official `mcp add` command; Local GPU Imagegen does not edit client configuration files directly or download a model.
 
-> **Genuine local-GPU result: release gate pending.** `docs/demo/real/final.png` becomes release evidence only after the ordinary SDXL route, original PNG, full-resolution review, later byte-bound finalization, retained MCP result, public rights, and exported hashes validate.
+**Trust proof:** the retained ordinary-route result came from one installed Codex session. Discovery did not load weights; trust and route identity were explicit; successful rounds were bounded; review used the original-resolution PNG; finalization was bound to the reviewed bytes; and the run state remains recoverable. The evidence proves this one result, not complete 9+3 acceptance, measured performance, or production readiness.
 
 ![Simulated brief-to-candidate protocol loop](docs/demo/preview-loop.gif)
 
-> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. It remains secondary to the pending genuine result. Model-free tests cover the protocol and backend contracts, not image quality, named-client generation, performance, or complete 9+3 acceptance.
+> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. It remains secondary to the genuine result above. Model-free tests cover the protocol and backend contracts, not image quality, broader named-client generation, performance, or complete 9+3 acceptance.
 
-For Claude Code, use `uvx local-gpu-imagegen setup claude-code --apply`. Remove the entries with `codex mcp remove local-gpu-imagegen` or `claude mcp remove --scope user local-gpu-imagegen`. Use `uvx local-gpu-imagegen doctor` to inspect local backend readiness. The setup contracts and equivalent stdio launches are verified; retained hosted sessions remain pending. See [Client compatibility](docs/client-compatibility.md).
+For Claude Code, use `uvx local-gpu-imagegen setup claude-code --apply`. Remove the entries with `codex mcp remove local-gpu-imagegen` or `claude mcp remove --scope user local-gpu-imagegen`. Use `uvx local-gpu-imagegen doctor` to inspect local backend readiness. The setup contracts and equivalent stdio launches are verified; one Codex installed-client generation is retained, while Claude Code generation remains pending. See [Client compatibility](docs/client-compatibility.md).
 
 Before PyPI publication, install the verified wheel or a source checkout, then use the equivalent `local-gpu-imagegen verify` and `local-gpu-imagegen setup ...` commands.
 
@@ -353,15 +363,14 @@ Verified:
 Pending before a `1.0` claim:
 
 - a complete retained 9+3 real host/vision acceptance matrix
-- an eligible, finalized, public-rights ordinary-route result
 - real Real-ESRGAN binary/GPU execution evidence
-- generated named-client session evidence in Codex or Claude Code
+- additional generated named-client session evidence beyond the retained Codex result, including Claude Code
 - measured performance or VRAM data
 - any production-readiness claim
 
-The Mocked/model-free matrix is deterministic protocol evidence, not retained real Codex/vision/GPU evidence. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. Local Z-Image and Anima calls through the project adapter have been observed, but they are local development validation rather than public acceptance evidence. One ordinary-route SDXL MCP run is retained only as rejected local development evidence: it has no candidate or final and is not a public result. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No production, performance, VRAM, image-quality, named-client generation, star, or popularity claim is made.
+The Mocked/model-free matrix is deterministic protocol evidence, not the retained real Codex/vision/GPU result. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. Local Z-Image and Anima calls through the project adapter have been observed, but they are local development validation rather than public acceptance evidence. One ordinary-route SDXL MCP result from Codex is finalized, sanitized, and retained under `docs/demo/real/`; its disclosed limitations include a red-purple palette, no distinct directional beacon beam, one extra navigation beacon, and minor railing/cliff-ladder artifacts. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No production, performance, VRAM, image-quality superiority, guaranteed Star, or broader named-client generation claim is made.
 
-The repository retains no complete real 9+3 image-acceptance matrix or publishable real ComfyUI acceptance artifact, and makes no image-quality, performance, or VRAM claim. Use the readiness commands above to inspect the target environment.
+The repository retains one bounded publishable ComfyUI result but no complete real 9+3 image-acceptance matrix or second publishable route. It makes no generalized image-quality, performance, or VRAM claim. Use the readiness commands above to inspect the target environment.
 
 ## Documentation
 

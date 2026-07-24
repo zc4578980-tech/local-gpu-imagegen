@@ -12,6 +12,8 @@ else:
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REAL_DEMO = ROOT / "docs" / "demo" / "real"
+QUICKSTART = ROOT / "docs" / "quickstart.md"
 PUBLIC_TOOLS = {
     "local_gpu_imagegen_check",
     "local_gpu_generate_image",
@@ -37,6 +39,8 @@ ACTIVE_PUBLIC_DOCS = (
 )
 PUBLIC_RELEASE_DOCS = ACTIVE_PUBLIC_DOCS + (
     ROOT / "CHANGELOG.md",
+    ROOT / "docs" / "github-listing.md",
+    QUICKSTART,
     ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md",
 )
 ACTIVE_VERSION_FILES = ACTIVE_PUBLIC_DOCS + (
@@ -44,6 +48,12 @@ ACTIVE_VERSION_FILES = ACTIVE_PUBLIC_DOCS + (
     ROOT / "scripts" / "mcp_server.py",
     ROOT / "scripts" / "local_gpu_imagegen" / "generation_plan.py",
 )
+
+
+def real_showcase() -> dict[str, object]:
+    return json.loads(
+        (REAL_DEMO / "showcase-manifest.json").read_text(encoding="utf-8")
+    )
 
 class PublicDocumentationTests(unittest.TestCase):
     def test_readme_leads_with_literal_offer_and_installed_path(self) -> None:
@@ -58,6 +68,55 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("uvx local-gpu-imagegen verify", first_viewport)
         self.assertIn("uvx local-gpu-imagegen setup codex --apply", first_viewport)
         self.assertLess(first_viewport.index(promise), first_viewport.index("Why This Project"))
+
+    def test_readme_first_viewport_uses_validated_evidence(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        first_viewport = "\n".join(readme.splitlines()[:55])
+        showcase = real_showcase()
+        image_sha256 = showcase["final"]["image_sha256"]
+
+        required = (
+            "docs/demo/real/final.png",
+            image_sha256,
+            "`sdxl-txt2img`",
+            "uvx local-gpu-imagegen verify",
+            "uvx local-gpu-imagegen setup codex --apply",
+            "docs/quickstart.md",
+            "existing local image backend",
+            "no silent model downloads or switches",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, first_viewport)
+        self.assertLess(
+            readme.index("docs/demo/real/final.png"),
+            readme.index("docs/demo/preview-loop.gif"),
+        )
+
+    def test_quickstart_is_bounded_reversible_and_private_value_free(self) -> None:
+        quickstart = QUICKSTART.read_text(encoding="utf-8")
+        required = (
+            "Python 3.11 or 3.12",
+            "backend and model are already running",
+            "uvx local-gpu-imagegen verify",
+            "uvx local-gpu-imagegen setup codex --apply",
+            "uvx local-gpu-imagegen setup claude-code --apply",
+            "uvx local-gpu-imagegen doctor",
+            "Restart or reload",
+            "codex mcp remove local-gpu-imagegen",
+            "claude mcp remove --scope user local-gpu-imagegen",
+            "local_gpu_discover_models",
+            "local_gpu_set_model_trust",
+            "local_gpu_recommend_models",
+            "local_gpu_generate_round",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, quickstart)
+        forbidden = ("D:\\", "C:\\Users\\", "route:", "model:")
+        for value in forbidden:
+            with self.subTest(value=value):
+                self.assertNotIn(value, quickstart)
 
     def test_release_mainline_keeps_composition_routes_experimental(self) -> None:
         public = "\n".join(
@@ -363,6 +422,9 @@ class PublicDocumentationTests(unittest.TestCase):
             "This release provides frontend code and components.",
             "This release supports SVG and transparent PNG.",
             "This release includes automatic segmentation.",
+            "This launch is guaranteed to reach 100 Stars.",
+            "The server supports 8 concurrent generations.",
+            "Its image quality is better than every alternative.",
         )
         for false_claim in false_claims:
             with self.subTest(false_claim=false_claim):
