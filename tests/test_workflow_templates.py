@@ -16,6 +16,7 @@ from local_gpu_imagegen.errors import ArtifactError, ConflictError, ValidationEr
 from local_gpu_imagegen.workflow_templates import (  # noqa: E402
     WorkflowTemplateRegistry,
     _validate_rendered_two_stage_workflow,
+    read_workflow_source,
     validate_imported_workflow,
     workflow_component_bindings,
 )
@@ -134,6 +135,44 @@ class WorkflowTemplateTests(unittest.TestCase):
 
     def write_safe_source(self) -> None:
         self.safe_source.write_text(json.dumps(safe_graph()), encoding="utf-8")
+
+    def test_prepare_and_store_match_legacy_registration(self) -> None:
+        self.write_safe_source()
+        graph = json.loads(self.safe_source.read_text(encoding="utf-8"))
+
+        prepared = self.registry.prepare_import(graph, binding(), ["model.safetensors"])
+        stored = self.registry.store_prepared_import(prepared)
+        legacy = self.registry.register_import(
+            self.safe_source, binding(), ["model.safetensors"]
+        )
+
+        self.assertEqual(prepared["template_id"], stored["template_id"])
+        self.assertEqual(stored["template_id"], legacy["template_id"])
+        self.assertEqual(stored["workflow_sha256"], legacy["workflow_sha256"])
+        self.assertEqual(stored["graph"], legacy["graph"])
+
+    def test_store_prepared_import_is_idempotent_but_never_repairs_drift(self) -> None:
+        prepared = self.registry.prepare_import(
+            safe_graph(), binding(), ["model.safetensors"]
+        )
+        first = self.registry.store_prepared_import(prepared)
+        second = self.registry.store_prepared_import(copy.deepcopy(prepared))
+        self.assertEqual(first, second)
+
+        target = Path(first["local_path"])
+        target.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(ConflictError, "workflow_registration_drifted"):
+            self.registry.store_prepared_import(prepared)
+        self.assertEqual(target.read_text(encoding="utf-8"), "{}")
+
+    def test_public_source_reader_returns_exact_bytes_and_json_value(self) -> None:
+        encoded = b'{"prompt":{"1":{"class_type":"SaveImage","inputs":{}}},"meta":1}'
+        self.safe_source.write_bytes(encoded)
+
+        actual_bytes, value = read_workflow_source(self.safe_source)
+
+        self.assertEqual(actual_bytes, encoded)
+        self.assertEqual(value["meta"], 1)
 
     def load_mutated_two_stage(self, mutate: object) -> dict[str, object]:
         source = ROOT / "workflows" / "comfyui" / "sdxl-two-stage-copy-subject-v1.json"

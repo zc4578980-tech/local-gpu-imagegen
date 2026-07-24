@@ -421,19 +421,15 @@ class WorkflowTemplateRegistry:
             [normalized_model],
         )
 
-    def register_import(
+    def prepare_import(
         self,
-        path: Path,
+        graph: object,
         binding: object,
         available_models: Collection[str],
     ) -> dict[str, object]:
-        source = Path(path)
-        graph = _read_source_graph(source)
-        _freeze_single_import_model(graph, binding, available_models)
         normalized = validate_imported_workflow(graph, binding, available_models)
-        operation = _infer_operation(normalized["graph"])
         payload = {
-            "operation": operation,
+            "operation": _infer_operation(normalized["graph"]),
             "model_families": ["unknown"],
             "bindings": {
                 key: value
@@ -444,21 +440,51 @@ class WorkflowTemplateRegistry:
             "graph": normalized["graph"],
         }
         digest = _canonical_hash(payload)
-        document: dict[str, object] = {
+        return {
             "schema_version": 1,
             "template_id": f"imported:{digest}",
             "template_version": 1,
             "workflow_sha256": digest,
             **payload,
         }
+
+    def store_prepared_import(self, document: object) -> dict[str, object]:
+        digest = document.get("workflow_sha256") if isinstance(document, dict) else None
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValidationError(
+                "invalid_workflow_registration",
+                "Prepared workflow registration is invalid.",
+            )
+        try:
+            normalized = _validate_registered_document(document, digest)
+        except (KeyError, TypeError, ValueError, ValidationError) as error:
+            raise ValidationError(
+                "invalid_workflow_registration",
+                "Prepared workflow registration is invalid.",
+            ) from error
         if self.registered_root.exists() and _link_like(self.registered_root):
             raise ArtifactError(
                 "invalid_workflow_state",
                 "Workflow state directory must not be a link or reparse point.",
             )
         target = self.registered_root / f"{digest}.json"
-        atomic_write_json(target, document)
-        return {**copy.deepcopy(document), "local_path": str(target.absolute())}
+        if target.exists():
+            existing = self.load_registered(normalized["template_id"])
+            return existing
+        atomic_write_json(target, normalized)
+        return {**copy.deepcopy(normalized), "local_path": str(target.absolute())}
+
+    def register_import(
+        self,
+        path: Path,
+        binding: object,
+        available_models: Collection[str],
+    ) -> dict[str, object]:
+        graph = _read_source_graph(Path(path))
+        _freeze_single_import_model(graph, binding, available_models)
+        return self.store_prepared_import(
+            self.prepare_import(graph, binding, available_models)
+        )
 
     def load_registered(self, template_id: str) -> dict[str, object]:
         match = IMPORTED_ID_PATTERN.fullmatch(template_id) if isinstance(template_id, str) else None
@@ -1386,24 +1412,29 @@ def _read_source_graph(path: Path) -> dict[str, object]:
     return value
 
 
-def _read_bounded_json(path: Path) -> object:
+def read_workflow_source(path: Path) -> tuple[bytes, object]:
+    candidate = Path(path)
     try:
-        file_stat = os.stat(path, follow_symlinks=False)
+        file_stat = os.stat(candidate, follow_symlinks=False)
         if (
-            _link_like(path)
+            _link_like(candidate)
             or not stat.S_ISREG(file_stat.st_mode)
             or file_stat.st_size > MAX_SOURCE_BYTES
         ):
             raise OSError("unsafe workflow file")
-        encoded = path.read_bytes()
+        encoded = candidate.read_bytes()
         if len(encoded) > MAX_SOURCE_BYTES:
             raise OSError("oversized workflow file")
-        return json.loads(encoded.decode("utf-8"))
+        return encoded, json.loads(encoded.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ArtifactError(
             "invalid_workflow_source",
             "Workflow JSON is unreadable or unsafe.",
         ) from error
+
+
+def _read_bounded_json(path: Path) -> object:
+    return read_workflow_source(path)[1]
 
 
 def _primary_model_names(graph: object) -> list[str]:
