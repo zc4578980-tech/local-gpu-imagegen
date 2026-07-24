@@ -4,10 +4,10 @@ This checklist covers repository release readiness. It does not grant model, wor
 
 ## Local gate
 
-- [ ] The final model-free suite, Python compilation, strict UTF-8 JSON parse, repository hygiene, and public-document truthfulness gates pass at one exact commit.
-- [ ] Fresh isolated Python 3.11 and 3.12 environments install the exact candidate wheel outside the checkout and verify version `0.7.0`, protocol `2024-11-05`, and exactly fifteen tools.
-- [ ] Installed `verify`, `doctor`, local-wheel `uvx`, and read-only Codex and Claude Code setup paths succeed without a source clone or direct configuration-file edit.
-- [ ] Tracked files, staged files, and wheel entries contain no credentials, personal paths, trust state, private runs, rejected images, model weights, or temporary client files.
+- [x] The final model-free suite, Python compilation, strict UTF-8 JSON parse, repository hygiene, and public-document truthfulness gates pass at one exact commit.
+- [x] Fresh isolated Python 3.11 and 3.12 environments install the exact candidate wheel outside the checkout and verify version `0.7.0`, protocol `2024-11-05`, and exactly fifteen tools.
+- [x] Installed `verify`, `doctor`, local-wheel `uvx`, and read-only Codex and Claude Code setup paths succeed without a source clone or direct configuration-file edit.
+- [x] Tracked files, staged files, and wheel entries contain no credentials, personal paths, trust state, private runs, rejected images, model weights, or temporary client files.
 
 ## Evidence gate
 
