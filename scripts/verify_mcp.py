@@ -18,6 +18,8 @@ DEFAULT_EXPECTED_TOOLS = {
     "local_gpu_generate_image",
     "local_gpu_list_profiles",
     "local_gpu_discover_models",
+    "local_gpu_inspect_workflow",
+    "local_gpu_register_workflow",
     "local_gpu_set_model_trust",
     "local_gpu_recommend_models",
     "local_gpu_start_run",

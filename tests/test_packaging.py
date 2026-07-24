@@ -94,7 +94,7 @@ class PackagingTests(unittest.TestCase):
     def test_metadata_defines_preview_cli(self) -> None:
         document = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         project = document["project"]
-        self.assertEqual(project["version"], "0.7.0")
+        self.assertEqual(project["version"], "0.8.0")
         self.assertEqual(project["license"], "MIT")
         self.assertEqual(
             project["scripts"]["local-gpu-imagegen"],
@@ -107,6 +107,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("local_gpu_imagegen/regional_layout.py", names)
         required_suffixes = {
             "local_gpu_imagegen/two_stage_layout.py",
+            "local_gpu_imagegen/workflow_onboarding.py",
             "mcp_server.py",
             "verify_mcp.py",
             "build_showcase.py",
@@ -143,7 +144,7 @@ class PackagingTests(unittest.TestCase):
         )
         report = json.loads(completed.stdout)
         self.assertTrue(report["ok"])
-        self.assertEqual(len(report["tools"]), 15)
+        self.assertEqual(len(report["tools"]), 17)
 
     def test_installed_wheel_exposes_read_only_setup_outside_checkout(self) -> None:
         fake_bin = self.temp / "fake-bin"

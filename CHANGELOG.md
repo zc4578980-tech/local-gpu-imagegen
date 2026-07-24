@@ -19,6 +19,21 @@ All notable changes will be documented in this file.
 - The earlier single-pass regional route remains retained negative evidence and experimental compatibility; together with the rejected two-stage run, it does not establish a visual-quality improvement.
 - A genuine eligible ordinary-route public result and generated named-client session remain pending. No measured quality, latency, VRAM, production-readiness, complete 9+3 acceptance, or publication claim is made.
 
+## [0.8.0] - 2026-07-24
+
+### Added
+
+- Safe ComfyUI workflow onboarding for ordinary `txt2img` API graphs using a single checkpoint or split model topology.
+- Two MCP tools: `local_gpu_inspect_workflow` and `local_gpu_register_workflow`, raising the public surface to exactly seventeen tools.
+- Stateless proposals with exact `source_sha256`, `workflow_sha256`, inferred binding, component identities, and later `register_workflow:<source_sha256>:<proposal_digest>` confirmation.
+- Trust consumption of immutable `registered_workflow_id` values through the existing `local_gpu_set_model_trust` flow.
+
+### Evidence Boundary
+
+- Registration does not grant model trust, public authority, output redistribution authority, or model license authority.
+- UI format conversion, custom nodes, img2img, inpaint, regional onboarding, and two-stage onboarding remain unsupported.
+- Model-free tests cover the onboarding and registered-ID trust contracts; real-client onboarding evidence is pending.
+
 ## [0.7.0] - 2026-07-23
 
 ### Added

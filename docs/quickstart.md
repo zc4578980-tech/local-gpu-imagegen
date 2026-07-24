@@ -8,7 +8,7 @@ This path is for Python 3.11 or 3.12 users whose supported backend and model are
 uvx local-gpu-imagegen verify
 ```
 
-Checkpoint: the JSON reports `ok: true`, version `0.7.0`, and exactly fifteen tools. Stop and use [First-Run Problems](#first-run-problems) if it does not.
+Checkpoint: the JSON reports `ok: true`, version `0.8.0`, and exactly seventeen tools. Stop and use [First-Run Problems](#first-run-problems) if it does not.
 
 ## 2. Add It To Codex Or Claude Code
 
@@ -40,6 +40,19 @@ Use this request:
 > Create one complete lighthouse environment illustration with no people, text, logo, or watermark. Reuse my existing local backend and model, keep downloads and model switching disabled, use at most two successful rounds, and ask me before finalization.
 
 Before generation, the Agent should show the results of `local_gpu_discover_models`, any required `local_gpu_set_model_trust` action, `local_gpu_recommend_models`, and the exact selected route. It should wait for your confirmation before `local_gpu_generate_round`, display each retained image for review, and wait for a later byte-bound finalization confirmation.
+
+Optional existing ComfyUI workflows use a separate safe onboarding path for ordinary `txt2img` only:
+
+```text
+API-only discovery (when current inventory is absent)
+-> local_gpu_inspect_workflow
+-> display hashes, inferred binding, components, limitations, confirmation
+-> later exact user confirmation
+-> local_gpu_register_workflow
+-> separate local_gpu_set_model_trust with `registered_workflow_id`
+```
+
+The supported graphs are single checkpoint or split model API workflows. Inspection displays `source_sha256`, `workflow_sha256`, and component identities; registration does not grant model trust. UI format, custom nodes, regional/two-stage onboarding, and implicit backend startup remain outside this path. The real-client onboarding evidence is pending.
 
 ## Roll Back Client Setup
 

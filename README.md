@@ -65,7 +65,7 @@ Expected result:
   "ok": true,
   "transport": "stdio",
   "python": "<current-python>",
-  "server": {"name": "local-gpu-imagegen", "version": "0.7.0"},
+  "server": {"name": "local-gpu-imagegen", "version": "0.8.0"},
   "protocolVersion": "2024-11-05",
   "tools": [
     "local_gpu_branch_run",
@@ -81,8 +81,10 @@ Expected result:
     "local_gpu_prepare_mask",
     "local_gpu_recommend_models",
     "local_gpu_record_review",
+    "local_gpu_register_workflow",
     "local_gpu_set_model_trust",
-    "local_gpu_start_run"
+    "local_gpu_start_run",
+    "local_gpu_inspect_workflow"
   ]
 }
 ```
@@ -174,6 +176,21 @@ Discovery has four levels: `api_only`, `selected_folders`, `common_locations`, a
 
 Trust is stored outside the repository under the OS user-state directory, overridable with `LOCAL_GPU_IMAGEGEN_STATE_DIR`. A `backend_binding` identity can be trusted only for `private` use. For split ComfyUI routes, the trust tool first offers a non-mutating inspection action that binds the primary model, text encoder, VAE, and reviewed workflow into one canonical SHA-256 bundle. The exact bundle digest is part of the later trust confirmation and route token. A cryptographic bundle may become a `public_evidence` candidate only with exact source, license, and output-redistribution metadata for every component; acceptance authority must approve that same bundle before export.
 
+### Safe Workflow Onboarding
+
+Existing ComfyUI API-format workflows can be inspected and registered without caller-supplied node IDs when they are ordinary `txt2img` graphs using either a single checkpoint or split model topology. The bounded sequence is:
+
+```text
+API-only discovery (when current inventory is absent)
+-> local_gpu_inspect_workflow
+-> display hashes, inferred binding, components, limitations, confirmation
+-> later exact user confirmation
+-> local_gpu_register_workflow
+-> separate local_gpu_set_model_trust with `registered_workflow_id`
+```
+
+Inspection reads one explicit local JSON file, accepts a bare API graph or a unique `prompt` wrapper, and reports `source_sha256`, `workflow_sha256`, topology, inferred binding, owned output, and component identities. Registerable results include `register_workflow:<source_sha256>:<proposal_digest>`; diagnostic results have no confirmation. UI format is not converted; registration does not grant model trust or public authority, and real-client onboarding evidence is pending.
+
 No model weights are bundled. The repository catalog includes the auditable ID `civitai/anything-v5@30163` for an already reviewed local WebUI checkpoint, and downloads remain unapproved. Other local models can enter the private catalog only through discovery and explicit trust; model quality still comes from the user's model. This project adds safer routing, durable review, and hot revision rather than claiming a superior prompt translator.
 
 ComfyUI ships reviewed `sd15-txt2img-v1.json`, `sdxl-txt2img-v1.json`, `sdxl-regional-txt2img-v1.json`, `sdxl-two-stage-copy-subject-v1.json`, `z-image-turbo-txt2img-v1.json`, and `anima-txt2img-v1.json` workflow files. Discovery distinguishes `CheckpointLoaderSimple`, `UNETLoader`, `CLIPLoader`, and `VAELoader`. A private backend-bound route may still bind only the primary loader, but public-evidence eligibility for a split workflow requires current API identities plus filesystem SHA-256 identities for every frozen component. A pure split-model installation may have no checkpoint choices. Shell, Python/script/process execution, network/download/webhook/fetch nodes, commands, unknown custom nodes, unbound parameters, and resource overruns are rejected.
@@ -182,7 +199,7 @@ The workflow files do not include, install, trust, or license model weights. Z-I
 
 ## Tool Reference
 
-The public MCP surface has exactly fifteen tools: two compatibility tools and thirteen high-level discovery/run/revision tools.
+The public MCP surface has exactly seventeen tools: two compatibility tools and fifteen high-level discovery/onboarding/run/revision tools.
 
 ### `local_gpu_imagegen_check`
 
@@ -203,13 +220,15 @@ Supports:
 
 The tool schema validates types, ranges, enums, unknown fields, image-mode requirements, and dimensions before starting the backend process.
 
-These two compatibility tools remain available beside the thirteen high-level tools. In particular, the low-level `local_gpu_generate_image` compatibility tool is unchanged: its optional model value remains a direct compatibility passthrough and is not the catalog-gated Agent workflow. Its WebUI/Diffusers options and explicit model-download controls are unchanged.
+These two compatibility tools remain available beside the fifteen high-level tools. In particular, the low-level `local_gpu_generate_image` compatibility tool is unchanged: its optional model value remains a direct compatibility passthrough and is not the catalog-gated Agent workflow. Its WebUI/Diffusers options and explicit model-download controls are unchanged.
 
 ### High-Level Run Tools
 
 | Tool | Responsibility |
 |---|---|
 | `local_gpu_discover_models` | Plan or execute bounded API/filesystem inventory without loading model weights. |
+| `local_gpu_inspect_workflow` | Inspect one ordinary ComfyUI API `txt2img` workflow and return diagnostic or registerable hashes and bindings. |
+| `local_gpu_register_workflow` | Recheck an exact proposal and store its immutable registered workflow copy after later digest-bound confirmation. |
 | `local_gpu_set_model_trust` | Inspect a reviewed component bundle without mutation, or approve/revoke one exact identity in user-local state after confirmation. |
 | `local_gpu_recommend_models` | Return one deterministic route and at most two explained alternatives. |
 | `local_gpu_list_profiles` | List registered use-case profiles and the current backend capabilities. |
@@ -338,7 +357,7 @@ python -m unittest discover -s tests -v
 python .\scripts\verify_mcp.py
 ```
 
-Coverage includes protocol initialization/listing/ping, the exact fifteen-tool contract, bounded discovery/trust/routing, WebUI and ComfyUI adapter contracts, durable root/child transitions, fixed two-region SDXL route/conditioning/exhaustion behavior, mask confirmation, idempotency, stale-attempt recovery, atomic publication, bounded preview handling, the mocked/model-free anime loop, all nine fixed briefs and three child revisions, fake-runner postprocessing, and download policy.
+Coverage includes protocol initialization/listing/ping, the exact seventeen-tool contract, bounded discovery/onboarding/trust/routing, WebUI and ComfyUI adapter contracts, durable root/child transitions, fixed two-region SDXL route/conditioning/exhaustion behavior, mask confirmation, idempotency, stale-attempt recovery, atomic publication, bounded preview handling, the mocked/model-free anime loop, all nine fixed briefs and three child revisions, fake-runner postprocessing, and download policy.
 
 ## Project Status
 
@@ -346,7 +365,7 @@ Verified:
 
 - stdio MCP initialization, tool listing, ping, and tool contract
 - structured tool success/error results
-- thirteen high-level discovery/run/revision tools and two compatibility tools under mocked/model-free coverage
+- fifteen high-level discovery/onboarding/run/revision tools and two compatibility tools under mocked/model-free coverage
 - adaptive Agent Skill briefing, exact-model confirmation, successful-round budgeting, and honest text-only stopping policy
 - exact local-model identity, user-local trust, deterministic route, and drift-rejection contracts
 - explicit anime-only Real-ESRGAN adapter behavior under fake-runner tests
@@ -358,7 +377,7 @@ Verified:
 - a fake-backend contract matrix covering nine fixed briefs and three child revisions
 - local-only Diffusers hub policy by default
 - installable `serve`, `doctor`, `verify`, `config`, and read-only-by-default `setup` CLI contracts, including an isolated wheel smoke test
-- official Codex and Claude Code setup-contract parsing plus equivalent exact-fifteen-tool stdio launches; Claude Desktop remains a legacy render-only template
+- official Codex and Claude Code setup-contract parsing plus equivalent exact-seventeen-tool stdio launches; Claude Desktop remains a legacy render-only template
 
 Pending before a `1.0` claim:
 

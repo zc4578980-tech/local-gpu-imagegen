@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-gpu-imagegen"
-version = "0.7.0"
+version = "0.8.0"
 description = "Connect Agents to trusted local image-generation backends without silent downloads or switches."
 readme = "README.md"
 requires-python = ">=3.11"

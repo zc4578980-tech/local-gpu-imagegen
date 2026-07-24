@@ -15,6 +15,8 @@ EXPECTED_TOOLS = {
     "local_gpu_generate_image",
     "local_gpu_list_profiles",
     "local_gpu_discover_models",
+    "local_gpu_inspect_workflow",
+    "local_gpu_register_workflow",
     "local_gpu_set_model_trust",
     "local_gpu_recommend_models",
     "local_gpu_start_run",
@@ -64,7 +66,7 @@ class VerifyMcpTests(unittest.TestCase):
             self.fail(f"verify must accept expected_tools: {exc}")
         self.assertEqual(set(report["tools"]), EXPECTED_TOOLS)
 
-    def test_default_contract_is_exactly_fifteen_tools(self) -> None:
+    def test_default_contract_is_exactly_seventeen_tools(self) -> None:
         sys.path.insert(0, str(SCRIPTS))
         import verify_mcp
 

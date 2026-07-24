@@ -9,7 +9,7 @@ description: Use when a user asks to create, generate, draw, render, transform, 
 
 Brief first, resolve one exact local route, confirm after displaying it, then run a bounded generate-review loop. Never substitute guesses for missing high-impact intent, model identity, or visual evidence.
 
-The plugin exposes exactly fifteen MCP tools: `local_gpu_imagegen_check`, `local_gpu_generate_image`, `local_gpu_discover_models`, `local_gpu_list_profiles`, `local_gpu_set_model_trust`, `local_gpu_recommend_models`, `local_gpu_start_run`, `local_gpu_get_run`, `local_gpu_branch_run`, `local_gpu_prepare_mask`, `local_gpu_confirm_mask`, `local_gpu_generate_round`, `local_gpu_record_review`, `local_gpu_finalize_run`, and `local_gpu_cleanup_run`. Use the thirteen high-level discovery/profile/run/revision tools for adaptive runs. The check and direct-generation tools are compatibility tools, not shortcuts around briefing, route resolution, and confirmation.
+The plugin exposes exactly seventeen MCP tools: `local_gpu_imagegen_check`, `local_gpu_generate_image`, `local_gpu_discover_models`, `local_gpu_inspect_workflow`, `local_gpu_register_workflow`, `local_gpu_list_profiles`, `local_gpu_set_model_trust`, `local_gpu_recommend_models`, `local_gpu_start_run`, `local_gpu_get_run`, `local_gpu_branch_run`, `local_gpu_prepare_mask`, `local_gpu_confirm_mask`, `local_gpu_generate_round`, `local_gpu_record_review`, `local_gpu_finalize_run`, and `local_gpu_cleanup_run`. Use the fifteen high-level discovery/onboarding/profile/run/revision tools for adaptive runs. The check and direct-generation tools are compatibility tools, not shortcuts around briefing, route resolution, and confirmation.
 
 ## Adaptive Brief
 
@@ -52,6 +52,14 @@ Budget: 1 to 3 successful rounds (selected: ...)
 backend/download/upscale policy: ...
 Seed/model switching: ...
 ```
+
+## Workflow Onboarding
+
+When the user supplies one existing ComfyUI workflow, call `local_gpu_inspect_workflow` with only its explicit local path. The tool does not start ComfyUI and does not run discovery implicitly. If it returns `diagnostic`, display the inferred topology/binding, limitations, and recovery action; there is no confirmation and registration must stop.
+
+For a registerable result, display the source SHA-256, workflow SHA-256, topology, complete inferred binding, owned output, component identities, limitations, and exact `register_workflow:<source_sha256>:<proposal_digest>`. Explain that registration does not grant trust or public authority, then stop and wait for a later user message containing that exact confirmation.
+
+Only after that later message, call `local_gpu_register_workflow` with the same path, proposal digest, and exact confirmation. Then use the returned `registered_workflow_id` in the existing `local_gpu_set_model_trust` flow with fresh exact component identities. UI format is not converted: direct the user to enable ComfyUI developer mode and export API format. Never select node IDs, edit the graph, start a backend, download components, or substitute another workflow automatically.
 
 ## Confirmation Gate
 

@@ -191,6 +191,30 @@ class SkillContractTests(unittest.TestCase):
             with self.subTest(boundary=boundary):
                 self.assertIn(boundary, self.text)
 
+    def test_safe_workflow_onboarding_requires_later_digest_bound_confirmation(self) -> None:
+        section = _section(self.text, "## Workflow Onboarding", "## Confirmation Gate")
+        _assert_ordered(section, (
+            "`local_gpu_inspect_workflow`",
+            "display the source SHA-256",
+            "workflow SHA-256",
+            "inferred binding",
+            "component identities",
+            "register_workflow:<source_sha256>:<proposal_digest>",
+            "stop and wait for a later user message",
+            "`local_gpu_register_workflow`",
+            "`local_gpu_set_model_trust`",
+        ))
+        for boundary in (
+            "does not start ComfyUI",
+            "does not run discovery implicitly",
+            "diagnostic",
+            "no confirmation",
+            "registration does not grant trust or public authority",
+            "UI format",
+            "developer mode",
+        ):
+            self.assertIn(boundary, section)
+
     def test_fresh_process_public_route_recovery_requires_one_exact_file_fingerprint(self) -> None:
         section = _section(self.text, "## Adaptive Brief", "## Confirmation Gate")
         _assert_ordered(section, (

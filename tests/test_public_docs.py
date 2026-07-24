@@ -19,6 +19,8 @@ PUBLIC_TOOLS = {
     "local_gpu_generate_image",
     "local_gpu_list_profiles",
     "local_gpu_discover_models",
+    "local_gpu_inspect_workflow",
+    "local_gpu_register_workflow",
     "local_gpu_set_model_trust",
     "local_gpu_recommend_models",
     "local_gpu_start_run",
@@ -186,7 +188,7 @@ class PublicDocumentationTests(unittest.TestCase):
             "low-level `local_gpu_generate_image` compatibility tool is unchanged",
             "confirmation must exactly equal the `run_id`",
             "publishes that nominated reviewed round",
-            "exactly fifteen tools",
+            "exactly seventeen tools",
             "`standalone-illustration`",
             "`presentation-visual`",
             "`ui-visual-asset`",
@@ -347,7 +349,7 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("experimental compatibility", public)
         self.assertIn("does not establish a visual-quality improvement", public)
 
-    def test_active_versions_are_v070_and_historical_versions_are_preserved(self) -> None:
+    def test_active_versions_are_v080_and_historical_versions_are_preserved(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -356,9 +358,10 @@ class PublicDocumentationTests(unittest.TestCase):
             for path in ACTIVE_VERSION_FILES
         )
 
-        self.assertEqual(plugin["version"], "0.7.0")
-        self.assertIn('"version": "0.7.0"', readme)
+        self.assertEqual(plugin["version"], "0.8.0")
+        self.assertIn('"version": "0.8.0"', readme)
         self.assertEqual(active_version_findings(active_documents), [])
+        self.assertIn("## [0.8.0] - 2026-07-24", changelog)
         self.assertIn("## [0.7.0] - 2026-07-23", changelog)
         self.assertIn("## [0.6.1] - 2026-07-22", changelog)
         self.assertIn("## [0.6.0] - 2026-07-22", changelog)
@@ -382,6 +385,30 @@ class PublicDocumentationTests(unittest.TestCase):
         ):
             with self.subTest(excluded_scope=excluded_scope):
                 self.assertIn(excluded_scope, public_copy)
+
+    def test_v080_docs_describe_safe_workflow_onboarding_truthfully(self) -> None:
+        public = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in (
+                "README.md",
+                "docs/architecture.md",
+                "docs/quickstart.md",
+                "docs/troubleshooting.md",
+                "docs/github-listing.md",
+            )
+        )
+        for required in (
+            "exactly seventeen tools",
+            "ordinary `txt2img`",
+            "single checkpoint",
+            "split model",
+            "`source_sha256`",
+            "`workflow_sha256`",
+            "`registered_workflow_id`",
+            "registration does not grant model trust",
+            "real-client onboarding evidence is pending",
+        ):
+            self.assertIn(required, public)
 
     def test_claim_scanner_rejects_equivalent_false_claims(self) -> None:
         false_claims = (
