@@ -48,7 +48,7 @@ class ClientConfigTests(unittest.TestCase):
             self.assertTrue(client["config_valid"])
             self.assertEqual(client["configuration_kind"], "official_cli_setup_contract")
             self.assertEqual(client["server"]["name"], "local-gpu-imagegen")
-            self.assertEqual(len(client["tools"]), 15)
+            self.assertEqual(len(client["tools"]), 17)
         self.assertEqual(
             report["legacy_templates"]["claude-desktop"]["configuration_kind"],
             "render_only_template",
