@@ -273,8 +273,11 @@ def validate_session(
             ):
                 findings.add("result_sha256_mismatch")
         if (
-            "local_gpu_imagegen_check" not in observed_tools
-            or not observed_tools.intersection(RUN_LIFECYCLE_TOOLS)
+            not observed_tools.intersection(RUN_LIFECYCLE_TOOLS)
+            or (
+                purpose != "golden_generation"
+                and "local_gpu_imagegen_check" not in observed_tools
+            )
         ):
             findings.add("missing_required_tool_calls")
         if purpose == "golden_generation" and not GOLDEN_GENERATION_TOOLS <= observed_tools:

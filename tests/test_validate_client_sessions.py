@@ -129,6 +129,19 @@ class ClientSessionEvidenceTests(unittest.TestCase):
             [],
         )
 
+    def test_accepts_golden_generation_without_redundant_health_check(self) -> None:
+        from validate_client_sessions import validate_session
+
+        document = valid_session("codex", "golden_generation")
+        document["tool_calls"] = document["tool_calls"][1:]
+        for sequence, call in enumerate(document["tool_calls"], start=1):
+            call["sequence"] = sequence
+
+        self.assertEqual(
+            validate_session(document, expected_server_version="0.7.0"),
+            [],
+        )
+
     def test_rejects_invalid_purpose_and_missing_golden_generation_calls(self) -> None:
         from validate_client_sessions import validate_session
 

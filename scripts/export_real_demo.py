@@ -18,6 +18,7 @@ from local_gpu_imagegen.generation_plan import (
     validate_confirmed_run_request,
     validate_generation_plan,
 )
+from local_gpu_imagegen.preview import create_preview
 from local_gpu_imagegen.visual_review import finalization_candidate, visual_checks_pass
 from validate_client_sessions import validate_session
 from validate_real_demo import (
@@ -244,9 +245,22 @@ def _public_route(
         raise ValueError("invalid_public_route")
     component_bundle = route.get("component_bundle")
     workflow = component_bundle.get("workflow") if isinstance(component_bundle, dict) else None
+    components = component_bundle.get("components") if isinstance(component_bundle, dict) else None
+    primary_models = (
+        [
+            component
+            for component in components
+            if isinstance(component, dict) and component.get("role") == "primary_model"
+        ]
+        if isinstance(components, list)
+        else []
+    )
     if (
         not isinstance(component_bundle, dict)
         or component_bundle.get("bundle_sha256") != route.get("component_bundle_sha256")
+        or len(primary_models) != 1
+        or primary_models[0].get("sha256") != route.get("sha256")
+        or not isinstance(primary_models[0].get("backend_model_id"), str)
         or not isinstance(workflow, dict)
         or workflow.get("template_id") != "sdxl-txt2img"
         or workflow.get("template_version") != 1
@@ -278,7 +292,7 @@ def _public_route(
     }
     if backend_identity != {
         "backend": "comfyui",
-        "model_id": MODEL_ID,
+        "model_id": primary_models[0]["backend_model_id"],
         "model_identity_token": EXPECTED_ROUTE["model_identity_token"],
         "workflow_template_id": "sdxl-txt2img",
         "workflow_template_version": 1,
@@ -333,8 +347,8 @@ def _generation_provenance(
         or not positive.strip()
         or not isinstance(negative, str)
         or not negative.strip()
-        or compiled.get("positive") != positive
-        or compiled.get("negative") != negative
+        or compiled.get("positive_prompt") != positive
+        or compiled.get("negative_prompt") != negative
         or not isinstance(seed, int)
         or isinstance(seed, bool)
         or seed < 0
@@ -387,7 +401,7 @@ def _sanitized_review(
             not isinstance(name, str)
             or not name.strip()
             or not isinstance(specification, dict)
-            or not isinstance(specification.get("critical"), bool)
+            or not isinstance(specification.get("critical", False), bool)
             or not isinstance(specification.get("weight"), (int, float))
             or isinstance(specification.get("weight"), bool)
             or not math.isfinite(specification["weight"])
@@ -395,7 +409,7 @@ def _sanitized_review(
         ):
             raise ValueError("invalid_review_evidence")
         public_rubric[name] = {
-            "critical": specification["critical"],
+            "critical": specification.get("critical", False),
             "weight": specification["weight"],
         }
     fields = (
@@ -422,7 +436,7 @@ def _finalized_root(
     dict[str, object],
     dict[str, object],
     Path,
-    Path,
+    Path | None,
 ]:
     if manifest.get("parent") is not None:
         raise ValueError("ordinary_root_required")
@@ -470,10 +484,15 @@ def _finalized_root(
         expected_width=width,
         expected_height=height,
     )
-    preview_path = _safe_artifact(
-        run_root,
-        selected.get("preview"),
-        mime_type="image/jpeg",
+    preview_value = selected.get("preview")
+    preview_path = (
+        None
+        if preview_value is None
+        else _safe_artifact(
+            run_root,
+            preview_value,
+            mime_type="image/jpeg",
+        )
     )
     summary = {
         "run_id": candidate["run_id"],
@@ -624,15 +643,20 @@ def export_real_demo(
     )
     try:
         shutil.copyfile(image_path, staging / "final.png")
-        shutil.copyfile(preview_path, staging / "preview.jpg")
         if sha256_file(staging / "final.png") != final["image_sha256"]:
             raise ValueError("source_artifact_sha256_mismatch")
         preview = selected.get("preview")
-        if (
-            not isinstance(preview, dict)
-            or sha256_file(staging / "preview.jpg") != preview.get("sha256")
-        ):
-            raise ValueError("source_artifact_sha256_mismatch")
+        if preview_path is None:
+            derived = create_preview(staging / "final.png", staging / "preview.jpg")
+            if derived.path != staging / "preview.jpg" or derived.warning is not None:
+                raise ValueError("preview_generation_failed")
+        else:
+            shutil.copyfile(preview_path, staging / "preview.jpg")
+            if (
+                not isinstance(preview, dict)
+                or sha256_file(staging / "preview.jpg") != preview.get("sha256")
+            ):
+                raise ValueError("source_artifact_sha256_mismatch")
         validate_png(staging / "final.png", final["width"], final["height"])
 
         run_public = {
@@ -677,6 +701,8 @@ def export_real_demo(
         readme = """# Genuine Ordinary-Route SDXL Demo
 
 `final.png` is the original finalized PNG generated locally with SDXL 1.0 Base through ordinary `sdxl-txt2img` v1. It is copied byte-for-byte without an upscale or presentation transform.
+
+`preview.jpg` is a derived display thumbnail of that verified PNG, not a separate model output or the original evidence artifact.
 
 See `showcase-manifest.json` for exact hashes, prompts, settings, route identity, review evidence, client binding, MCP finalization-result binding, public rights, and limitations.
 

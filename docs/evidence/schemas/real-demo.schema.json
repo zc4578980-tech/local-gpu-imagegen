@@ -149,7 +149,7 @@
         "backend": {"const": "comfyui"},
         "component_bundle_sha256": {"const": "ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62"},
         "model_id": {"const": "local:1a4a27ae037d08ad44e98772"},
-        "model_identity_token": {"const": "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4f97a5"},
+        "model_identity_token": {"const": "model:89bf0283e0c284f8f84f8849035374bbdb60491e5a5665f801b3ec10b92d8b23"},
         "model_sha256": {"const": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b"},
         "prompt_compiler_id": {"const": "natural-v1"},
         "prompt_compiler_version": {"const": 1},

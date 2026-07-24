@@ -8,7 +8,9 @@ from pathlib import Path
 
 
 MODEL_ID = "local:1a4a27ae037d08ad44e98772"
-MODEL_TOKEN = "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4f97a5"
+MODEL_TOKEN = "model:89bf0283e0c284f8f84f8849035374bbdb60491e5a5665f801b3ec10b92d8b23"
+FILESYSTEM_MODEL_TOKEN = "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4f97a5"
+BACKEND_MODEL_ID = "sd_xl_base_1.0.safetensors"
 MODEL_SHA256 = "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b"
 WORKFLOW_SHA256 = "05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d36000e"
 BUNDLE_SHA256 = "ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62"
@@ -108,6 +110,17 @@ def route() -> dict[str, object]:
         "workflow_template_version": 1,
         "component_bundle": {
             "bundle_sha256": BUNDLE_SHA256,
+            "components": [
+                {
+                    "backend_model_id": BACKEND_MODEL_ID,
+                    "byte_size": 6938078334,
+                    "filesystem_identity_token": FILESYSTEM_MODEL_TOKEN,
+                    "loader_class": "CheckpointLoaderSimple",
+                    "loader_input": "ckpt_name",
+                    "role": "primary_model",
+                    "sha256": MODEL_SHA256,
+                }
+            ],
             "workflow": {
                 "template_id": "sdxl-txt2img",
                 "template_version": 1,
@@ -219,7 +232,7 @@ def round_record(
             "guidance_scale": 7.0,
             "height": HEIGHT,
             "mode": "txt2img",
-            "model": MODEL_ID,
+            "model": BACKEND_MODEL_ID,
             "model_identity_token": MODEL_TOKEN,
             "ok": True,
             "path": image["path"],
@@ -235,8 +248,8 @@ def round_record(
             "workflow_template_version": 1,
         },
         "compiled_prompt": {
-            "positive": POSITIVE_PROMPT,
-            "negative": NEGATIVE_PROMPT,
+            "positive_prompt": POSITIVE_PROMPT,
+            "negative_prompt": NEGATIVE_PROMPT,
         },
         "generation_plan": {
             "profile": "ui-visual-asset",

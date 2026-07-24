@@ -1,0 +1,200 @@
+{
+  "final": {
+    "bytes": 1382907,
+    "confirmation": "finalize:20260724T083007Z-187ad21f4678:1:36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4",
+    "finalization_verified": true,
+    "height": 1024,
+    "image_sha256": "36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4",
+    "mime_type": "image/png",
+    "quality_status": "accepted",
+    "round_number": 1,
+    "run_id": "20260724T083007Z-187ad21f4678",
+    "visual_checks": {
+      "feet_and_contact": {
+        "observation": "No human is present.",
+        "status": "not_applicable"
+      },
+      "full_resolution_inspected": true,
+      "hands_and_held_objects": {
+        "observation": "No human is present.",
+        "status": "not_applicable"
+      },
+      "limb_separation": {
+        "observation": "No human is present.",
+        "status": "not_applicable"
+      },
+      "prominent_human": false,
+      "text_and_watermarks": {
+        "observation": "Full-resolution inspection found no text, logo, signature, or watermark.",
+        "status": "pass"
+      }
+    },
+    "width": 1024
+  },
+  "generation": {
+    "guidance_scale": 7.0,
+    "height": 1024,
+    "negative_prompt": "people, person, human figure, text, letters, numbers, logo, watermark, signature, signage, cropped lighthouse, duplicate lighthouse, multiple towers, distorted architecture, broken geometry, leaning horizon, low resolution, blurry, oversaturated, artifacts",
+    "positive_prompt": "A solitary white lighthouse with a red lantern room standing on one black basalt sea stack, the complete lighthouse visible from foundation to beacon, ocean waves and sea mist, storm-cleared blue-hour sky, one luminous beacon beam, centered composition, cinematic natural lighting, atmospheric depth, detailed realistic painted illustration, clean coherent architecture, no people, no lettering",
+    "sampler": "dpmpp_2m",
+    "scheduler": "karras",
+    "seed": 2026072401,
+    "steps": 30,
+    "width": 1024
+  },
+  "image_sha256": "36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4",
+  "parent": null,
+  "review": {
+    "applicable_constraints": [
+      "architecture_physically_coherent",
+      "aspect_ratio",
+      "complete_lighthouse_visible",
+      "generated_text",
+      "height",
+      "horizon_level",
+      "logos",
+      "people",
+      "single_lighthouse",
+      "watermarks",
+      "width"
+    ],
+    "constraint_results": {
+      "architecture_physically_coherent": {
+        "observation": "The main tower, lantern room, attached building, and basalt foundation form a coherent architectural structure; minor railing and cliff-ladder artifacts are noted in the critique.",
+        "status": "pass"
+      },
+      "aspect_ratio": {
+        "observation": "The retained artifact is square at 1024 by 1024 pixels, matching 1:1.",
+        "status": "pass"
+      },
+      "complete_lighthouse_visible": {
+        "observation": "The complete main lighthouse is visible from its attached foundation building through the lantern-room roof and beacon.",
+        "status": "pass"
+      },
+      "generated_text": {
+        "observation": "No generated letters, numbers, signage, or other readable text are visible.",
+        "status": "pass"
+      },
+      "height": {
+        "observation": "The retained PNG metadata reports a height of 1024 pixels.",
+        "status": "pass"
+      },
+      "horizon_level": {
+        "observation": "The distant sea horizon is substantially horizontal across the composition.",
+        "status": "pass"
+      },
+      "logos": {
+        "observation": "No logo or brand mark is visible anywhere in the full-resolution image.",
+        "status": "pass"
+      },
+      "people": {
+        "observation": "No person or human figure is present in the scene.",
+        "status": "pass"
+      },
+      "single_lighthouse": {
+        "observation": "Exactly one complete lighthouse is present; the separate small red object is a navigation beacon rather than a second lighthouse.",
+        "status": "pass"
+      },
+      "watermarks": {
+        "observation": "No watermark, signature, or attribution mark is visible.",
+        "status": "pass"
+      },
+      "width": {
+        "observation": "The retained PNG metadata reports a width of 1024 pixels.",
+        "status": "pass"
+      }
+    },
+    "critique": "The full-resolution image clearly presents one complete, centered lighthouse on a single black basalt sea stack with coherent painted styling, a level horizon, and no people, text, logos, or watermarks. The scene is visually strong and satisfies the explicit run constraints. Limitations are a red-purple moonlit palette rather than a clear blue-hour treatment, no distinct directional beacon beam, one small unrequested navigation beacon, and minor railing and cliff-ladder artifacts.",
+    "hard_failures": [],
+    "next_action": "finalize",
+    "reviewed_at": "2026-07-24T08:54:05Z",
+    "round_number": 1,
+    "rubric": {
+      "artifact_control": {
+        "critical": true,
+        "weight": 1
+      },
+      "composition": {
+        "critical": true,
+        "weight": 1
+      },
+      "detail_quality": {
+        "critical": true,
+        "weight": 2
+      },
+      "face_quality": {
+        "critical": true,
+        "weight": 2
+      },
+      "hand_quality": {
+        "critical": true,
+        "weight": 2
+      },
+      "intent_adherence": {
+        "critical": true,
+        "weight": 1
+      },
+      "style_consistency": {
+        "critical": true,
+        "weight": 2
+      },
+      "subject_completeness": {
+        "critical": true,
+        "weight": 2
+      },
+      "user_constraints": {
+        "critical": false,
+        "weight": 1
+      }
+    },
+    "scores": {
+      "artifact_control": 4,
+      "composition": 5,
+      "detail_quality": 4,
+      "face_quality": 5,
+      "hand_quality": 5,
+      "intent_adherence": 4,
+      "style_consistency": 5,
+      "subject_completeness": 5,
+      "user_constraints": 5
+    },
+    "visual_checks": {
+      "feet_and_contact": {
+        "observation": "No human is present.",
+        "status": "not_applicable"
+      },
+      "full_resolution_inspected": true,
+      "hands_and_held_objects": {
+        "observation": "No human is present.",
+        "status": "not_applicable"
+      },
+      "limb_separation": {
+        "observation": "No human is present.",
+        "status": "not_applicable"
+      },
+      "prominent_human": false,
+      "text_and_watermarks": {
+        "observation": "Full-resolution inspection found no text, logo, signature, or watermark.",
+        "status": "pass"
+      }
+    }
+  },
+  "role": "finalized_root",
+  "round_number": 1,
+  "route": {
+    "authorization_scope": "public_evidence",
+    "backend": "comfyui",
+    "component_bundle_sha256": "ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62",
+    "model_id": "local:1a4a27ae037d08ad44e98772",
+    "model_identity_token": "model:89bf0283e0c284f8f84f8849035374bbdb60491e5a5665f801b3ec10b92d8b23",
+    "model_sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+    "prompt_compiler_id": "natural-v1",
+    "prompt_compiler_version": 1,
+    "workflow_sha256": "05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d36000e",
+    "workflow_template_id": "sdxl-txt2img",
+    "workflow_template_version": 1
+  },
+  "run_id": "20260724T083007Z-187ad21f4678",
+  "schema_version": "2.0",
+  "state": "finalized"
+}

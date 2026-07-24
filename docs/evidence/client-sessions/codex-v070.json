@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0",
+  "evidence_class": "named_client_session",
+  "session_purpose": "golden_generation",
+  "client": {
+    "name": "codex",
+    "version": "0.146.0-alpha.3.1",
+    "session_mode": "ephemeral"
+  },
+  "installed_wheel": true,
+  "hosted_client_session": true,
+  "server": {
+    "name": "local-gpu-imagegen",
+    "version": "0.7.0",
+    "protocol_version": "2024-11-05",
+    "wheel_sha256": "83ba9a8bc078f488d69b006e73f5dd2c89e7fe6e78b3302961d750beb5acc1a8"
+  },
+  "started_at": "2026-07-24T08:28:50.289Z",
+  "completed_at": "2026-07-24T08:31:11.768Z",
+  "tool_calls": [
+    {
+      "sequence": 1,
+      "name": "local_gpu_start_run",
+      "result": {
+        "run_id": "20260724T083007Z-187ad21f4678",
+        "state": "created"
+      },
+      "result_sha256": "3cf2e993ae9bc5cfc6855241fb5db0d5ef205a65317bf5e5b0f55b64cdfbeaa3"
+    },
+    {
+      "sequence": 2,
+      "name": "local_gpu_generate_round",
+      "result": {
+        "run_id": "20260724T083007Z-187ad21f4678",
+        "state": "generated",
+        "round_number": 1,
+        "image_sha256": "36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4"
+      },
+      "result_sha256": "001ff0e0d377ed0bde270cfc73c10e454c771f2bbc671c7de30a0130ab5d7520"
+    },
+    {
+      "sequence": 3,
+      "name": "local_gpu_get_run",
+      "result": {
+        "run_id": "20260724T083007Z-187ad21f4678",
+        "state": "generated"
+      },
+      "result_sha256": "be8c10a4c8bbe10e84e9acd4230ce9aead1050e733f3817bde09321125c74c36"
+    }
+  ],
+  "sanitization": {
+    "prompts_omitted": true,
+    "account_identifiers_omitted": true,
+    "credentials_omitted": true,
+    "machine_paths_omitted": true,
+    "raw_transcript_retained": false
+  }
+}

@@ -77,6 +77,61 @@ class ExportRealDemoTests(unittest.TestCase):
             self.assertNotIn("private-job-id", public_text)
             self.assertFalse((output / "unrelated.tmp").exists())
 
+    def test_export_derives_preview_when_generation_preview_is_unavailable(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is unavailable")
+        from export_real_demo import export_real_demo
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, client, mcp_result, authority, output = write_source_fixture(
+                Path(directory)
+            )
+            manifest = read_json(run_root / "manifest.json")
+            manifest["rounds"][0]["preview"] = None
+            write_json(run_root / "manifest.json", manifest)
+            (run_root / "round-01-preview.jpg").unlink()
+            source = (run_root / "final.png").read_bytes()
+
+            export_real_demo(
+                run_root,
+                output,
+                client,
+                mcp_result,
+                authority_path=authority,
+            )
+
+            self.assertEqual((run_root / "final.png").read_bytes(), source)
+            self.assertEqual((output / "final.png").read_bytes(), source)
+            with Image.open(output / "preview.jpg") as preview:
+                self.assertEqual(preview.format, "JPEG")
+                self.assertLessEqual(max(preview.size), 768)
+
+    def test_export_normalizes_an_omitted_noncritical_rubric_flag(self) -> None:
+        from export_real_demo import export_real_demo
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, client, mcp_result, authority, output = write_source_fixture(
+                Path(directory)
+            )
+            manifest = read_json(run_root / "manifest.json")
+            manifest["request"]["merged_profile"]["rubric"]["dimensions"].pop(
+                "critical"
+            )
+            write_json(run_root / "manifest.json", manifest)
+
+            export_real_demo(
+                run_root,
+                output,
+                client,
+                mcp_result,
+                authority_path=authority,
+            )
+
+            public = read_json(output / "run-manifest.json")
+            self.assertIs(public["review"]["rubric"]["dimensions"]["critical"], False)
+
     def test_export_rejects_child_missing_or_changed_final_and_existing_destination(self) -> None:
         from export_real_demo import export_real_demo
 

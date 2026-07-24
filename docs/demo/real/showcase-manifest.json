@@ -1,0 +1,128 @@
+{
+  "artifacts": {
+    "README.md": {
+      "bytes": 741,
+      "mime_type": "text/markdown",
+      "path": "README.md",
+      "sha256": "5cf947d5ea56cf6aa59eaa918a50b6001d5a7a25e5cc43404fee683010e08e8a"
+    },
+    "final.png": {
+      "bytes": 1382907,
+      "mime_type": "image/png",
+      "path": "final.png",
+      "sha256": "36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4"
+    },
+    "mcp-result.json": {
+      "bytes": 398,
+      "mime_type": "application/json",
+      "path": "mcp-result.json",
+      "sha256": "07fe3409b92dd83d3ef7d24aaae124844963a7ae892c2031054ea9d749c4e246"
+    },
+    "preview.jpg": {
+      "bytes": 94599,
+      "mime_type": "image/jpeg",
+      "path": "preview.jpg",
+      "sha256": "7d69246b120da2357128ae2d0331737f00f2fc9f048db85c6f42fef8b673e9bb"
+    },
+    "run-manifest.json": {
+      "bytes": 7427,
+      "mime_type": "application/json",
+      "path": "run-manifest.json",
+      "sha256": "b2564e1df4c2b3f1348f44a66973a2e362a26ae8bdb6ed3b1d5dcff16a9c8e2e"
+    },
+    "transcript.md": {
+      "bytes": 842,
+      "mime_type": "text/markdown",
+      "path": "transcript.md",
+      "sha256": "62288ee35f6ccbea6b44ce0388e8b7c14fec08d794648dfb4270f8153775835b"
+    }
+  },
+  "client_session": {
+    "client": "codex",
+    "path": "../../evidence/client-sessions/codex-v070.json",
+    "session_purpose": "golden_generation",
+    "sha256": "1d889b1e371fa13d24e23faa4dbc3275d30c12bfb35a030fc24357198c40ef3f",
+    "version": "0.146.0-alpha.3.1"
+  },
+  "demo_kind": "real_local_gpu_generation",
+  "final": {
+    "bytes": 1382907,
+    "confirmation": "finalize:20260724T083007Z-187ad21f4678:1:36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4",
+    "finalization_verified": true,
+    "height": 1024,
+    "image_sha256": "36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4",
+    "mime_type": "image/png",
+    "quality_status": "accepted",
+    "round_number": 1,
+    "run_id": "20260724T083007Z-187ad21f4678",
+    "visual_checks": {
+      "feet_and_contact": {
+        "observation": "No human is present.",
+        "status": "not_applicable"
+      },
+      "full_resolution_inspected": true,
+      "hands_and_held_objects": {
+        "observation": "No human is present.",
+        "status": "not_applicable"
+      },
+      "limb_separation": {
+        "observation": "No human is present.",
+        "status": "not_applicable"
+      },
+      "prominent_human": false,
+      "text_and_watermarks": {
+        "observation": "Full-resolution inspection found no text, logo, signature, or watermark.",
+        "status": "pass"
+      }
+    },
+    "width": 1024
+  },
+  "generation": {
+    "guidance_scale": 7.0,
+    "height": 1024,
+    "negative_prompt": "people, person, human figure, text, letters, numbers, logo, watermark, signature, signage, cropped lighthouse, duplicate lighthouse, multiple towers, distorted architecture, broken geometry, leaning horizon, low resolution, blurry, oversaturated, artifacts",
+    "positive_prompt": "A solitary white lighthouse with a red lantern room standing on one black basalt sea stack, the complete lighthouse visible from foundation to beacon, ocean waves and sea mist, storm-cleared blue-hour sky, one luminous beacon beam, centered composition, cinematic natural lighting, atmospheric depth, detailed realistic painted illustration, clean coherent architecture, no people, no lettering",
+    "sampler": "dpmpp_2m",
+    "scheduler": "karras",
+    "seed": 2026072401,
+    "steps": 30,
+    "width": 1024
+  },
+  "installed_package": {
+    "version": "0.7.0",
+    "wheel_sha256": "83ba9a8bc078f488d69b006e73f5dd2c89e7fe6e78b3302961d750beb5acc1a8"
+  },
+  "known_limitations": [
+    "This showcase records one observed local Windows and ComfyUI configuration.",
+    "SDXL 1.0 Base is used without an SDXL refiner or automatic upscale pass.",
+    "One accepted image does not establish a general image-quality or success-rate claim.",
+    "The complete nine-root plus three-revision public acceptance matrix remains outside this preview."
+  ],
+  "mcp_result": {
+    "path": "mcp-result.json",
+    "sha256": "07fe3409b92dd83d3ef7d24aaae124844963a7ae892c2031054ea9d749c4e246",
+    "source_sha256": "fc61bc0912b48673dcba275c6163419b2aabb3ecee2407167c18da9ec41b9898",
+    "tool": "local_gpu_finalize_run"
+  },
+  "model_output": true,
+  "public_rights": {
+    "license_id": "CreativeML Open RAIL++-M",
+    "license_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md",
+    "output_redistribution_status": "approved",
+    "source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"
+  },
+  "route": {
+    "authorization_scope": "public_evidence",
+    "backend": "comfyui",
+    "component_bundle_sha256": "ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62",
+    "model_id": "local:1a4a27ae037d08ad44e98772",
+    "model_identity_token": "model:89bf0283e0c284f8f84f8849035374bbdb60491e5a5665f801b3ec10b92d8b23",
+    "model_sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+    "prompt_compiler_id": "natural-v1",
+    "prompt_compiler_version": 1,
+    "workflow_sha256": "05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d36000e",
+    "workflow_template_id": "sdxl-txt2img",
+    "workflow_template_version": 1
+  },
+  "schema_version": "2.0"
+}

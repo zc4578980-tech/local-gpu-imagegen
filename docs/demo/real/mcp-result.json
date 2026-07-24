@@ -1,0 +1,13 @@
+{
+  "final": {
+    "image_sha256": "36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4",
+    "quality_status": "accepted",
+    "round_number": 1
+  },
+  "ok": true,
+  "run_id": "20260724T083007Z-187ad21f4678",
+  "schema_version": "1.0",
+  "source_sha256": "fc61bc0912b48673dcba275c6163419b2aabb3ecee2407167c18da9ec41b9898",
+  "state": "finalized",
+  "tool": "local_gpu_finalize_run"
+}
