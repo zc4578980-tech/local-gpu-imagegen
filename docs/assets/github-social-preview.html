@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1280, initial-scale=1">
+  <title>Local GPU Imagegen social preview</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 1280px;
+      height: 640px;
+      margin: 0;
+      overflow: hidden;
+      background: #101416;
+    }
+
+    #preview {
+      display: grid;
+      grid-template-columns: 46% 54%;
+      width: 1280px;
+      height: 640px;
+      color: #f4f7f5;
+      background: #101416;
+    }
+
+    .message {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 0;
+      padding: 58px 54px 58px 70px;
+    }
+
+    .message::before {
+      position: absolute;
+      top: 60px;
+      bottom: 60px;
+      left: 38px;
+      width: 4px;
+      content: "";
+      background: #61d394;
+    }
+
+    .label,
+    .clients,
+    .backends {
+      margin: 0;
+      font-family: Consolas, "Courier New", monospace;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .label {
+      margin-bottom: 28px;
+      color: #61d394;
+      font-size: 18px;
+      line-height: 1.2;
+    }
+
+    h1 {
+      max-width: 470px;
+      margin: 0 0 46px;
+      font-family: "Arial Narrow", "Aptos Narrow", "Segoe UI", sans-serif;
+      font-size: 46px;
+      font-stretch: condensed;
+      font-weight: 700;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .clients {
+      margin-bottom: 12px;
+      font-size: 22px;
+      line-height: 1.25;
+    }
+
+    .backends {
+      color: #aeb9b4;
+      font-size: 17px;
+      line-height: 1.3;
+    }
+
+    figure {
+      position: relative;
+      min-width: 0;
+      height: 640px;
+      margin: 0;
+      overflow: hidden;
+      background: #20272d;
+    }
+
+    figure img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center center;
+    }
+
+    figcaption {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      padding: 14px 22px 13px;
+      color: #101416;
+      background: #61d394;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+  </style>
+</head>
+<body>
+  <main id="preview" aria-label="Local GPU Imagegen social preview">
+    <section class="message">
+      <p class="label">LOCAL GPU IMAGEGEN</p>
+      <h1 aria-label="Use the image models you already run locally">Use the image models<br>you already run locally</h1>
+      <p class="clients">Codex + Claude Code</p>
+      <p class="backends">ComfyUI / Forge / Diffusers</p>
+    </section>
+    <figure>
+      <img src="../demo/real/final.png" alt="Validated lighthouse generation">
+      <figcaption>GENUINE LOCAL GPU RESULT</figcaption>
+    </figure>
+  </main>
+</body>
+</html>

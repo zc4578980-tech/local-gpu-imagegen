@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0",
+  "source": "docs/demo/real/final.png",
+  "source_sha256": "36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4",
+  "output": "docs/assets/github-social-preview.png",
+  "output_sha256": "8c3a82af2652afbb55354737bc0d30456ed55f56a2d53f98e1de6788f7fd2eef",
+  "width": 1280,
+  "height": 640
+}

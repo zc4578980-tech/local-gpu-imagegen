@@ -20,7 +20,7 @@ This checklist covers repository release readiness. It does not grant model, wor
 
 ## Publication gate
 
-- [ ] The genuine-image social preview is generated, validated at 1280x640, and visually reviewed without mutating remote metadata.
+- [x] The genuine-image social preview is generated, validated at 1280x640, and visually reviewed without mutating remote metadata.
 - [ ] The evidence-backed pessimistic first-30-day forecast is at least `100 GitHub Stars`.
 - [ ] Explicit authority is granted for each remote metadata change and publication action.
 - [ ] README, changelog, package metadata, plugin metadata, `server.json`, GitHub copy, directory copy, and release notes agree on version, fifteen tools, three backends, the ordinary golden path, and open limitations.
