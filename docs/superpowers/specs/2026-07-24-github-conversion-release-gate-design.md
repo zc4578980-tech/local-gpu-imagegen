@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-24
 
-**Status:** Approved in conversation; pending written-spec review
+**Status:** Approved
 
 **Branch:** `feature/v061-launch-readiness`
 
