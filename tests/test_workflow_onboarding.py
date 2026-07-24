@@ -405,3 +405,83 @@ class WorkflowOnboardingTests(unittest.TestCase):
         self.assertEqual(result["status"], "diagnostic")
         self.assertFalse(result["registrable"])
         self.assertNotIn("confirmation", result)
+
+    def test_confirmed_registration_is_immutable_and_idempotent(self) -> None:
+        self.use_exact_single_inventory()
+        proposal = self.onboarding.inspect(self.single_path)
+
+        first = self.onboarding.register(
+            self.single_path,
+            proposal["proposal_digest"],
+            proposal["confirmation"],
+        )
+        second = self.onboarding.register(
+            self.single_path,
+            proposal["proposal_digest"],
+            proposal["confirmation"],
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            first["registered_workflow_id"],
+            f"imported:{first['workflow_sha256']}",
+        )
+        self.assertEqual(first["recoverable_next_actions"], ["local_gpu_set_model_trust"])
+        registered = self.registry.load_registered(first["registered_workflow_id"])
+        self.assertEqual(registered["workflow_sha256"], first["workflow_sha256"])
+
+    def test_registration_rejects_source_semantic_inventory_and_confirmation_drift(
+        self,
+    ) -> None:
+        mutators = (
+            lambda: self.single_path.write_bytes(self.single_path.read_bytes() + b"\n"),
+            lambda: self.change_prompt_text(self.single_path),
+            lambda: self.inventory.clear(),
+            lambda: self.change_inventory_endpoint(),
+        )
+        for mutate in mutators:
+            self.reset_single_case()
+            proposal = self.onboarding.inspect(self.single_path)
+            mutate()
+            with self.subTest(mutate=mutate), self.assertRaises(AssetEngineError):
+                self.onboarding.register(
+                    self.single_path,
+                    proposal["proposal_digest"],
+                    proposal["confirmation"],
+                )
+            self.assertFalse((self.state_dir / "workflows").exists())
+
+    def test_registration_rejects_wrong_digest_or_confirmation_without_writing(self) -> None:
+        self.use_exact_single_inventory()
+        proposal = self.onboarding.inspect(self.single_path)
+        cases = (
+            ("A" * 64, proposal["confirmation"]),
+            ("0" * 64, proposal["confirmation"]),
+            (proposal["proposal_digest"], "register_workflow:wrong:wrong"),
+        )
+        for digest, confirmation in cases:
+            with self.subTest(digest=digest), self.assertRaises(AssetEngineError):
+                self.onboarding.register(self.single_path, digest, confirmation)
+            self.assertFalse((self.state_dir / "workflows").exists())
+
+    def test_formatting_only_rewrite_requires_fresh_confirmation_but_same_id(self) -> None:
+        self.use_exact_single_inventory()
+        proposal = self.onboarding.inspect(self.single_path)
+        workflow_sha256 = proposal["workflow_sha256"]
+        self.write_json("single.json", self.single_graph, compact=True)
+
+        with self.assertRaises(AssetEngineError):
+            self.onboarding.register(
+                self.single_path,
+                proposal["proposal_digest"],
+                proposal["confirmation"],
+            )
+        fresh = self.onboarding.inspect(self.single_path)
+        registered = self.onboarding.register(
+            self.single_path,
+            fresh["proposal_digest"],
+            fresh["confirmation"],
+        )
+
+        self.assertEqual(fresh["workflow_sha256"], workflow_sha256)
+        self.assertEqual(registered["registered_workflow_id"], f"imported:{workflow_sha256}")

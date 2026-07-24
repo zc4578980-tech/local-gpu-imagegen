@@ -5,7 +5,7 @@ import hashlib
 from collections.abc import Callable
 from pathlib import Path
 
-from .errors import ValidationError
+from .errors import ConflictError, ValidationError
 from .model_identity import identity_token, validate_discovery_record
 from .workflow_templates import (
     MODEL_LOADER_INPUTS,
@@ -17,11 +17,18 @@ from .workflow_templates import (
 
 
 PROPOSAL_SCHEMA_VERSION = 1
+PROPOSAL_FIELDS = (
+    "source_sha256", "workflow_sha256", "topology", "binding", "owned_output", "components",
+)
 EXCLUDED_CLASSES = frozenset((
     "VAEEncode", "VAEEncodeForInpaint", "LoadImage", "LoadImageMask",
-    "ConditioningSetAreaPercentage", "ConditioningCombine", "SolidMask",
-    "MaskComposite", "FeatherMask", "ImageCompositeMasked", "MaskToImage",
+    "ConditioningSetAreaPercentage", "ConditioningCombine", "SolidMask", "MaskComposite",
+    "FeatherMask", "ImageCompositeMasked", "MaskToImage",
 ))
+
+
+def _hex64(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
 def _reject(
@@ -29,9 +36,7 @@ def _reject(
     message: str,
     details: dict[str, object] | None = None,
 ) -> None:
-    if details is None:
-        raise ValidationError(code, message)
-    raise ValidationError(code, message, details)
+    raise ValidationError(code, message) if details is None else ValidationError(code, message, details)
 
 
 def _looks_like_api_graph(value: object) -> bool:
@@ -50,23 +55,12 @@ def _extract_graph(value: object) -> dict[str, object]:
     if _looks_like_api_graph(value):
         return copy.deepcopy(value)
     if isinstance(value, dict) and _looks_like_api_graph(value.get("prompt")):
-        other_graph_keys = sorted(
-            key
-            for key, item in value.items()
-            if key != "prompt" and _looks_like_api_graph(item)
-        )
+        other_graph_keys = sorted(key for key, item in value.items() if key != "prompt" and _looks_like_api_graph(item))
         if other_graph_keys:
-            _reject(
-                "unsupported_workflow_envelope",
-                "Workflow wrapper contains multiple API graph candidates.",
-                {"fields": ["prompt", *other_graph_keys]},
-            )
+            _reject("unsupported_workflow_envelope", "Workflow wrapper contains multiple API graph candidates.", {"fields": ["prompt", *other_graph_keys]})
         return copy.deepcopy(value["prompt"])
     if isinstance(value, dict) and {"nodes", "links"} <= set(value):
-        _reject(
-            "unsupported_workflow_envelope",
-            "ComfyUI UI format is unsupported; enable developer mode and export API format.",
-        )
+        _reject("unsupported_workflow_envelope", "ComfyUI UI format is unsupported; enable developer mode and export API format.")
     _reject(
         "unsupported_workflow_envelope",
         "Workflow must be a bare API graph or contain one API graph under prompt.",
@@ -92,8 +86,9 @@ class WorkflowOnboarding:
         encoded, source_value = read_workflow_source(Path(path))
         graph = _extract_graph(source_value)
         inferred = infer_workflow_binding(graph)
-        available_models = [item["backend_model_id"] for item in inferred["components"]]
-        prepared = self.workflows.prepare_import(graph, inferred["binding"], available_models)
+        prepared = self.workflows.prepare_import(
+            graph, inferred["binding"], _component_model_names(inferred["components"])
+        )
         if prepared["operation"] != "txt2img":
             _reject(
                 "unsupported_workflow_operation",
@@ -120,13 +115,60 @@ class WorkflowOnboarding:
             ),
         }
         if not match_failures:
-            proposal = self._proposal_payload(result)
+            proposal = {
+                "schema_version": PROPOSAL_SCHEMA_VERSION,
+                **{key: result[key] for key in PROPOSAL_FIELDS},
+            }
             digest = _canonical_hash(proposal)
             result["proposal_digest"] = digest
             result["confirmation"] = f"register_workflow:{source_sha256}:{digest}"
         else:
             result["inventory_diagnostics"] = match_failures
         return result
+
+    def register(
+        self, path: Path, proposal_digest: str, confirmation: str,
+    ) -> dict[str, object]:
+        if not _hex64(proposal_digest):
+            _reject("invalid_workflow_confirmation", "Workflow proposal digest must be 64 lowercase hex characters.")
+        current = self.inspect(Path(path))
+        if not current["registrable"]:
+            raise ConflictError(
+                "workflow_proposal_stale",
+                "Workflow or current inventory no longer matches a registerable proposal.",
+            )
+        if proposal_digest != current["proposal_digest"]:
+            raise ConflictError(
+                "workflow_proposal_stale",
+                "Workflow proposal changed after inspection.",
+            )
+        if confirmation != current["confirmation"]:
+            _reject(
+                "invalid_workflow_confirmation",
+                "Workflow registration confirmation does not match exact current bytes and proposal.",
+            )
+
+        encoded, source_value = read_workflow_source(Path(path))
+        if hashlib.sha256(encoded).hexdigest() != current["source_sha256"]:
+            raise ConflictError(
+                "workflow_proposal_stale",
+                "Workflow source bytes changed during registration revalidation.",
+            )
+        graph = _extract_graph(source_value)
+        prepared = self.workflows.prepare_import(graph, current["binding"], _component_model_names(current["components"]))
+        if prepared["workflow_sha256"] != current["workflow_sha256"]:
+            raise ConflictError(
+                "workflow_proposal_stale",
+                "Workflow changed during registration revalidation.",
+            )
+        stored = self.workflows.store_prepared_import(prepared)
+        return {
+            "registered_workflow_id": stored["template_id"],
+            "template_version": stored["template_version"],
+            **{key: current[key] for key in ("source_sha256", "topology", "owned_output", "components")},
+            "workflow_sha256": stored["workflow_sha256"],
+            "recoverable_next_actions": ["local_gpu_set_model_trust"],
+        }
 
     def _match_inventory(
         self, components: list[dict[str, str]],
@@ -166,18 +208,6 @@ class WorkflowOnboarding:
             })
         return matched, failures
 
-    def _proposal_payload(self, result: dict[str, object]) -> dict[str, object]:
-        return {
-            "schema_version": PROPOSAL_SCHEMA_VERSION,
-            "source_sha256": result["source_sha256"],
-            "workflow_sha256": result["workflow_sha256"],
-            "topology": result["topology"],
-            "binding": result["binding"],
-            "owned_output": result["owned_output"],
-            "components": result["components"],
-        }
-
-
 def _inventory_match(record: dict[str, object], metadata: object, component: dict[str, str]) -> bool:
     return (
         record.get("backend") == "comfyui"
@@ -186,6 +216,10 @@ def _inventory_match(record: dict[str, object], metadata: object, component: dic
         and metadata.get("loader_class") == component["loader_class"]
         and metadata.get("loader_input") == component["loader_input"]
     )
+
+
+def _component_model_names(components: object) -> list[str]:
+    return [item["backend_model_id"] for item in components if isinstance(item, dict)]
 
 
 def _node(graph: dict[str, object], node_id: str) -> dict[str, object]:
