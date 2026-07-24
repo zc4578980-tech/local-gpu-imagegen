@@ -6,7 +6,7 @@ Name: `local-gpu-imagegen`
 
 Description:
 
-> Auditable Agent control plane for local image generation across ComfyUI, AUTOMATIC1111/Forge, and Diffusers: trusted routes, bounded review, immutable revisions, no silent downloads.
+> Connect Codex or Claude Code to existing local ComfyUI, AUTOMATIC1111/Forge, or Diffusers image backends without silent downloads or model switches.
 
 Topics:
 
@@ -14,13 +14,13 @@ Topics:
 
 ## Preview release
 
-Title: `v0.7.0 Preview - Auditable regional control for local image generation`
+Title: `v0.7.0 Preview - Trusted local image generation for Agents`
 
 Summary:
 
-This preview packages the fifteen-tool MCP server as an installable Python CLI and adds read-only guided Codex/Claude Code setup, deterministic route confirmation, bounded successful-round budgets, structured full-resolution review, immutable preserve/change revisions, durable manifests, WebUI/Forge and reviewed ComfyUI routes, and explicit local-model trust. Its fixed copy/subject SDXL route freezes displayed region geometry while allowing regional prompt and strength refinement. A deterministic model-free vertical slice verifies that lifecycle without starting ComfyUI or a GPU.
+This preview packages the fifteen-tool MCP server as an installable Python CLI for Codex and Claude Code. It reuses an existing ComfyUI, AUTOMATIC1111/Forge, or Diffusers backend, delegates setup to each official client command, confirms deterministic model routes and budgets, and retains structured full-resolution review, byte-bound finalization, immutable revisions, and durable recovery without silently downloading or switching a model.
 
-Publication is blocked until genuine regional SDXL output, retained Codex and Claude Code tool-call records, four public CI jobs, the PyPI artifact, and MCP Registry record all validate. The simulated demo and fake-backend regional slice are not model output. The release does not include model weights, private runs, complete 9+3 real acceptance, or measured quality, latency, VRAM, or production-readiness claims.
+The release-blocking golden result uses ordinary `sdxl-txt2img` and remains pending. Regional and two-stage composition are experimental, not part of the golden path, and provide no fallback; their retained negative evidence does not establish a visual-quality improvement. Publication also remains blocked on retained Codex and Claude Code sessions, four public CI jobs, the exact PyPI artifact, and the MCP Registry record. The release does not claim complete 9+3 acceptance, measured quality, latency, VRAM, or production readiness.
 
 Install after PyPI publication:
 

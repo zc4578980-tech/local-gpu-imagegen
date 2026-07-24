@@ -6,14 +6,18 @@ All notable changes will be documented in this file.
 
 ### Added
 
-- Exact Agent guidance for the confirmed `sdxl-two-stage-copy-subject-v1.json` route, including pixel geometry and percentages, base and derived subject seeds, workflow/control/bundle identities, and an initial gate of exactly one two-stage round.
-- A deterministic 1280x720 model-free vertical slice covering catalog variants, live capability, exact route confirmation, base/mask/final artifacts, two stage units, protected-pixel verification, full-resolution stage review, final-only candidacy, and a one-pixel `partial` failure.
-- Optional MCP `stage_checks` transport on the existing `local_gpu_record_review` tool; the public surface remains exactly fifteen tools and generation plans remain exactly twenty fields.
+- An outcome-first release mainline connecting Codex or Claude Code to an existing local AUTOMATIC1111/Forge, ComfyUI, or Diffusers backend through the installed CLI.
+- A release-blocking public-evidence contract for one finalized ordinary `sdxl-txt2img` root with an original PNG, retained MCP result, full-resolution review, public rights, and validated hashes.
+
+### Changed
+
+- The public path now leads with installed verification, official-client setup, explicit route authority, structured review, and byte-bound finalization without silent downloads or model switches.
+- `sdxl-regional-txt2img` and `sdxl-two-stage-copy-subject` remain implemented and model-free tested, but both are experimental, not part of the golden path, and provide no fallback from the ordinary route.
 
 ### Evidence Boundary
 
-- The earlier single-pass regional route remains retained negative evidence and experimental compatibility; it does not establish a visual-quality improvement.
-- The two-stage vertical slice uses only deterministic standard-library PNG fixtures. It does not run a model, ComfyUI process, GPU, download, export, or publication action, and it makes no generated-image quality claim.
+- The earlier single-pass regional route remains retained negative evidence and experimental compatibility; together with the rejected two-stage run, it does not establish a visual-quality improvement.
+- A genuine eligible ordinary-route public result and generated named-client session remain pending. No measured quality, latency, VRAM, production-readiness, complete 9+3 acceptance, or publication claim is made.
 
 ## [0.7.0] - 2026-07-23
 

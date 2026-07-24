@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "local-gpu-imagegen"
 version = "0.7.0"
-description = "Auditable Agent control plane for trusted local image-generation backends."
+description = "Connect Agents to trusted local image-generation backends without silent downloads or switches."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

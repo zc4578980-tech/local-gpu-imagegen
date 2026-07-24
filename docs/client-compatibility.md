@@ -16,7 +16,9 @@ Run the checks with:
 python scripts/verify_client_configs.py
 ```
 
-The report deliberately returns `hosted_client_session: false`. Named-client session evidence remains pending until retained Codex and Claude Code sessions show each client calling the installed server and receiving canonical results.
+The report deliberately returns `hosted_client_session: false`. Named-client session evidence remains pending until retained Codex and Claude Code sessions show each client calling the installed server and receiving canonical results. Setup and stdio verification establish only the configuration contract; they do not establish that a hosted client generated an image.
+
+The release set will require one sanitized record for each named client at server version `0.7.0`, with at least one record covering the genuine ordinary-route generation path. Those runtime records do not exist yet and must not be inferred from the verified setup contract.
 
 ## Codex
 

@@ -46,6 +46,30 @@ ACTIVE_VERSION_FILES = ACTIVE_PUBLIC_DOCS + (
 )
 
 class PublicDocumentationTests(unittest.TestCase):
+    def test_readme_leads_with_literal_offer_and_installed_path(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        first_viewport = "\n".join(readme.splitlines()[:45])
+        promise = (
+            "Connect Codex or Claude Code to the image models you already run locally, "
+            "with one installable command path and no silent model downloads or switches."
+        )
+        self.assertIn("# Local GPU Imagegen", first_viewport)
+        self.assertIn(promise, first_viewport)
+        self.assertIn("uvx local-gpu-imagegen verify", first_viewport)
+        self.assertIn("uvx local-gpu-imagegen setup codex --apply", first_viewport)
+        self.assertLess(first_viewport.index(promise), first_viewport.index("Why This Project"))
+
+    def test_release_mainline_keeps_composition_routes_experimental(self) -> None:
+        public = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in ("README.md", "CHANGELOG.md", "docs/github-listing.md")
+        ).lower()
+        self.assertIn("ordinary `sdxl-txt2img`", public)
+        self.assertIn("experimental", public)
+        self.assertIn("not part of the golden path", public)
+        self.assertIn("does not establish a visual-quality improvement", public)
+        self.assertNotIn("regional control for local image generation", public)
+
     def test_readme_shipped_workflow_inventory_matches_packaged_assets(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         inventory = re.search(
@@ -373,21 +397,20 @@ class PublicDocumentationTests(unittest.TestCase):
 
         real_demo_ready = all(
             (demo_root / name).is_file()
-            for name in ("before.png", "after.png", "showcase-manifest.json")
+            for name in ("final.png", "mcp-result.json", "showcase-manifest.json")
         )
         named_clients_ready = all(
             (client_root / name).is_file()
-            for name in ("codex-v061.json", "claude-code-v061.json")
+            for name in ("codex-v070.json", "claude-code-v070.json")
         )
         if real_demo_ready:
-            self.assertIn("docs/demo/real/before.png", readme)
-            self.assertIn("docs/demo/real/after.png", readme)
+            self.assertIn("docs/demo/real/final.png", readme)
             self.assertLess(
-                readme.index("docs/demo/real/after.png"),
+                readme.index("docs/demo/real/final.png"),
                 readme.index("docs/demo/preview-loop.gif"),
             )
         else:
-            self.assertIn("Genuine local-GPU showcase: pending retained evidence", readme)
+            self.assertIn("Genuine local-GPU result: release gate pending", readme)
         if named_clients_ready:
             self.assertIn("retained named-client sessions", client_docs)
         else:

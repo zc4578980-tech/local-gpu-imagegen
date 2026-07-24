@@ -1,15 +1,15 @@
 {
   "name": "local-gpu-imagegen",
   "version": "0.7.0",
-  "description": "Orchestrate catalog-gated, reviewable local visual asset runs.",
+  "description": "Connect Agents to trusted local image-generation backends without silent downloads or switches.",
   "author": {
     "name": "Capricorn"
   },
   "skills": "./skills/",
   "interface": {
-    "displayName": "Local GPU Visual Asset Engine",
-    "shortDescription": "Brief and review catalog-gated local visual asset runs.",
-    "longDescription": "An Agent-native local visual asset control plane with adaptive briefing, bounded local model discovery, user-local trust, confirmed deterministic routing, reviewed checkpoint and split-model ComfyUI workflows, three visual Profiles, 1-to-3-round review workflows, immutable preserve/change revisions, and durable recovery. No model weights are bundled or downloaded implicitly. Model-free tests cover WebUI and ComfyUI adapter contracts. Real ComfyUI generation evidence remains local development validation rather than public acceptance evidence; the complete real 9+3 host/vision acceptance matrix is not retained.",
+    "displayName": "Local GPU Imagegen",
+    "shortDescription": "Connect Codex or Claude Code to trusted local visual asset backends.",
+    "longDescription": "Connect Codex or Claude Code to an existing AUTOMATIC1111/Forge, ComfyUI, or Diffusers visual asset backend through an installed MCP CLI. Adaptive briefing, bounded local model discovery, user-local trust, deterministic routes, durable review, byte-bound finalization, and immutable revisions keep control explicit. No model weights are bundled or downloaded implicitly. Model-free tests cover WebUI and ComfyUI adapter contracts. Real ComfyUI generation evidence remains local development validation rather than public acceptance evidence; the complete real 9+3 host/vision acceptance matrix is not retained. The ordinary SDXL route is the pending golden path; regional and two-stage composition remain experimental and do not establish visual-quality improvement.",
     "developerName": "Capricorn",
     "category": "Creative",
     "capabilities": [

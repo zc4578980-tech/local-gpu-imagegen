@@ -2,46 +2,41 @@
 
 <!-- mcp-name: io.github.zc4578980-tech/local-gpu-imagegen -->
 
-An auditable Agent control plane for the image models you already run locally. Describe the visual outcome in natural language; the Agent resolves one trusted AUTOMATIC1111/Forge, ComfyUI, or Diffusers route, confirms the budget, and keeps review and revision state durable without silent downloads or model switches.
-
-> **Genuine local-GPU showcase: pending retained evidence.** The release branch will add the public-rights before/after bytes here only after route, lineage, review, finalization, and artifact hashes validate.
-
-![Simulated brief-to-candidate protocol loop](docs/demo/preview-loop.gif)
-
-> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. Version 0.7.0 is a preview candidate: model-free tests cover the protocol, backend contracts, and fixed two-region SDXL conditioning lifecycle, while genuine regional image-quality acceptance, named-client session evidence, a complete real 9+3 visual matrix, and measured quality/performance remain pending.
-
-## Quick Start
-
-After `0.7.0` is published to PyPI, Python 3.11 or 3.12 is enough to verify the control plane and request official Codex setup. Neither command generates an image or downloads a model.
+Connect Codex or Claude Code to the image models you already run locally, with one installable command path and no silent model downloads or switches.
 
 ```shell
 uvx local-gpu-imagegen verify
 uvx local-gpu-imagegen setup codex --apply
 ```
 
-For Claude Code, run `uvx local-gpu-imagegen setup claude-code --apply`. Without `--apply`, setup is read-only: it reports the detected client, exact official `mcp add` and removal commands, and model-free backend readiness. The project never edits client configuration files directly.
+`setup` is read-only without `--apply`. The apply path delegates to the client's official `mcp add` command; Local GPU Imagegen does not edit client configuration files directly or download a model.
 
-Remove the entries with `codex mcp remove local-gpu-imagegen` or `claude mcp remove --scope user local-gpu-imagegen`. Use `local-gpu-imagegen doctor` to inspect local backend readiness. The setup contracts and equivalent stdio launches are verified; retained real hosted sessions remain pending. See [Client compatibility](docs/client-compatibility.md).
+> **Genuine local-GPU result: release gate pending.** `docs/demo/real/final.png` becomes release evidence only after the ordinary SDXL route, original PNG, full-resolution review, later byte-bound finalization, retained MCP result, public rights, and exported hashes validate.
 
-Before PyPI publication, install the verified wheel or a source checkout, then use the same `local-gpu-imagegen verify` and `local-gpu-imagegen setup ...` commands.
+![Simulated brief-to-candidate protocol loop](docs/demo/preview-loop.gif)
+
+> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. It remains secondary to the pending genuine result. Model-free tests cover the protocol and backend contracts, not image quality, named-client generation, performance, or complete 9+3 acceptance.
+
+For Claude Code, use `uvx local-gpu-imagegen setup claude-code --apply`. Remove the entries with `codex mcp remove local-gpu-imagegen` or `claude mcp remove --scope user local-gpu-imagegen`. Use `uvx local-gpu-imagegen doctor` to inspect local backend readiness. The setup contracts and equivalent stdio launches are verified; retained hosted sessions remain pending. See [Client compatibility](docs/client-compatibility.md).
+
+Before PyPI publication, install the verified wheel or a source checkout, then use the equivalent `local-gpu-imagegen verify` and `local-gpu-imagegen setup ...` commands.
 
 ## Why This Project
 
-- **Local-first by default:** prompts and images stay on the configured machine when the WebUI URL is local.
-- **No hidden model downloads:** Diffusers uses local files only unless `allow_download` is explicitly enabled.
-- **Three backend paths:** reuse AUTOMATIC1111/Forge or ComfyUI, or keep Diffusers as a compatibility path.
-- **Agent-readable results:** successful calls and failures include structured JSON, not only console text.
+- **Reuse the backends you already run:** connect AUTOMATIC1111/Forge or ComfyUI, with Diffusers retained as a compatibility path.
+- **Use the installed CLI:** verify, inspect readiness, and delegate setup to the official Codex or Claude Code command without requiring a source checkout.
+- **Keep model authority explicit:** discovery never loads weights, and generation cannot silently download or switch a model.
+- **Retain structured evidence:** routes, budgets, attempts, image hashes, reviews, and recovery actions remain machine-readable and durable.
+- **Keep acceptance with the user:** original-resolution review and later byte-bound finalization separate a generated image from an accepted final.
 - **Agent-guided workflow:** a bundled Agent Skill turns a natural-language brief into a catalog-gated, confirmed run.
-- **Bring your existing models:** bounded discovery merges WebUI/Forge and ComfyUI inventory with explicit user-local trust; scanning never loads or downloads weights.
-- **Frozen, explainable routing:** one model/backend/workflow/compiler identity is persisted and rechecked, with no silent model switch.
-- **Confirmed regional composition:** a reviewed SDXL ComfyUI route freezes one copy region and one subject region, then permits prompt/strength refinement without silently moving either region.
-- **Control-bound two-stage routing:** the optional SDXL copy/subject workflow derives its control identity server-side from the normalized layout and inspected workflow, then requires an exact endpoint/model/workflow/bundle/control match.
-- **Durable review loop:** a persisted manifest tracks one to three successful generation rounds, evidence-based reviews, final selection, and recovery actions.
 - **Three delivery Profiles:** standalone illustrations, presentation visuals, and UI visual assets share one deterministic run and review contract.
 - **Auditable hot revision:** an immutable child run records a preserve/change contract and uses prompt refinement, img2img, or explicitly confirmed inpainting.
-- **Anime profile data:** a versioned anime style and model registry make selection rules explicit without bundling a model.
 - **Dependency-light MCP layer:** protocol checks and tests use the Python standard library and require no GPU.
 - **Focused scope:** image generation is kept separate from planning, memory, and unrelated agent features.
+
+### Experimental Composition Controls
+
+The golden path uses ordinary `sdxl-txt2img`. The `sdxl-regional-txt2img` and `sdxl-two-stage-copy-subject` routes remain experimental, are not part of the golden path, and provide no fallback from the ordinary route. Their retained negative evidence does not establish a visual-quality improvement.
 
 ## Source Checkout And Backend Setup
 
@@ -358,12 +353,13 @@ Verified:
 Pending before a `1.0` claim:
 
 - a complete retained 9+3 real host/vision acceptance matrix
-- real ComfyUI integration evidence and reviewed output
+- an eligible, finalized, public-rights ordinary-route result
 - real Real-ESRGAN binary/GPU execution evidence
-- real hosted sessions in Codex, Claude Code, and other named MCP clients
+- generated named-client session evidence in Codex or Claude Code
 - measured performance or VRAM data
+- any production-readiness claim
 
-The Mocked/model-free matrix is deterministic protocol evidence, not retained real Codex/vision/GPU evidence. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. Local Z-Image and Anima calls through the project adapter have been observed, but they are local development validation rather than public acceptance evidence. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No real-generation, production, performance, VRAM, image-quality, named-client compatibility, star, or popularity claim is made.
+The Mocked/model-free matrix is deterministic protocol evidence, not retained real Codex/vision/GPU evidence. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. Local Z-Image and Anima calls through the project adapter have been observed, but they are local development validation rather than public acceptance evidence. One ordinary-route SDXL MCP run is retained only as rejected local development evidence: it has no candidate or final and is not a public result. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No production, performance, VRAM, image-quality, named-client generation, star, or popularity claim is made.
 
 The repository retains no complete real 9+3 image-acceptance matrix or publishable real ComfyUI acceptance artifact, and makes no image-quality, performance, or VRAM claim. Use the readiness commands above to inspect the target environment.
 

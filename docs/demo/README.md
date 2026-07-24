@@ -1,8 +1,10 @@
 # Demo Evidence
 
-## Genuine Local-GPU Hot Revision
+## Genuine Local-GPU Ordinary Route
 
-Pending retained evidence. `docs/demo/real/` is created only after genuine SDXL root and immutable child bytes pass public authority, full-resolution review, byte-bound user finalization, sanitized export, and hash validation. Until that directory validates, the repository makes no public showcase or image-quality claim.
+Pending retained evidence. `docs/demo/real/` is created only after one ordinary `sdxl-txt2img` root passes public authority, retains its original PNG and MCP result, receives full-resolution review, is finalized by a later byte-bound user confirmation, and passes sanitized export and hash validation. A hot revision is not required. Until that directory validates, the repository makes no public showcase or image-quality claim.
+
+The regional and two-stage composition routes are experimental, not part of the golden path, and are not fallback routes for this demo. Their retained negative evidence does not establish a visual-quality improvement.
 
 ## Simulated Protocol Demo
 
