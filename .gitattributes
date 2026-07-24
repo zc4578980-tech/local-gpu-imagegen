@@ -1,0 +1,2 @@
+# Shipped workflows are hash-bound artifacts; preserve their exact mixed EOL bytes.
+workflows/comfyui/*.json -text diff

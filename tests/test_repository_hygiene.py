@@ -11,6 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RepositoryHygieneTests(unittest.TestCase):
+    def test_hash_bound_workflows_disable_checkout_eol_conversion(self) -> None:
+        attributes = ROOT / ".gitattributes"
+        self.assertTrue(attributes.is_file())
+        rules = attributes.read_text(encoding="utf-8").splitlines()
+        self.assertIn("workflows/comfyui/*.json -text diff", rules)
+
     def test_mit_metadata_and_public_templates_are_retained(self) -> None:
         project = tomllib.loads(
             (ROOT / "pyproject.toml").read_text(encoding="utf-8")
