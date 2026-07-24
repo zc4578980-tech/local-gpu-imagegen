@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -11,36 +10,28 @@ from .model_identity import identity_token, validate_discovery_record
 from .workflow_templates import (
     MODEL_LOADER_INPUTS,
     WorkflowTemplateRegistry,
+    _canonical_hash,
     read_workflow_source,
     workflow_component_bindings,
 )
 
 
 PROPOSAL_SCHEMA_VERSION = 1
-EXCLUDED_CLASSES = frozenset({
-    "VAEEncode",
-    "VAEEncodeForInpaint",
-    "LoadImage",
-    "LoadImageMask",
-    "ConditioningSetAreaPercentage",
-    "ConditioningCombine",
-    "SolidMask",
-    "MaskComposite",
-    "FeatherMask",
-    "ImageCompositeMasked",
-    "MaskToImage",
-})
+EXCLUDED_CLASSES = frozenset((
+    "VAEEncode", "VAEEncodeForInpaint", "LoadImage", "LoadImageMask",
+    "ConditioningSetAreaPercentage", "ConditioningCombine", "SolidMask",
+    "MaskComposite", "FeatherMask", "ImageCompositeMasked", "MaskToImage",
+))
 
 
-def _canonical_hash(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+def _reject(
+    code: str,
+    message: str,
+    details: dict[str, object] | None = None,
+) -> None:
+    if details is None:
+        raise ValidationError(code, message)
+    raise ValidationError(code, message, details)
 
 
 def _looks_like_api_graph(value: object) -> bool:
@@ -48,10 +39,8 @@ def _looks_like_api_graph(value: object) -> bool:
         isinstance(value, dict)
         and bool(value)
         and all(
-            isinstance(node_id, str)
-            and isinstance(node, dict)
-            and isinstance(node.get("class_type"), str)
-            and isinstance(node.get("inputs"), dict)
+            isinstance(node_id, str) and isinstance(node, dict)
+            and isinstance(node.get("class_type"), str) and isinstance(node.get("inputs"), dict)
             for node_id, node in value.items()
         )
     )
@@ -67,18 +56,18 @@ def _extract_graph(value: object) -> dict[str, object]:
             if key != "prompt" and _looks_like_api_graph(item)
         )
         if other_graph_keys:
-            raise ValidationError(
+            _reject(
                 "unsupported_workflow_envelope",
                 "Workflow wrapper contains multiple API graph candidates.",
                 {"fields": ["prompt", *other_graph_keys]},
             )
         return copy.deepcopy(value["prompt"])
     if isinstance(value, dict) and {"nodes", "links"} <= set(value):
-        raise ValidationError(
+        _reject(
             "unsupported_workflow_envelope",
             "ComfyUI UI format is unsupported; enable developer mode and export API format.",
         )
-    raise ValidationError(
+    _reject(
         "unsupported_workflow_envelope",
         "Workflow must be a bare API graph or contain one API graph under prompt.",
     )
@@ -86,14 +75,13 @@ def _extract_graph(value: object) -> dict[str, object]:
 
 class WorkflowOnboarding:
     def __init__(
-        self,
-        workflows: WorkflowTemplateRegistry,
+        self, workflows: WorkflowTemplateRegistry,
         inventory_provider: Callable[[], list[dict[str, object]]],
     ) -> None:
         if not isinstance(workflows, WorkflowTemplateRegistry) or not callable(
             inventory_provider
         ):
-            raise ValidationError(
+            _reject(
                 "invalid_workflow_onboarding",
                 "Workflow onboarding dependencies are invalid.",
             )
@@ -104,16 +92,10 @@ class WorkflowOnboarding:
         encoded, source_value = read_workflow_source(Path(path))
         graph = _extract_graph(source_value)
         inferred = infer_workflow_binding(graph)
-        available_models = [
-            item["backend_model_id"] for item in inferred["components"]
-        ]
-        prepared = self.workflows.prepare_import(
-            graph,
-            inferred["binding"],
-            available_models,
-        )
+        available_models = [item["backend_model_id"] for item in inferred["components"]]
+        prepared = self.workflows.prepare_import(graph, inferred["binding"], available_models)
         if prepared["operation"] != "txt2img":
-            raise ValidationError(
+            _reject(
                 "unsupported_workflow_operation",
                 "Workflow onboarding supports ordinary txt2img only.",
             )
@@ -129,13 +111,11 @@ class WorkflowOnboarding:
             "owned_output": {"node_id": inferred["output_node"]},
             "components": matched,
             "limitations": [
-                "ordinary_txt2img_only",
-                "no_custom_nodes_or_graph_editing",
+                "ordinary_txt2img_only", "no_custom_nodes_or_graph_editing",
                 "registration_does_not_grant_model_trust_or_public_authority",
             ],
             "recoverable_next_actions": (
-                ["local_gpu_register_workflow"]
-                if not match_failures
+                ["local_gpu_register_workflow"] if not match_failures
                 else ["local_gpu_discover_models"]
             ),
         }
@@ -149,14 +129,11 @@ class WorkflowOnboarding:
         return result
 
     def _match_inventory(
-        self,
-        components: list[dict[str, str]],
+        self, components: list[dict[str, str]],
     ) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
         raw_inventory = self.inventory_provider()
-        if not isinstance(raw_inventory, list):
-            raw_inventory = []
         inventory: list[dict[str, object]] = []
-        for value in raw_inventory:
+        for value in raw_inventory if isinstance(raw_inventory, list) else []:
             try:
                 inventory.append(validate_discovery_record(value))
             except ValidationError:
@@ -169,13 +146,7 @@ class WorkflowOnboarding:
             candidates = []
             for record in inventory:
                 metadata = record.get("metadata")
-                if (
-                    record.get("backend") == "comfyui"
-                    and record.get("backend_model_id") == component["backend_model_id"]
-                    and isinstance(metadata, dict)
-                    and metadata.get("loader_class") == component["loader_class"]
-                    and metadata.get("loader_input") == component["loader_input"]
-                ):
+                if _inventory_match(record, metadata, component):
                     candidates.append(record)
             public_component = copy.deepcopy(component)
             if len(candidates) == 1:
@@ -184,15 +155,13 @@ class WorkflowOnboarding:
                 endpoints.add(str(record["endpoint_identity"]))
             else:
                 failures.append({
-                    "role": component["role"],
+                    "role": component["role"], "candidate_count": len(candidates),
                     "reason": "unavailable" if not candidates else "ambiguous",
-                    "candidate_count": len(candidates),
                 })
             matched.append(public_component)
         if len(endpoints) > 1:
             failures.append({
-                "role": "workflow",
-                "reason": "endpoint_mismatch",
+                "role": "workflow", "reason": "endpoint_mismatch",
                 "candidate_count": len(endpoints),
             })
         return matched, failures
@@ -209,10 +178,20 @@ class WorkflowOnboarding:
         }
 
 
+def _inventory_match(record: dict[str, object], metadata: object, component: dict[str, str]) -> bool:
+    return (
+        record.get("backend") == "comfyui"
+        and record.get("backend_model_id") == component["backend_model_id"]
+        and isinstance(metadata, dict)
+        and metadata.get("loader_class") == component["loader_class"]
+        and metadata.get("loader_input") == component["loader_input"]
+    )
+
+
 def _node(graph: dict[str, object], node_id: str) -> dict[str, object]:
     value = graph.get(node_id)
     if not isinstance(value, dict) or not isinstance(value.get("inputs"), dict):
-        raise ValidationError(
+        _reject(
             "ambiguous_workflow_binding",
             "Workflow path references an invalid node.",
             {"candidate_node_ids": [node_id]},
@@ -228,7 +207,7 @@ def _link(value: object, role: str) -> tuple[str, int]:
         or type(value[1]) is not int
         or value[1] < 0
     ):
-        raise ValidationError(
+        _reject(
             "ambiguous_workflow_binding",
             f"Workflow {role} is not one exact graph edge.",
             {"role": role, "candidate_node_ids": []},
@@ -236,18 +215,14 @@ def _link(value: object, role: str) -> tuple[str, int]:
     return value[0], value[1]
 
 
-def _only_class(
-    graph: dict[str, object],
-    classes: frozenset[str],
-    role: str,
-) -> tuple[str, dict[str, object]]:
+def _only_class(graph: dict[str, object], classes: frozenset[str], role: str) -> tuple[str, dict[str, object]]:
     matches = sorted(
         (node_id, node)
         for node_id, node in graph.items()
         if isinstance(node, dict) and node.get("class_type") in classes
     )
     if len(matches) != 1:
-        raise ValidationError(
+        _reject(
             "ambiguous_workflow_binding",
             f"Workflow requires one unambiguous {role}.",
             {"role": role, "candidate_node_ids": [item[0] for item in matches]},
@@ -256,17 +231,14 @@ def _only_class(
 
 
 def _walk_passthrough(
-    graph: dict[str, object],
-    edge: object,
-    role: str,
-    targets: frozenset[str],
-    passthrough_input: dict[str, str],
+    graph: dict[str, object], edge: object, role: str,
+    targets: frozenset[str], passthrough_input: dict[str, str],
 ) -> tuple[str, int]:
     seen: set[str] = set()
     node_id, slot = _link(edge, role)
     while True:
         if node_id in seen:
-            raise ValidationError(
+            _reject(
                 "ambiguous_workflow_binding",
                 f"Workflow {role} contains a cycle.",
                 {"role": role, "candidate_node_ids": sorted(seen)},
@@ -278,7 +250,7 @@ def _walk_passthrough(
             return node_id, slot
         input_name = passthrough_input.get(str(class_type))
         if input_name is None:
-            raise ValidationError(
+            _reject(
                 "ambiguous_workflow_binding",
                 f"Workflow {role} does not reach one reviewed source.",
                 {"role": role, "candidate_node_ids": [node_id]},
@@ -288,7 +260,7 @@ def _walk_passthrough(
 
 def infer_workflow_binding(graph: object) -> dict[str, object]:
     if not isinstance(graph, dict) or not graph:
-        raise ValidationError(
+        _reject(
             "unsupported_workflow_envelope",
             "Workflow must contain one ComfyUI API graph object.",
         )
@@ -299,7 +271,7 @@ def infer_workflow_binding(graph: object) -> dict[str, object]:
     }
     excluded = sorted(item for item in classes if item in EXCLUDED_CLASSES)
     if excluded:
-        raise ValidationError(
+        _reject(
             "unsupported_workflow_operation",
             "Workflow onboarding supports ordinary txt2img only.",
             {"node_classes": excluded},
@@ -315,17 +287,17 @@ def infer_workflow_binding(graph: object) -> dict[str, object]:
     output_id, output = _only_class(graph, frozenset({"SaveImage"}), "owned_output")
 
     if _link(sampler["inputs"].get("latent_image"), "latent_source")[0] != latent_id:
-        raise ValidationError(
+        _reject(
             "ambiguous_workflow_binding",
             "Sampler latent path is cross-wired.",
         )
     if _link(decoder["inputs"].get("samples"), "decoder")[0] != sampler_id:
-        raise ValidationError(
+        _reject(
             "ambiguous_workflow_binding",
             "Decoder sample path is cross-wired.",
         )
     if _link(output["inputs"].get("images"), "owned_output")[0] != decoder_id:
-        raise ValidationError(
+        _reject(
             "ambiguous_workflow_binding",
             "Owned output path is cross-wired.",
         )
@@ -352,7 +324,7 @@ def infer_workflow_binding(graph: object) -> dict[str, object]:
         {"ConditioningZeroOut": "conditioning"},
     )
     if positive_id == negative_id:
-        raise ValidationError(
+        _reject(
             "ambiguous_workflow_binding",
             "Positive and negative prompts must be distinct.",
             {"role": "conditioning", "candidate_node_ids": [positive_id]},
@@ -360,7 +332,7 @@ def infer_workflow_binding(graph: object) -> dict[str, object]:
 
     model_class = str(_node(graph, model_id)["class_type"])
     if model_slot != 0:
-        raise ValidationError(
+        _reject(
             "ambiguous_workflow_binding",
             "Primary model path uses an unsupported loader output.",
             {"role": "primary_model", "candidate_node_ids": [model_id]},
@@ -396,7 +368,7 @@ def infer_workflow_binding(graph: object) -> dict[str, object]:
     )
     actual_roles = {item["role"] for item in components}
     if actual_roles != expected_roles:
-        raise ValidationError(
+        _reject(
             "unsupported_workflow_topology",
             "Workflow loader topology is incomplete, mixed, or ambiguous.",
             {"roles": sorted(actual_roles), "topology": topology},
@@ -419,12 +391,8 @@ def infer_workflow_binding(graph: object) -> dict[str, object]:
 
 
 def _validate_component_edges(
-    graph: dict[str, object],
-    topology: str,
-    model_id: str,
-    positive_id: str,
-    negative_id: str,
-    decoder_id: str,
+    graph: dict[str, object], topology: str, model_id: str,
+    positive_id: str, negative_id: str, decoder_id: str,
 ) -> None:
     positive_clip = _link(
         _node(graph, positive_id)["inputs"].get("clip"),
@@ -454,7 +422,7 @@ def _validate_component_edges(
     if decoder_vae != expected_vae:
         failures.append(decoder_vae[0])
     if failures:
-        raise ValidationError(
+        _reject(
             "ambiguous_workflow_binding",
             "Conditioning or decoder components are disconnected or cross-wired.",
             {"role": "component_path", "candidate_node_ids": sorted(set(failures))},
