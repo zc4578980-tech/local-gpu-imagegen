@@ -46,6 +46,26 @@ def remap_graph(graph: dict[str, object], seed: int) -> dict[str, object]:
     return dict(items)
 
 
+def comfy_record(
+    backend_model_id: str,
+    loader_class: str,
+    loader_input: str,
+    *,
+    endpoint: str = "http://127.0.0.1:8188",
+) -> dict[str, object]:
+    return {
+        "backend": "comfyui",
+        "endpoint_identity": endpoint,
+        "backend_model_id": backend_model_id,
+        "format": "comfyui-choice",
+        "byte_size": None,
+        "modified_ns": None,
+        "sha256": None,
+        "identity_strength": "backend_binding",
+        "metadata": {"loader_class": loader_class, "loader_input": loader_input},
+    }
+
+
 class WorkflowBindingInferenceTests(unittest.TestCase):
     def test_infers_single_checkpoint_and_passes_authoritative_validator(self) -> None:
         document = shipped("sd15-txt2img-v1.json")
@@ -166,3 +186,222 @@ class WorkflowBindingInferenceTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValidationError):
                 infer_workflow_binding(graph)
         self.assertEqual(base[model_id]["class_type"], "CheckpointLoaderSimple")
+
+
+class WorkflowOnboardingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        self.state_dir = self.root / "state"
+        self.inventory: list[dict[str, object]] = []
+        self.registry = WorkflowTemplateRegistry(
+            ROOT / "workflows" / "comfyui",
+            self.state_dir,
+        )
+        self.onboarding = WorkflowOnboarding(
+            self.registry,
+            lambda: copy.deepcopy(self.inventory),
+        )
+        self.single_graph = shipped("sd15-txt2img-v1.json")["graph"]
+        self.split_graph = shipped("z-image-turbo-txt2img-v1.json")["graph"]
+        self.single_path = self.write_json("single.json", self.single_graph)
+        self.split_path = self.write_json("split.json", self.split_graph)
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def write_json(
+        self,
+        filename: str,
+        value: object,
+        *,
+        compact: bool = False,
+    ) -> Path:
+        path = self.root / filename
+        path.write_text(
+            json.dumps(
+                value,
+                sort_keys=not compact,
+                separators=(",", ":") if compact else None,
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def use_exact_single_inventory(self) -> None:
+        component = workflow_component_bindings(self.single_graph)[0]
+        self.inventory[:] = [
+            comfy_record(
+                component["backend_model_id"],
+                component["loader_class"],
+                component["loader_input"],
+            )
+        ]
+
+    def reset_single_case(self) -> None:
+        self.write_json("single.json", self.single_graph)
+        self.use_exact_single_inventory()
+
+    def change_prompt_text(self, path: Path) -> None:
+        graph = json.loads(path.read_text(encoding="utf-8"))
+        inferred = infer_workflow_binding(graph)
+        node_id = inferred["binding"]["positive_prompt"][0]
+        graph[node_id]["inputs"]["text"] = "changed"
+        self.write_json(path.name, graph)
+
+    def change_inventory_endpoint(self) -> None:
+        changed = copy.deepcopy(self.inventory[0])
+        changed["endpoint_identity"] = "http://127.0.0.1:8288"
+        self.inventory[:] = [changed]
+
+    def ambiguous_inventory_cases(self) -> list[list[dict[str, object]]]:
+        component = workflow_component_bindings(self.split_graph)[0]
+        exact = comfy_record(
+            component["backend_model_id"],
+            component["loader_class"],
+            component["loader_input"],
+        )
+        duplicate = copy.deepcopy(exact)
+        duplicate["endpoint_identity"] = "http://127.0.0.1:8288"
+        wrong_loader = copy.deepcopy(exact)
+        wrong_loader["metadata"] = {
+            "loader_class": "CheckpointLoaderSimple",
+            "loader_input": "ckpt_name",
+        }
+        return [[exact, duplicate], [wrong_loader]]
+
+    def test_bare_graph_and_prompt_wrapper_share_semantic_hash_but_not_source_hash(
+        self,
+    ) -> None:
+        document = shipped("sd15-txt2img-v1.json")
+        graph = document["graph"]
+        bare = self.write_json("bare.json", graph, compact=True)
+        wrapped = self.write_json("wrapped.json", {"prompt": graph, "ignored": {"x": 1}})
+        self.use_exact_single_inventory()
+
+        bare_result = self.onboarding.inspect(bare)
+        wrapped_result = self.onboarding.inspect(wrapped)
+
+        self.assertNotEqual(bare_result["source_sha256"], wrapped_result["source_sha256"])
+        self.assertEqual(bare_result["workflow_sha256"], wrapped_result["workflow_sha256"])
+        self.assertNotEqual(
+            bare_result.get("proposal_digest"),
+            wrapped_result.get("proposal_digest"),
+        )
+
+    def test_offline_inspection_is_diagnostic_and_has_no_confirmation(self) -> None:
+        path = self.write_json("workflow.json", shipped("sd15-txt2img-v1.json")["graph"])
+        result = self.onboarding.inspect(path)
+
+        self.assertEqual(result["status"], "diagnostic")
+        self.assertFalse(result["registrable"])
+        self.assertNotIn("proposal_digest", result)
+        self.assertNotIn("confirmation", result)
+        self.assertIn("local_gpu_discover_models", result["recoverable_next_actions"])
+        self.assertFalse((self.state_dir / "workflows" / "registered").exists())
+
+    def test_ui_format_and_multiple_prompt_graphs_are_actionable_rejections(self) -> None:
+        ui = self.write_json("ui.json", {"nodes": [], "links": [], "widgets_values": []})
+        with self.assertRaises(ValidationError) as raised:
+            self.onboarding.inspect(ui)
+        self.assertEqual(raised.exception.code, "unsupported_workflow_envelope")
+        self.assertIn("developer mode", str(raised.exception).lower())
+
+        wrapper = self.write_json(
+            "multiple.json",
+            {"prompt": self.single_graph, "other": self.single_graph},
+        )
+        with self.assertRaises(ValidationError) as multiple:
+            self.onboarding.inspect(wrapper)
+        self.assertEqual(multiple.exception.code, "unsupported_workflow_envelope")
+
+    def test_unsafe_or_unreadable_sources_fail_before_inspection(self) -> None:
+        malformed = self.root / "malformed.json"
+        malformed.write_bytes(b"\xff\xfe")
+        oversized = self.root / "oversized.json"
+        oversized.write_bytes(b" " * ((2 * 1024 * 1024) + 1))
+        directory = self.root / "directory.json"
+        directory.mkdir()
+        cases = (malformed, oversized, directory)
+        for path in cases:
+            with self.subTest(path=path), self.assertRaises(AssetEngineError) as raised:
+                self.onboarding.inspect(path)
+            self.assertEqual(raised.exception.code, "invalid_workflow_source")
+        self.assertFalse((self.state_dir / "workflows" / "registered").exists())
+
+    def test_symlink_source_is_rejected_when_supported(self) -> None:
+        link = self.root / "linked.json"
+        try:
+            link.symlink_to(self.single_path)
+        except OSError as error:
+            self.skipTest(f"link creation unavailable: {error}")
+        with self.assertRaises(AssetEngineError) as raised:
+            self.onboarding.inspect(link)
+        self.assertEqual(raised.exception.code, "invalid_workflow_source")
+
+    def test_exact_single_inventory_match_is_registerable(self) -> None:
+        document = shipped("sd15-txt2img-v1.json")
+        component = workflow_component_bindings(document["graph"])[0]
+        self.inventory[:] = [
+            comfy_record(
+                component["backend_model_id"],
+                component["loader_class"],
+                component["loader_input"],
+            )
+        ]
+        result = self.onboarding.inspect(
+            self.write_json("single.json", document["graph"])
+        )
+
+        self.assertEqual(result["status"], "registerable")
+        self.assertTrue(result["registrable"])
+        self.assertRegex(result["proposal_digest"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            result["confirmation"],
+            f"register_workflow:{result['source_sha256']}:{result['proposal_digest']}",
+        )
+
+    def test_exact_split_inventory_match_is_registerable(self) -> None:
+        components = workflow_component_bindings(self.split_graph)
+        self.inventory[:] = [
+            comfy_record(
+                component["backend_model_id"],
+                component["loader_class"],
+                component["loader_input"],
+            )
+            for component in components
+        ]
+
+        result = self.onboarding.inspect(self.split_path)
+
+        self.assertEqual(result["status"], "registerable")
+        self.assertEqual(
+            [item["role"] for item in result["components"]],
+            ["primary_model", "text_encoder", "vae"],
+        )
+        self.assertTrue(all("identity_token" in item for item in result["components"]))
+
+    def test_duplicate_or_cross_endpoint_inventory_never_emits_confirmation(self) -> None:
+        for inventory in self.ambiguous_inventory_cases():
+            self.inventory[:] = inventory
+            result = self.onboarding.inspect(self.split_path)
+            self.assertFalse(result["registrable"])
+            self.assertNotIn("confirmation", result)
+
+    def test_split_components_from_different_endpoints_are_diagnostic(self) -> None:
+        components = workflow_component_bindings(self.split_graph)
+        self.inventory[:] = [
+            comfy_record(
+                component["backend_model_id"],
+                component["loader_class"],
+                component["loader_input"],
+                endpoint=f"http://127.0.0.1:{8188 + index}",
+            )
+            for index, component in enumerate(components)
+        ]
+
+        result = self.onboarding.inspect(self.split_path)
+
+        self.assertEqual(result["status"], "diagnostic")
+        self.assertFalse(result["registrable"])
+        self.assertNotIn("confirmation", result)

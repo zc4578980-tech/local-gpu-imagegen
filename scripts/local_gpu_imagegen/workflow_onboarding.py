@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
+from collections.abc import Callable
+from pathlib import Path
+
 from .errors import ValidationError
+from .model_identity import identity_token, validate_discovery_record
 from .workflow_templates import (
     MODEL_LOADER_INPUTS,
+    WorkflowTemplateRegistry,
+    read_workflow_source,
     workflow_component_bindings,
 )
 
 
+PROPOSAL_SCHEMA_VERSION = 1
 EXCLUDED_CLASSES = frozenset({
     "VAEEncode",
     "VAEEncodeForInpaint",
@@ -22,8 +32,181 @@ EXCLUDED_CLASSES = frozenset({
 })
 
 
+def _canonical_hash(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _looks_like_api_graph(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and bool(value)
+        and all(
+            isinstance(node_id, str)
+            and isinstance(node, dict)
+            and isinstance(node.get("class_type"), str)
+            and isinstance(node.get("inputs"), dict)
+            for node_id, node in value.items()
+        )
+    )
+
+
+def _extract_graph(value: object) -> dict[str, object]:
+    if _looks_like_api_graph(value):
+        return copy.deepcopy(value)
+    if isinstance(value, dict) and _looks_like_api_graph(value.get("prompt")):
+        other_graph_keys = sorted(
+            key
+            for key, item in value.items()
+            if key != "prompt" and _looks_like_api_graph(item)
+        )
+        if other_graph_keys:
+            raise ValidationError(
+                "unsupported_workflow_envelope",
+                "Workflow wrapper contains multiple API graph candidates.",
+                {"fields": ["prompt", *other_graph_keys]},
+            )
+        return copy.deepcopy(value["prompt"])
+    if isinstance(value, dict) and {"nodes", "links"} <= set(value):
+        raise ValidationError(
+            "unsupported_workflow_envelope",
+            "ComfyUI UI format is unsupported; enable developer mode and export API format.",
+        )
+    raise ValidationError(
+        "unsupported_workflow_envelope",
+        "Workflow must be a bare API graph or contain one API graph under prompt.",
+    )
+
+
 class WorkflowOnboarding:
-    pass
+    def __init__(
+        self,
+        workflows: WorkflowTemplateRegistry,
+        inventory_provider: Callable[[], list[dict[str, object]]],
+    ) -> None:
+        if not isinstance(workflows, WorkflowTemplateRegistry) or not callable(
+            inventory_provider
+        ):
+            raise ValidationError(
+                "invalid_workflow_onboarding",
+                "Workflow onboarding dependencies are invalid.",
+            )
+        self.workflows = workflows
+        self.inventory_provider = inventory_provider
+
+    def inspect(self, path: Path) -> dict[str, object]:
+        encoded, source_value = read_workflow_source(Path(path))
+        graph = _extract_graph(source_value)
+        inferred = infer_workflow_binding(graph)
+        available_models = [
+            item["backend_model_id"] for item in inferred["components"]
+        ]
+        prepared = self.workflows.prepare_import(
+            graph,
+            inferred["binding"],
+            available_models,
+        )
+        if prepared["operation"] != "txt2img":
+            raise ValidationError(
+                "unsupported_workflow_operation",
+                "Workflow onboarding supports ordinary txt2img only.",
+            )
+        source_sha256 = hashlib.sha256(encoded).hexdigest()
+        matched, match_failures = self._match_inventory(inferred["components"])
+        result: dict[str, object] = {
+            "status": "registerable" if not match_failures else "diagnostic",
+            "registrable": not match_failures,
+            "source_sha256": source_sha256,
+            "workflow_sha256": prepared["workflow_sha256"],
+            "topology": inferred["topology"],
+            "binding": inferred["binding"],
+            "owned_output": {"node_id": inferred["output_node"]},
+            "components": matched,
+            "limitations": [
+                "ordinary_txt2img_only",
+                "no_custom_nodes_or_graph_editing",
+                "registration_does_not_grant_model_trust_or_public_authority",
+            ],
+            "recoverable_next_actions": (
+                ["local_gpu_register_workflow"]
+                if not match_failures
+                else ["local_gpu_discover_models"]
+            ),
+        }
+        if not match_failures:
+            proposal = self._proposal_payload(result)
+            digest = _canonical_hash(proposal)
+            result["proposal_digest"] = digest
+            result["confirmation"] = f"register_workflow:{source_sha256}:{digest}"
+        else:
+            result["inventory_diagnostics"] = match_failures
+        return result
+
+    def _match_inventory(
+        self,
+        components: list[dict[str, str]],
+    ) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
+        raw_inventory = self.inventory_provider()
+        if not isinstance(raw_inventory, list):
+            raw_inventory = []
+        inventory: list[dict[str, object]] = []
+        for value in raw_inventory:
+            try:
+                inventory.append(validate_discovery_record(value))
+            except ValidationError:
+                continue
+
+        matched: list[dict[str, str]] = []
+        failures: list[dict[str, object]] = []
+        endpoints: set[str] = set()
+        for component in components:
+            candidates = []
+            for record in inventory:
+                metadata = record.get("metadata")
+                if (
+                    record.get("backend") == "comfyui"
+                    and record.get("backend_model_id") == component["backend_model_id"]
+                    and isinstance(metadata, dict)
+                    and metadata.get("loader_class") == component["loader_class"]
+                    and metadata.get("loader_input") == component["loader_input"]
+                ):
+                    candidates.append(record)
+            public_component = copy.deepcopy(component)
+            if len(candidates) == 1:
+                record = candidates[0]
+                public_component["identity_token"] = identity_token(record)
+                endpoints.add(str(record["endpoint_identity"]))
+            else:
+                failures.append({
+                    "role": component["role"],
+                    "reason": "unavailable" if not candidates else "ambiguous",
+                    "candidate_count": len(candidates),
+                })
+            matched.append(public_component)
+        if len(endpoints) > 1:
+            failures.append({
+                "role": "workflow",
+                "reason": "endpoint_mismatch",
+                "candidate_count": len(endpoints),
+            })
+        return matched, failures
+
+    def _proposal_payload(self, result: dict[str, object]) -> dict[str, object]:
+        return {
+            "schema_version": PROPOSAL_SCHEMA_VERSION,
+            "source_sha256": result["source_sha256"],
+            "workflow_sha256": result["workflow_sha256"],
+            "topology": result["topology"],
+            "binding": result["binding"],
+            "owned_output": result["owned_output"],
+            "components": result["components"],
+        }
 
 
 def _node(graph: dict[str, object], node_id: str) -> dict[str, object]:
