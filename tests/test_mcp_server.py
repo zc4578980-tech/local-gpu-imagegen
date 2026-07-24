@@ -36,6 +36,8 @@ EXPECTED_TOOLS = {
     "local_gpu_generate_image",
     "local_gpu_list_profiles",
     "local_gpu_discover_models",
+    "local_gpu_inspect_workflow",
+    "local_gpu_register_workflow",
     "local_gpu_set_model_trust",
     "local_gpu_recommend_models",
     "local_gpu_start_run",
@@ -126,6 +128,10 @@ class McpServerUnitTests(unittest.TestCase):
                 "workflow_template_id", "workflow_path", "workflow_binding", "preference",
                 "component_identity_tokens", "catalog_id", "two_stage_layout",
             },
+            "local_gpu_inspect_workflow": {"workflow_path"},
+            "local_gpu_register_workflow": {
+                "workflow_path", "proposal_digest", "confirmation",
+            },
             "local_gpu_recommend_models": {
                 "authorization_scope", "operation", "profile", "style", "width", "height",
                 "affinity_tags", "required_vram_gb", "preferred_model_id", "regional_layout",
@@ -208,16 +214,37 @@ class McpServerUnitTests(unittest.TestCase):
             mcp_server._shipped_workflow_template_ids(),
         )
         tools = mcp_server.tool_schema()
-        self.assertEqual(len(tools), 15)
+        self.assertEqual(len(tools), 17)
         trust = next(tool for tool in tools if tool["name"] == "local_gpu_set_model_trust")
         self.assertIn(
             document["template_id"],
             trust["inputSchema"]["properties"]["workflow_template_id"]["enum"],
         )
 
+    def test_workflow_onboarding_tools_have_exact_schemas_and_raise_count_to_seventeen(self) -> None:
+        tools = mcp_server.tool_schema()
+        by_name = {tool["name"]: tool for tool in tools}
+        self.assertEqual(len(tools), 17)
+        self.assertEqual(
+            by_name["local_gpu_inspect_workflow"]["inputSchema"],
+            mcp_server._object_schema(
+                {"workflow_path": {"type": "string", "minLength": 1}},
+                ["workflow_path"],
+            ),
+        )
+        register = by_name["local_gpu_register_workflow"]["inputSchema"]
+        self.assertEqual(
+            register["required"],
+            ["workflow_path", "proposal_digest", "confirmation"],
+        )
+        self.assertEqual(
+            register["properties"]["proposal_digest"]["pattern"],
+            "^[0-9a-f]{64}$",
+        )
+
     def test_start_run_accepts_exact_optional_two_stage_conditioning(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
-        self.assertEqual(len(tools), 15)
+        self.assertEqual(len(tools), 17)
         start = tools["local_gpu_start_run"]["inputSchema"]
         self.assertNotIn("initial_two_stage_conditioning", start["required"])
         conditioning = start["properties"]["initial_two_stage_conditioning"]
@@ -297,7 +324,7 @@ class McpServerUnitTests(unittest.TestCase):
 
     def test_two_stage_review_checks_are_reachable_without_expanding_tool_surface(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
-        self.assertEqual(len(tools), 15)
+        self.assertEqual(len(tools), 17)
         review = tools["local_gpu_record_review"]["inputSchema"]
         self.assertIn("stage_checks", review["properties"])
         self.assertNotIn("stage_checks", review["required"])
@@ -451,6 +478,69 @@ class McpServerUnitTests(unittest.TestCase):
             "mode": "api_only", "stage": "index", "backends": ["webui"],
         })
         services.router.recommend.assert_called_once_with(recommend)
+
+    def test_workflow_onboarding_dispatch_is_thin(self) -> None:
+        services = Mock()
+        services.onboarding.inspect.return_value = {
+            "status": "diagnostic", "registrable": False, "warnings": [],
+        }
+        with patch.object(mcp_server, "get_runtime_services", return_value=services):
+            result = mcp_server.handle_tool_call({
+                "name": "local_gpu_inspect_workflow",
+                "arguments": {"workflow_path": "workflow.json"},
+            })
+        self.assertFalse(result["isError"])
+        services.onboarding.inspect.assert_called_once_with(Path("workflow.json"))
+
+    def test_workflow_registration_dispatch_is_thin(self) -> None:
+        services = Mock()
+        services.onboarding.register.return_value = {
+            "registered_workflow_id": "imported:" + "a" * 64,
+            "template_version": 1,
+            "source_sha256": "b" * 64,
+            "workflow_sha256": "a" * 64,
+            "topology": "single_checkpoint",
+            "owned_output": {"node_id": "9"},
+            "components": [],
+            "recoverable_next_actions": ["local_gpu_set_model_trust"],
+        }
+        arguments = {
+            "workflow_path": "workflow.json",
+            "proposal_digest": "c" * 64,
+            "confirmation": "register_workflow:" + "b" * 64 + ":" + "c" * 64,
+        }
+        with patch.object(mcp_server, "get_runtime_services", return_value=services):
+            result = mcp_server.handle_tool_call({
+                "name": "local_gpu_register_workflow",
+                "arguments": arguments,
+            })
+        self.assertFalse(result["isError"])
+        services.onboarding.register.assert_called_once_with(
+            Path("workflow.json"),
+            "c" * 64,
+            arguments["confirmation"],
+        )
+
+    def test_workflow_onboarding_preserves_structured_error_codes(self) -> None:
+        for code in (
+            "unsupported_workflow_envelope",
+            "ambiguous_workflow_binding",
+            "workflow_proposal_stale",
+            "invalid_workflow_confirmation",
+        ):
+            services = Mock()
+            services.onboarding.inspect.side_effect = AssetEngineError(
+                code, "bounded failure", "validation"
+            )
+            with self.subTest(code=code), patch.object(
+                mcp_server, "get_runtime_services", return_value=services
+            ):
+                result = mcp_server.handle_tool_call({
+                    "name": "local_gpu_inspect_workflow",
+                    "arguments": {"workflow_path": "workflow.json"},
+                })
+            self.assertTrue(result["isError"])
+            self.assertEqual(result["structuredContent"]["error"]["code"], code)
 
     def test_discovery_result_omits_data_uris_and_oversized_metadata_without_mutating_inventory(self) -> None:
         thumbnail = "data:image/jpeg;base64," + ("A" * 500_000)

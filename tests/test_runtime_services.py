@@ -46,6 +46,27 @@ class RuntimeServicesTests(unittest.TestCase):
             services.backends,
         )
 
+    def test_build_services_wires_workflow_onboarding_to_shared_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch(
+                "local_gpu_imagegen.services.adapters_from_environment",
+                return_value=[],
+            ):
+                services = build_services(
+                    ROOT,
+                    root / "outputs",
+                    root / "state",
+                    lambda: {"available_backends": []},
+                    lambda request: {},
+                )
+
+        self.assertIs(services.onboarding.workflows, services.workflows)
+        self.assertEqual(
+            services.onboarding.inventory_provider(),
+            services.discovery.inventory(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

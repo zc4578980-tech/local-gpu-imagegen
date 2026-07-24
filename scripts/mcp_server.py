@@ -510,6 +510,54 @@ def tool_schema() -> list[dict[str, Any]]:
             }, []),
         },
         {
+            "name": "local_gpu_inspect_workflow",
+            "description": "Inspect one local ComfyUI API workflow and infer a safe ordinary txt2img binding without writing state.",
+            "inputSchema": _object_schema({
+                "workflow_path": {"type": "string", "minLength": 1},
+            }, ["workflow_path"]),
+            "outputSchema": _output_schema({
+                "status": {"type": "string", "enum": ["diagnostic", "registerable"]},
+                "registrable": {"type": "boolean"},
+                "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "workflow_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "topology": {"type": "string", "enum": ["single_checkpoint", "split_model"]},
+                "binding": json_object,
+                "owned_output": json_object,
+                "components": json_array,
+                "limitations": {"type": "array", "items": {"type": "string"}},
+                "recoverable_next_actions": {"type": "array", "items": {"type": "string"}},
+                "proposal_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "confirmation": {"type": "string"},
+                "inventory_diagnostics": json_array,
+            }, [
+                "status", "registrable", "source_sha256", "workflow_sha256", "topology",
+                "binding", "owned_output", "components", "limitations", "recoverable_next_actions",
+            ]),
+        },
+        {
+            "name": "local_gpu_register_workflow",
+            "description": "Recheck and immutably register one exact previously inspected ComfyUI workflow proposal.",
+            "inputSchema": _object_schema({
+                "workflow_path": {"type": "string", "minLength": 1},
+                "proposal_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "confirmation": {"type": "string", "minLength": 1},
+            }, ["workflow_path", "proposal_digest", "confirmation"]),
+            "outputSchema": _output_schema({
+                "registered_workflow_id": {"type": "string", "pattern": "^imported:[0-9a-f]{64}$"},
+                "template_version": {"type": "integer", "minimum": 1},
+                "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "workflow_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "topology": {"type": "string", "enum": ["single_checkpoint", "split_model"]},
+                "owned_output": json_object,
+                "components": json_array,
+                "recoverable_next_actions": {"type": "array", "items": {"type": "string"}},
+            }, [
+                "registered_workflow_id", "template_version", "source_sha256",
+                "workflow_sha256", "topology", "owned_output", "components",
+                "recoverable_next_actions",
+            ]),
+        },
+        {
             "name": "local_gpu_set_model_trust",
             "description": "Approve or revoke one exact current local model identity after explicit confirmation.",
             "inputSchema": _object_schema({
@@ -1766,6 +1814,8 @@ def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
     try:
         if name in {
             "local_gpu_discover_models",
+            "local_gpu_inspect_workflow",
+            "local_gpu_register_workflow",
             "local_gpu_set_model_trust",
             "local_gpu_recommend_models",
         }:
@@ -1773,6 +1823,16 @@ def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
             if name == "local_gpu_discover_models":
                 data = _successful_engine_data(_discovery_call(services, arguments))
                 return tool_success(_bounded_discovery_data(data))
+            if name == "local_gpu_inspect_workflow":
+                data = services.onboarding.inspect(Path(arguments["workflow_path"]))
+                return tool_success(_successful_engine_data(data))
+            if name == "local_gpu_register_workflow":
+                data = services.onboarding.register(
+                    Path(arguments["workflow_path"]),
+                    arguments["proposal_digest"],
+                    arguments["confirmation"],
+                )
+                return tool_success(_successful_engine_data(data))
             if name == "local_gpu_set_model_trust":
                 return tool_success(_successful_engine_data(_trust_call(services, arguments)))
             return tool_success(_successful_engine_data(services.router.recommend(arguments)))

@@ -16,6 +16,7 @@ from .profile_registry import ProfileRegistry
 from .prompt_compilers import PromptCompilerRegistry
 from .run_store import RunStore
 from .trust_registry import TrustRegistry
+from .workflow_onboarding import WorkflowOnboarding
 from .workflow_templates import WorkflowTemplateRegistry
 
 
@@ -30,6 +31,7 @@ class RuntimeServices:
     catalog: ModelCatalog
     router: CapabilityRouter
     workflows: WorkflowTemplateRegistry
+    onboarding: WorkflowOnboarding
     backends: BackendRegistry
     engine: AssetRunEngine
 
@@ -59,6 +61,7 @@ def build_services(
     backends = BackendRegistry(adapters_from_environment(), {"diffusers": diffusers_runner})
     trust = TrustRegistry(state_dir)
     discovery = DiscoveryService(backends)
+    onboarding = WorkflowOnboarding(workflows, discovery.inventory)
     catalog = ModelCatalog(
         root / "profiles" / "models",
         discovery.inventory,
@@ -82,4 +85,13 @@ def build_services(
         compilers=compilers,
         workflows=workflows,
     )
-    return RuntimeServices(discovery, trust, catalog, router, workflows, backends, engine)
+    return RuntimeServices(
+        discovery=discovery,
+        trust=trust,
+        catalog=catalog,
+        router=router,
+        workflows=workflows,
+        onboarding=onboarding,
+        backends=backends,
+        engine=engine,
+    )
