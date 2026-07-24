@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-24
 
-**Status:** Proposed for written review
+**Status:** Approved
 
 **Branch:** `codex/v080-workflow-onboarding`
 
