@@ -77,6 +77,13 @@
     "schema_version": {
       "const": "1.0"
     },
+    "session_purpose": {
+      "enum": [
+        "compatibility",
+        "golden_generation"
+      ],
+      "type": "string"
+    },
     "server": {
       "additionalProperties": false,
       "properties": {
@@ -142,6 +149,7 @@
   "required": [
     "schema_version",
     "evidence_class",
+    "session_purpose",
     "client",
     "installed_wheel",
     "hosted_client_session",

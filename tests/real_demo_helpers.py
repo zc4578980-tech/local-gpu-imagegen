@@ -245,6 +245,7 @@ def client_session() -> dict[str, object]:
     return {
         "schema_version": "1.0",
         "evidence_class": "named_client_session",
+        "session_purpose": "compatibility",
         "client": {
             "name": "codex",
             "version": "codex-cli 0.144.5",
