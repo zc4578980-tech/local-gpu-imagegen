@@ -4,17 +4,46 @@
   "additionalProperties": false,
   "properties": {
     "artifacts": {
-      "additionalProperties": {
-        "additionalProperties": false,
-        "properties": {
-          "bytes": {"minimum": 1, "type": "integer"},
-          "mime_type": {"minLength": 1, "type": "string"},
-          "path": {"minLength": 1, "type": "string"},
-          "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      "additionalProperties": false,
+      "properties": {
+        "README.md": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"properties": {"mime_type": {"const": "text/markdown"}, "path": {"const": "README.md"}}}
+          ]
         },
-        "required": ["path", "sha256", "bytes", "mime_type"],
-        "type": "object"
+        "final.png": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"properties": {"mime_type": {"const": "image/png"}, "path": {"const": "final.png"}}}
+          ]
+        },
+        "mcp-result.json": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"properties": {"mime_type": {"const": "application/json"}, "path": {"const": "mcp-result.json"}}}
+          ]
+        },
+        "preview.jpg": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"properties": {"mime_type": {"const": "image/jpeg"}, "path": {"const": "preview.jpg"}}}
+          ]
+        },
+        "run-manifest.json": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"properties": {"mime_type": {"const": "application/json"}, "path": {"const": "run-manifest.json"}}}
+          ]
+        },
+        "transcript.md": {
+          "allOf": [
+            {"$ref": "#/$defs/artifact"},
+            {"properties": {"mime_type": {"const": "text/markdown"}, "path": {"const": "transcript.md"}}}
+          ]
+        }
       },
+      "required": ["final.png", "preview.jpg", "run-manifest.json", "mcp-result.json", "transcript.md", "README.md"],
       "type": "object"
     },
     "client_session": {
@@ -22,62 +51,95 @@
       "properties": {
         "client": {"enum": ["codex", "claude-code"], "type": "string"},
         "path": {"minLength": 1, "type": "string"},
+        "session_purpose": {"const": "golden_generation"},
         "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
         "version": {"minLength": 1, "type": "string"}
       },
-      "required": ["path", "sha256", "client", "version"],
+      "required": ["path", "sha256", "client", "version", "session_purpose"],
       "type": "object"
     },
-    "demo_kind": {"const": "real_local_gpu_hot_revision"},
+    "demo_kind": {"const": "real_local_gpu_generation"},
+    "final": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {"minimum": 1, "type": "integer"},
+        "confirmation": {"pattern": "^finalize:[^:]+:[1-9][0-9]*:[0-9a-f]{64}$", "type": "string"},
+        "finalization_verified": {"const": true},
+        "height": {"const": 720},
+        "image_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "mime_type": {"const": "image/png"},
+        "quality_status": {"const": "accepted"},
+        "round_number": {"minimum": 1, "type": "integer"},
+        "run_id": {"minLength": 1, "type": "string"},
+        "visual_checks": {
+          "additionalProperties": false,
+          "properties": {
+            "feet_and_contact": {"$ref": "#/$defs/visualCheck"},
+            "full_resolution_inspected": {"const": true},
+            "hands_and_held_objects": {"$ref": "#/$defs/visualCheck"},
+            "limb_separation": {"$ref": "#/$defs/visualCheck"},
+            "prominent_human": {"type": "boolean"},
+            "text_and_watermarks": {"$ref": "#/$defs/visualCheck"}
+          },
+          "required": ["full_resolution_inspected", "prominent_human", "limb_separation", "feet_and_contact", "hands_and_held_objects", "text_and_watermarks"],
+          "type": "object"
+        },
+        "width": {"const": 1280}
+      },
+      "required": ["run_id", "round_number", "image_sha256", "bytes", "width", "height", "mime_type", "quality_status", "confirmation", "finalization_verified", "visual_checks"],
+      "type": "object"
+    },
+    "generation": {
+      "additionalProperties": false,
+      "properties": {
+        "guidance_scale": {"type": "number"},
+        "height": {"const": 720},
+        "negative_prompt": {"minLength": 1, "type": "string"},
+        "positive_prompt": {"minLength": 1, "type": "string"},
+        "sampler": {"minLength": 1, "type": "string"},
+        "scheduler": {"minLength": 1, "type": "string"},
+        "seed": {"minimum": 0, "type": "integer"},
+        "steps": {"minimum": 1, "type": "integer"},
+        "width": {"const": 1280}
+      },
+      "required": ["positive_prompt", "negative_prompt", "seed", "width", "height", "steps", "guidance_scale", "sampler", "scheduler"],
+      "type": "object"
+    },
+    "installed_package": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {"const": "0.7.0"},
+        "wheel_sha256": {"pattern": "^(?!0{64}$)[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["version", "wheel_sha256"],
+      "type": "object"
+    },
     "known_limitations": {
       "items": {"minLength": 1, "type": "string"},
       "minItems": 3,
       "type": "array"
     },
+    "mcp_result": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {"const": "mcp-result.json"},
+        "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "source_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "tool": {"const": "local_gpu_finalize_run"}
+      },
+      "required": ["path", "sha256", "source_sha256", "tool"],
+      "type": "object"
+    },
     "model_output": {"const": true},
     "public_rights": {
       "additionalProperties": false,
       "properties": {
-        "license_id": {"minLength": 1, "type": "string"},
-        "license_url": {"format": "uri", "type": "string"},
+        "license_id": {"const": "CreativeML Open RAIL++-M"},
+        "license_url": {"const": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md"},
         "output_redistribution_status": {"const": "approved"},
-        "source": {"format": "uri", "type": "string"}
+        "source": {"const": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"}
       },
       "required": ["source", "license_id", "license_url", "output_redistribution_status"],
-      "type": "object"
-    },
-    "revision": {
-      "additionalProperties": false,
-      "properties": {
-        "change": {"items": {"type": "string"}, "minItems": 1, "type": "array"},
-        "confirmation": {"minLength": 1, "type": "string"},
-        "edit_mode": {"const": "prompt-refine"},
-        "finalization_verified": {"const": true},
-        "image_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
-        "parent": {"type": "object"},
-        "preservation_results": {"minItems": 1, "type": "array"},
-        "preserve": {"minItems": 1, "type": "array"},
-        "quality_status": {"const": "accepted"},
-        "round_number": {"minimum": 1, "type": "integer"},
-        "run_id": {"minLength": 1, "type": "string"},
-        "seed": {"minimum": 0, "type": "integer"},
-        "visual_checks": {"type": "object"}
-      },
-      "required": ["run_id", "parent", "edit_mode", "preserve", "change", "round_number", "image_sha256", "seed", "quality_status", "confirmation", "finalization_verified", "preservation_results", "visual_checks"],
-      "type": "object"
-    },
-    "root": {
-      "additionalProperties": false,
-      "properties": {
-        "confirmation": {"minLength": 1, "type": "string"},
-        "image_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
-        "quality_status": {"const": "candidate"},
-        "round_number": {"minimum": 1, "type": "integer"},
-        "run_id": {"minLength": 1, "type": "string"},
-        "seed": {"minimum": 0, "type": "integer"},
-        "visual_checks": {"type": "object"}
-      },
-      "required": ["run_id", "round_number", "image_sha256", "seed", "quality_status", "confirmation", "visual_checks"],
       "type": "object"
     },
     "route": {
@@ -85,29 +147,44 @@
       "properties": {
         "authorization_scope": {"const": "public_evidence"},
         "backend": {"const": "comfyui"},
-        "component_bundle_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
-        "guidance_scale": {"type": "number"},
-        "height": {"const": 720},
-        "model_id": {"minLength": 1, "type": "string"},
-        "model_identity_token": {"pattern": "^model:[0-9a-f]{64}$", "type": "string"},
-        "model_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
-        "prompt_compiler_id": {"minLength": 1, "type": "string"},
-        "prompt_compiler_version": {"minimum": 1, "type": "integer"},
-        "sampler": {"minLength": 1, "type": "string"},
-        "scheduler": {"minLength": 1, "type": "string"},
-        "steps": {"minimum": 1, "type": "integer"},
-        "upscale_policy": {"const": "off"},
-        "width": {"const": 1280},
-        "workflow_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "component_bundle_sha256": {"const": "ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62"},
+        "model_id": {"const": "local:1a4a27ae037d08ad44e98772"},
+        "model_identity_token": {"const": "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4f97a5"},
+        "model_sha256": {"const": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b"},
+        "prompt_compiler_id": {"const": "natural-v1"},
+        "prompt_compiler_version": {"const": 1},
+        "workflow_sha256": {"const": "05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d36000e"},
         "workflow_template_id": {"const": "sdxl-txt2img"},
         "workflow_template_version": {"const": 1}
       },
-      "required": ["authorization_scope", "backend", "model_id", "model_identity_token", "model_sha256", "workflow_template_id", "workflow_template_version", "workflow_sha256", "component_bundle_sha256", "prompt_compiler_id", "prompt_compiler_version", "width", "height", "steps", "guidance_scale", "sampler", "scheduler", "upscale_policy"],
+      "required": ["authorization_scope", "backend", "model_id", "model_identity_token", "model_sha256", "workflow_template_id", "workflow_template_version", "workflow_sha256", "component_bundle_sha256", "prompt_compiler_id", "prompt_compiler_version"],
       "type": "object"
     },
-    "schema_version": {"const": "1.0"}
+    "schema_version": {"const": "2.0"}
   },
-  "required": ["schema_version", "demo_kind", "model_output", "public_rights", "route", "root", "revision", "client_session", "artifacts", "known_limitations"],
-  "title": "Local GPU Imagegen genuine hot-revision demo",
-  "type": "object"
+  "required": ["schema_version", "demo_kind", "model_output", "installed_package", "public_rights", "route", "generation", "final", "client_session", "mcp_result", "artifacts", "known_limitations"],
+  "title": "Local GPU Imagegen genuine ordinary-route demo",
+  "type": "object",
+  "$defs": {
+    "artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {"minimum": 1, "type": "integer"},
+        "mime_type": {"minLength": 1, "type": "string"},
+        "path": {"minLength": 1, "type": "string"},
+        "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["path", "sha256", "bytes", "mime_type"],
+      "type": "object"
+    },
+    "visualCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "observation": {"minLength": 1, "type": "string"},
+        "status": {"enum": ["pass", "not_applicable"], "type": "string"}
+      },
+      "required": ["status", "observation"],
+      "type": "object"
+    }
+  }
 }

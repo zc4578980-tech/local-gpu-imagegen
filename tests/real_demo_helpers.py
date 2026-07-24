@@ -14,8 +14,9 @@ WORKFLOW_SHA256 = "05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d360
 BUNDLE_SHA256 = "ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62"
 WIDTH = 1280
 HEIGHT = 720
-TIMESTAMP = "2026-07-22T10:00:00Z"
-PRESERVE_TARGETS = ("composition", "primary_motif", "left_safe_area")
+TIMESTAMP = "2026-07-24T10:00:00Z"
+POSITIVE_PROMPT = "Blue-hour observatory landscape with one brass telescope and clean composition."
+NEGATIVE_PROMPT = "text, watermark, cropped subject, duplicate telescope"
 RUBRIC = {
     name: {"critical": True, "weight": 2}
     for name in (
@@ -47,6 +48,10 @@ def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def sha256_file(path: Path) -> str:
+    return sha256_bytes(path.read_bytes())
+
+
 def _chunk(kind: bytes, data: bytes) -> bytes:
     return (
         struct.pack(">I", len(data))
@@ -59,11 +64,10 @@ def _chunk(kind: bytes, data: bytes) -> bytes:
 def png_bytes(red: int, green: int, blue: int) -> bytes:
     ihdr = struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 2, 0, 0, 0)
     scanline = b"\x00" + bytes((red, green, blue)) * WIDTH
-    scanlines = scanline * HEIGHT
     return (
         b"\x89PNG\r\n\x1a\n"
         + _chunk(b"IHDR", ihdr)
-        + _chunk(b"IDAT", zlib.compress(scanlines))
+        + _chunk(b"IDAT", zlib.compress(scanline * HEIGHT))
         + _chunk(b"IEND", b"")
     )
 
@@ -72,7 +76,13 @@ def jpeg_bytes(label: str) -> bytes:
     return b"\xff\xd8\xff\xe0" + label.encode("ascii") + b"\xff\xd9"
 
 
-def artifact(path: str, data: bytes, mime_type: str, width: int, height: int) -> dict[str, object]:
+def artifact(
+    path: str,
+    data: bytes,
+    mime_type: str,
+    width: int,
+    height: int,
+) -> dict[str, object]:
     return {
         "path": path,
         "sha256": sha256_bytes(data),
@@ -121,15 +131,11 @@ def request() -> dict[str, object]:
         "authorization_scope": "public_evidence",
         "available_backends": ["comfyui"],
         "backend": "comfyui",
-        "constraints": {
-            "width": WIDTH,
-            "height": HEIGHT,
-            "generated_text": False,
-        },
+        "constraints": {"width": WIDTH, "height": HEIGHT, "generated_text": False},
         "endpoint_identity": "endpoint:private-test",
         "identity_strength": "cryptographic",
         "intent": "private natural-language brief omitted from public evidence",
-        "max_rounds": 2,
+        "max_rounds": 1,
         "merged_profile": {"rubric": RUBRIC},
         "model_choice": MODEL_ID,
         "model_identity_token": MODEL_TOKEN,
@@ -150,36 +156,49 @@ def visual_checks() -> dict[str, object]:
     return {
         "full_resolution_inspected": True,
         "prominent_human": False,
-        "limb_separation": {"status": "not_applicable", "observation": "No human is present."},
-        "feet_and_contact": {"status": "not_applicable", "observation": "No human is present."},
-        "hands_and_held_objects": {"status": "not_applicable", "observation": "No human is present."},
-        "text_and_watermarks": {"status": "pass", "observation": "No text or watermark is visible."},
+        "limb_separation": {
+            "status": "not_applicable",
+            "observation": "No human is present.",
+        },
+        "feet_and_contact": {
+            "status": "not_applicable",
+            "observation": "No human is present.",
+        },
+        "hands_and_held_objects": {
+            "status": "not_applicable",
+            "observation": "No human is present.",
+        },
+        "text_and_watermarks": {
+            "status": "pass",
+            "observation": "No text or watermark is visible.",
+        },
     }
 
 
-def review(round_number: int, *, child: bool) -> dict[str, object]:
-    value: dict[str, object] = {
+def review() -> dict[str, object]:
+    return {
         "constraint_results": {
-            "generated_text": {"status": "pass", "observation": "No generated text is visible."}
+            "width": {
+                "status": "pass",
+                "observation": "The retained image is 1280 pixels wide.",
+            },
+            "height": {
+                "status": "pass",
+                "observation": "The retained image is 720 pixels high.",
+            },
+            "generated_text": {
+                "status": "pass",
+                "observation": "No generated text is visible.",
+            }
         },
         "critique": "Full-resolution review passed the retained public-demo boundary.",
         "hard_failures": [],
         "next_action": "finalize",
         "reviewed_at": TIMESTAMP,
-        "round_number": round_number,
+        "round_number": 1,
         "scores": {name: 4 for name in RUBRIC},
         "visual_checks": visual_checks(),
     }
-    if child:
-        value["preservation_results"] = [
-            {
-                "target": target,
-                "status": "preserved",
-                "observation": f"{target} remains visibly consistent with the parent.",
-            }
-            for target in PRESERVE_TARGETS
-        ]
-    return value
 
 
 def round_record(
@@ -212,11 +231,43 @@ def round_record(
             "workflow_template_id": "sdxl-txt2img",
             "workflow_template_version": 1,
         },
-        "compiled_prompt": {"positive": "private", "negative": "private"},
+        "compiled_prompt": {
+            "positive": POSITIVE_PROMPT,
+            "negative": NEGATIVE_PROMPT,
+        },
         "generation_plan": {
-            "positive_prompt": "private",
-            "negative_prompt": "private",
-            "parameters": {"steps": 30, "guidance_scale": 7.0},
+            "profile": "ui-visual-asset",
+            "style": None,
+            "intent": "private natural-language brief omitted from public evidence",
+            "positive_prompt": POSITIVE_PROMPT,
+            "negative_prompt": NEGATIVE_PROMPT,
+            "constraints": {
+                "width": WIDTH,
+                "height": HEIGHT,
+                "generated_text": False,
+            },
+            "parameters": {
+                "seed": seed,
+                "width": WIDTH,
+                "height": HEIGHT,
+                "steps": 30,
+                "guidance_scale": 7.0,
+                "sampler": "dpmpp_2m",
+                "scheduler": "karras",
+            },
+            "max_rounds": 1,
+            "upscale_policy": "off",
+            "authorization_scope": "public_evidence",
+            "route_token": "route:private-test",
+            "model_choice": MODEL_ID,
+            "backend": "comfyui",
+            "endpoint_identity": "endpoint:private-test",
+            "model_identity_token": MODEL_TOKEN,
+            "identity_strength": "cryptographic",
+            "workflow_template_id": "sdxl-txt2img",
+            "workflow_template_version": 1,
+            "prompt_compiler_id": "natural-v1",
+            "prompt_compiler_version": 1,
         },
         "idempotency_key": "private-key",
         "image": image,
@@ -227,25 +278,30 @@ def round_record(
     }
 
 
-def client_session() -> dict[str, object]:
-    def call(sequence: int, name: str, result: dict[str, object]) -> dict[str, object]:
-        encoded = json.dumps(
-            result,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-        ).encode("ascii")
-        return {
-            "sequence": sequence,
-            "name": name,
-            "result": result,
-            "result_sha256": hashlib.sha256(encoded).hexdigest(),
-        }
+def _tool_call(
+    sequence: int,
+    name: str,
+    result: dict[str, object],
+) -> dict[str, object]:
+    encoded = json.dumps(
+        result,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return {
+        "sequence": sequence,
+        "name": name,
+        "result": result,
+        "result_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
 
+
+def client_session(image_sha256: str) -> dict[str, object]:
     return {
         "schema_version": "1.0",
         "evidence_class": "named_client_session",
-        "session_purpose": "compatibility",
+        "session_purpose": "golden_generation",
         "client": {
             "name": "codex",
             "version": "codex-cli 0.144.5",
@@ -255,15 +311,33 @@ def client_session() -> dict[str, object]:
         "hosted_client_session": True,
         "server": {
             "name": "local-gpu-imagegen",
-            "version": "0.6.1",
+            "version": "0.7.0",
             "protocol_version": "2024-11-05",
             "wheel_sha256": "a" * 64,
         },
         "started_at": TIMESTAMP,
-        "completed_at": "2026-07-22T10:02:00Z",
+        "completed_at": "2026-07-24T10:02:00Z",
         "tool_calls": [
-            call(1, "local_gpu_imagegen_check", {"ready": True, "backend": "comfyui"}),
-            call(2, "local_gpu_get_run", {"run_id": "child-run", "state": "finalized"}),
+            _tool_call(
+                1,
+                "local_gpu_imagegen_check",
+                {"ready": True, "backend": "comfyui"},
+            ),
+            _tool_call(
+                2,
+                "local_gpu_start_run",
+                {"run_id": "root-run", "state": "confirmed"},
+            ),
+            _tool_call(
+                3,
+                "local_gpu_generate_round",
+                {
+                    "run_id": "root-run",
+                    "state": "generated",
+                    "round_number": 1,
+                    "image_sha256": image_sha256,
+                },
+            ),
         ],
         "sanitization": {
             "prompts_omitted": True,
@@ -306,87 +380,58 @@ def authority() -> dict[str, object]:
 
 
 def write_source_fixture(base: Path) -> tuple[Path, Path, Path, Path, Path]:
-    root_run = base / "private" / "root-run"
-    child_run = base / "private" / "child-run"
+    run_root = base / "private" / "root-run"
     docs = base / "docs"
-    client_path = docs / "evidence" / "client-sessions" / "codex-v061.json"
+    client_path = docs / "evidence" / "client-sessions" / "codex-v070.json"
+    mcp_result_path = base / "private" / "mcp-final-result.json"
     authority_path = base / "authority.json"
     destination = docs / "demo" / "real"
 
-    before = png_bytes(24, 72, 96)
-    after = png_bytes(160, 88, 72)
-    before_preview = jpeg_bytes("before-preview")
-    after_preview = jpeg_bytes("after-preview")
-    root_image = artifact("round-01.png", before, "image/png", WIDTH, HEIGHT)
-    root_preview = artifact("round-01-preview.jpg", before_preview, "image/jpeg", 768, 432)
-    child_image = artifact("round-01.png", after, "image/png", WIDTH, HEIGHT)
-    child_preview = artifact("round-01-preview.jpg", after_preview, "image/jpeg", 768, 432)
+    image_bytes = png_bytes(24, 72, 96)
+    preview_bytes = jpeg_bytes("final-preview")
+    selected_image = artifact("round-01.png", image_bytes, "image/png", WIDTH, HEIGHT)
+    selected_preview = artifact(
+        "round-01-preview.jpg",
+        preview_bytes,
+        "image/jpeg",
+        768,
+        432,
+    )
+    final_image = {**selected_image, "path": "final.png"}
 
-    root_run.mkdir(parents=True)
-    (root_run / "round-01.png").write_bytes(before)
-    (root_run / "round-01-preview.jpg").write_bytes(before_preview)
-    (root_run / "unrelated.tmp").write_text("must not export", encoding="utf-8")
-    root_manifest = {
-        "schema_version": 1,
-        "manifest_revision": 4,
-        "run_id": "root-run",
-        "state": "reviewed",
-        "parent": None,
-        "request": request(),
-        "rounds": [round_record(root_image, root_preview, seed=4242)],
-        "reviews": [review(1, child=False)],
-        "final": None,
-    }
-    write_json(root_run / "manifest.json", root_manifest)
-
-    child_run.mkdir(parents=True)
-    (child_run / "round-01.png").write_bytes(after)
-    (child_run / "round-01-preview.jpg").write_bytes(after_preview)
-    (child_run / "final.png").write_bytes(after)
-    child_manifest = {
+    run_root.mkdir(parents=True)
+    (run_root / "round-01.png").write_bytes(image_bytes)
+    (run_root / "round-01-preview.jpg").write_bytes(preview_bytes)
+    (run_root / "final.png").write_bytes(image_bytes)
+    (run_root / "unrelated.tmp").write_text("must not export", encoding="utf-8")
+    manifest = {
         "schema_version": 1,
         "manifest_revision": 6,
-        "run_id": "child-run",
+        "run_id": "root-run",
         "state": "finalized",
-        "parent": {
-            "run_id": "root-run",
-            "round": 1,
-            "image_sha256": root_image["sha256"],
-        },
-        "revision": {
-            "contract": {
-                "preserve": [
-                    {"target": target, "strength": "hard"}
-                    for target in PRESERVE_TARGETS
-                ],
-                "change": ["palette_and_lighting"],
-            },
-            "edit_mode": "prompt-refine",
-            "denoising_strength": None,
-            "source_image": {
-                **root_image,
-                "path": "parent-source.png",
-            },
-        },
+        "parent": None,
         "request": request(),
-        "rounds": [round_record(child_image, child_preview, seed=4242)],
-        "reviews": [review(1, child=True)],
+        "rounds": [round_record(selected_image, selected_preview, seed=4242)],
+        "reviews": [review()],
         "final": {
             "round_number": 1,
             "summary": "Accepted after direct full-resolution review.",
-            "finalized_at": "2026-07-22T10:03:00Z",
+            "finalized_at": "2026-07-24T10:03:00Z",
             "quality_status": "accepted",
             "path": "final.png",
-            "image": {**child_image, "path": "final.png"},
+            "image": final_image,
         },
     }
-    write_json(child_run / "manifest.json", child_manifest)
-    write_json(client_path, client_session())
-    write_json(authority_path, authority())
-    return root_run, child_run, client_path, authority_path, destination
-
-
-def fake_showcase(before: Path, after: Path, output: Path) -> None:
-    output.write_bytes(
-        b"GIF89a" + hashlib.sha256(before.read_bytes() + after.read_bytes()).digest()
+    write_json(run_root / "manifest.json", manifest)
+    write_json(client_path, client_session(selected_image["sha256"]))
+    write_json(
+        mcp_result_path,
+        {
+            "ok": True,
+            "run_id": "root-run",
+            "state": "finalized",
+            "final": manifest["final"],
+        },
     )
+    write_json(authority_path, authority())
+    return run_root, client_path, mcp_result_path, authority_path, destination

@@ -3,21 +3,27 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
+import math
 import os
 import shutil
-from collections.abc import Callable
+import stat
+import tempfile
 from pathlib import Path
 
-from build_showcase import build_showcase
 from local_gpu_imagegen.artifacts import sha256_file, validate_png
+from local_gpu_imagegen.errors import ValidationError
+from local_gpu_imagegen.generation_plan import (
+    validate_confirmed_run_request,
+    validate_generation_plan,
+)
 from local_gpu_imagegen.visual_review import finalization_candidate, visual_checks_pass
 from validate_client_sessions import validate_session
 from validate_real_demo import (
     ARTIFACT_FILES,
     BUNDLE_SHA256,
     EXPECTED_FILES,
-    EXPECTED_PRESERVE,
     EXPECTED_RIGHTS,
     EXPECTED_ROUTE,
     EXPECTED_SERVER_VERSION,
@@ -29,23 +35,57 @@ from validate_real_demo import (
 )
 
 
-ShowcaseBuilder = Callable[[Path, Path, Path], None]
 KNOWN_LIMITATIONS = [
     "This showcase records one observed local Windows and ComfyUI configuration.",
     "SDXL 1.0 Base is used without an SDXL refiner or automatic upscale pass.",
-    "The control-plane evidence does not prove that the underlying model will satisfy every visual brief.",
+    "One accepted image does not establish a general image-quality or success-rate claim.",
     "The complete nine-root plus three-revision public acceptance matrix remains outside this preview.",
 ]
 
 
-def _read_json(path: Path, code: str) -> dict[str, object]:
+def _safe_regular_file(path: Path) -> bool:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        path_stat = path.lstat()
+    except OSError:
+        return False
+    attributes = getattr(path_stat, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return (
+        stat.S_ISREG(path_stat.st_mode)
+        and not stat.S_ISLNK(path_stat.st_mode)
+        and not bool(attributes & reparse_flag)
+    )
+
+
+def _safe_directory(path: Path) -> bool:
+    try:
+        path_stat = path.lstat()
+    except OSError:
+        return False
+    attributes = getattr(path_stat, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return (
+        stat.S_ISDIR(path_stat.st_mode)
+        and not stat.S_ISLNK(path_stat.st_mode)
+        and not bool(attributes & reparse_flag)
+    )
+
+
+def _read_json_snapshot(path: Path, code: str) -> tuple[dict[str, object], str]:
+    if not _safe_regular_file(path):
+        raise ValueError(code)
+    try:
+        encoded = path.read_bytes()
+        value = json.loads(encoded.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(code) from exc
     if not isinstance(value, dict):
         raise ValueError(code)
-    return value
+    return value, hashlib.sha256(encoded).hexdigest()
+
+
+def _read_json(path: Path, code: str) -> dict[str, object]:
+    return _read_json_snapshot(path, code)[0]
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -56,7 +96,10 @@ def _write_json(path: Path, value: object) -> None:
     )
 
 
-def _selected(manifest: dict[str, object], round_number: int) -> tuple[dict[str, object], dict[str, object]]:
+def _selected(
+    manifest: dict[str, object],
+    round_number: int,
+) -> tuple[dict[str, object], dict[str, object]]:
     rounds = manifest.get("rounds")
     reviews = manifest.get("reviews")
     if not isinstance(rounds, list) or not isinstance(reviews, list):
@@ -104,8 +147,12 @@ def _safe_artifact(
     ):
         raise ValueError("invalid_source_artifact")
     root = run_root.resolve()
-    path = (root / relative).resolve()
-    if path.parent != root or not path.is_file() or path.is_symlink():
+    path = root / relative
+    try:
+        resolved = path.resolve()
+    except OSError as exc:
+        raise ValueError("invalid_source_artifact") from exc
+    if resolved.parent != root or not _safe_regular_file(path):
         raise ValueError("invalid_source_artifact")
     if sha256_file(path) != stored_sha256:
         raise ValueError("source_artifact_sha256_mismatch")
@@ -117,7 +164,11 @@ def _safe_artifact(
             raise ValueError("source_artifact_sha256_mismatch")
     else:
         data = path.read_bytes()
-        if len(data) > 1024 * 1024 or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
+        if (
+            len(data) > 1024 * 1024
+            or not data.startswith(b"\xff\xd8")
+            or not data.endswith(b"\xff\xd9")
+        ):
             raise ValueError("invalid_source_preview")
     return path
 
@@ -163,10 +214,17 @@ def _public_authority(path: Path) -> dict[str, str]:
     return rights
 
 
-def _public_route(manifest: dict[str, object], selected: dict[str, object]) -> dict[str, object]:
+def _public_route(
+    manifest: dict[str, object],
+    selected: dict[str, object],
+) -> dict[str, object]:
     request = manifest.get("request")
     if not isinstance(request, dict):
         raise ValueError("invalid_public_route")
+    try:
+        validate_confirmed_run_request(request)
+    except ValidationError as exc:
+        raise ValueError("invalid_public_route") from exc
     route = request.get("route")
     backend_result = selected.get("backend_result")
     if not isinstance(route, dict) or not isinstance(backend_result, dict):
@@ -177,6 +235,8 @@ def _public_route(manifest: dict[str, object], selected: dict[str, object]) -> d
         not isinstance(component_bundle, dict)
         or component_bundle.get("bundle_sha256") != route.get("component_bundle_sha256")
         or not isinstance(workflow, dict)
+        or workflow.get("template_id") != "sdxl-txt2img"
+        or workflow.get("template_version") != 1
     ):
         raise ValueError("invalid_public_route")
     observed = {
@@ -191,112 +251,298 @@ def _public_route(manifest: dict[str, object], selected: dict[str, object]) -> d
         "component_bundle_sha256": route.get("component_bundle_sha256"),
         "prompt_compiler_id": request.get("prompt_compiler_id"),
         "prompt_compiler_version": request.get("prompt_compiler_version"),
-        "width": backend_result.get("width"),
-        "height": backend_result.get("height"),
-        "steps": backend_result.get("steps"),
-        "guidance_scale": backend_result.get("guidance_scale"),
-        "sampler": backend_result.get("sampler"),
-        "scheduler": backend_result.get("scheduler"),
-        "upscale_policy": request.get("upscale_policy"),
     }
     if observed != EXPECTED_ROUTE:
+        raise ValueError("invalid_public_route")
+    backend_identity = {
+        "backend": backend_result.get("backend"),
+        "model_id": backend_result.get("model"),
+        "model_identity_token": backend_result.get("model_identity_token"),
+        "workflow_template_id": backend_result.get("workflow_template_id"),
+        "workflow_template_version": backend_result.get("workflow_template_version"),
+        "prompt_compiler_id": backend_result.get("prompt_compiler_id"),
+        "prompt_compiler_version": backend_result.get("prompt_compiler_version"),
+    }
+    if backend_identity != {
+        "backend": "comfyui",
+        "model_id": MODEL_ID,
+        "model_identity_token": EXPECTED_ROUTE["model_identity_token"],
+        "workflow_template_id": "sdxl-txt2img",
+        "workflow_template_version": 1,
+        "prompt_compiler_id": EXPECTED_ROUTE["prompt_compiler_id"],
+        "prompt_compiler_version": EXPECTED_ROUTE["prompt_compiler_version"],
+    }:
         raise ValueError("invalid_public_route")
     return copy.deepcopy(observed)
 
 
-def _candidate_summary(
+def _generation_provenance(
     manifest: dict[str, object],
-    round_number: int,
-    review: dict[str, object],
+    selected: dict[str, object],
 ) -> dict[str, object]:
+    request = manifest.get("request")
+    route = request.get("route") if isinstance(request, dict) else None
+    locked = route.get("recommended_settings") if isinstance(route, dict) else None
+    plan = selected.get("generation_plan")
+    backend = selected.get("backend_result")
+    compiled = selected.get("compiled_prompt")
+    if (
+        not isinstance(locked, dict)
+        or not isinstance(plan, dict)
+        or not isinstance(backend, dict)
+        or not isinstance(compiled, dict)
+    ):
+        raise ValueError("invalid_generation_provenance")
+    action = selected.get("action")
+    edit_mode = backend.get("mode")
+    if not isinstance(action, str) or edit_mode != "txt2img":
+        raise ValueError("invalid_generation_provenance")
+    try:
+        validated_plan = validate_generation_plan(plan, request, action, edit_mode)
+    except ValidationError as exc:
+        raise ValueError("invalid_generation_provenance") from exc
+    positive = validated_plan.get("positive_prompt")
+    negative = validated_plan.get("negative_prompt")
+    seed = selected.get("seed")
+    generation = {
+        "positive_prompt": positive,
+        "negative_prompt": negative,
+        "seed": seed,
+        "width": backend.get("width"),
+        "height": backend.get("height"),
+        "steps": backend.get("steps"),
+        "guidance_scale": backend.get("guidance_scale"),
+        "sampler": backend.get("sampler"),
+        "scheduler": backend.get("scheduler"),
+    }
+    if (
+        not isinstance(positive, str)
+        or not positive.strip()
+        or not isinstance(negative, str)
+        or not negative.strip()
+        or compiled.get("positive") != positive
+        or compiled.get("negative") != negative
+        or not isinstance(seed, int)
+        or isinstance(seed, bool)
+        or seed < 0
+        or backend.get("seed") != seed
+        or generation["width"] != route.get("width")
+        or generation["height"] != route.get("height")
+        or generation["steps"] != locked.get("steps")
+        or generation["guidance_scale"] != locked.get("guidance")
+        or generation["sampler"] != locked.get("sampler")
+        or generation["scheduler"] != locked.get("scheduler")
+    ):
+        raise ValueError("invalid_generation_provenance")
+    parameters = validated_plan.get("parameters")
+    if parameters is not None:
+        if not isinstance(parameters, dict):
+            raise ValueError("invalid_generation_provenance")
+        for field, value in generation.items():
+            if field in {"positive_prompt", "negative_prompt"}:
+                continue
+            if field in parameters and parameters[field] != value:
+                raise ValueError("invalid_generation_provenance")
+    return generation
+
+
+def _sanitized_review(
+    review: dict[str, object],
+    manifest: dict[str, object],
+) -> dict[str, object]:
+    request = manifest.get("request")
+    merged = request.get("merged_profile") if isinstance(request, dict) else None
+    rubric = merged.get("rubric") if isinstance(merged, dict) else None
+    constraints = request.get("constraints") if isinstance(request, dict) else None
+    scores = review.get("scores")
+    constraint_results = review.get("constraint_results")
+    if (
+        not isinstance(rubric, dict)
+        or not rubric
+        or not isinstance(constraints, dict)
+        or not constraints
+        or not all(isinstance(name, str) and name.strip() for name in constraints)
+        or not isinstance(scores, dict)
+        or set(scores) != set(rubric)
+        or not isinstance(constraint_results, dict)
+        or set(constraint_results) != set(constraints)
+    ):
+        raise ValueError("invalid_review_evidence")
+    public_rubric: dict[str, dict[str, object]] = {}
+    for name, specification in rubric.items():
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(specification, dict)
+            or not isinstance(specification.get("critical"), bool)
+            or not isinstance(specification.get("weight"), (int, float))
+            or isinstance(specification.get("weight"), bool)
+            or not math.isfinite(specification["weight"])
+            or specification["weight"] <= 0
+        ):
+            raise ValueError("invalid_review_evidence")
+        public_rubric[name] = {
+            "critical": specification["critical"],
+            "weight": specification["weight"],
+        }
+    fields = (
+        "round_number",
+        "reviewed_at",
+        "scores",
+        "constraint_results",
+        "critique",
+        "hard_failures",
+        "next_action",
+        "visual_checks",
+    )
+    result = {field: copy.deepcopy(review.get(field)) for field in fields}
+    result["rubric"] = public_rubric
+    result["applicable_constraints"] = sorted(constraints)
+    return result
+
+
+def _finalized_root(
+    manifest: dict[str, object],
+    run_root: Path,
+) -> tuple[
+    dict[str, object],
+    dict[str, object],
+    dict[str, object],
+    Path,
+    Path,
+]:
+    if manifest.get("parent") is not None:
+        raise ValueError("ordinary_root_required")
+    request = manifest.get("request")
+    if (
+        not isinstance(request, dict)
+        or request.get("workflow_template_id") != "sdxl-txt2img"
+        or request.get("workflow_template_version") != 1
+    ):
+        raise ValueError("invalid_public_route")
+    final = manifest.get("final")
+    if manifest.get("state") != "finalized" or not isinstance(final, dict):
+        raise ValueError("invalid_finalization")
+    round_number = final.get("round_number")
+    if not isinstance(round_number, int) or isinstance(round_number, bool):
+        raise ValueError("invalid_finalization")
+    selected, review = _selected(manifest, round_number)
     candidate = finalization_candidate(manifest, round_number)
+    selected_image = selected.get("image")
+    final_image = final.get("image")
     if candidate is None or not visual_checks_pass(review.get("visual_checks")):
         raise ValueError("invalid_visual_candidate")
-    selected, _ = _selected(manifest, round_number)
-    seed = selected.get("seed")
-    if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
-        raise ValueError("invalid_visual_candidate")
-    return {
+    if (
+        final.get("quality_status") != "accepted"
+        or not isinstance(selected_image, dict)
+        or not isinstance(final_image, dict)
+        or final.get("path") != final_image.get("path")
+        or final_image.get("sha256") != candidate.get("image_sha256")
+        or selected_image.get("sha256") != candidate.get("image_sha256")
+    ):
+        raise ValueError("invalid_finalization")
+    image_path = _safe_artifact(
+        run_root,
+        final_image,
+        mime_type="image/png",
+        expected_width=1280,
+        expected_height=720,
+    )
+    preview_path = _safe_artifact(
+        run_root,
+        selected.get("preview"),
+        mime_type="image/jpeg",
+    )
+    summary = {
         "run_id": candidate["run_id"],
         "round_number": candidate["round_number"],
         "image_sha256": candidate["image_sha256"],
-        "seed": seed,
-        "quality_status": candidate["quality_status"],
+        "bytes": image_path.stat().st_size,
+        "width": final_image.get("width"),
+        "height": final_image.get("height"),
+        "mime_type": final_image.get("mime_type"),
+        "quality_status": "accepted",
         "confirmation": candidate["confirmation"],
+        "finalization_verified": True,
         "visual_checks": copy.deepcopy(review["visual_checks"]),
     }
+    return summary, selected, review, image_path, preview_path
 
 
-def _revision_summary(
-    manifest: dict[str, object],
-    round_number: int,
-    review: dict[str, object],
-    parent_summary: dict[str, object],
-) -> dict[str, object]:
-    candidate = _candidate_summary(manifest, round_number, review)
-    parent = manifest.get("parent")
-    expected_parent = {
-        "run_id": parent_summary["run_id"],
-        "round": parent_summary["round_number"],
-        "image_sha256": parent_summary["image_sha256"],
-    }
-    revision = manifest.get("revision")
-    if not isinstance(revision, dict) or parent != expected_parent:
-        raise ValueError("invalid_revision_lineage")
-    source_image = revision.get("source_image")
-    if not isinstance(source_image, dict) or source_image.get("sha256") != parent_summary["image_sha256"]:
-        raise ValueError("invalid_revision_lineage")
-    contract = revision.get("contract")
-    if not isinstance(contract, dict):
-        raise ValueError("invalid_revision_contract")
-    preserve = contract.get("preserve")
-    change = contract.get("change")
-    if not isinstance(preserve, list) or not isinstance(change, list):
-        raise ValueError("invalid_revision_contract")
-    by_target = {
-        item.get("target"): item
-        for item in preserve
-        if isinstance(item, dict) and isinstance(item.get("target"), str)
-    }
-    canonical_preserve = [by_target.get(item["target"]) for item in EXPECTED_PRESERVE]
-    if canonical_preserve != EXPECTED_PRESERVE or change != ["palette_and_lighting"]:
-        raise ValueError("invalid_revision_contract")
-    preservation = review.get("preservation_results")
-    if not isinstance(preservation, list):
-        raise ValueError("preservation_not_passed")
-    preservation_by_target = {
-        item.get("target"): item
-        for item in preservation
-        if isinstance(item, dict) and isinstance(item.get("target"), str)
-    }
-    canonical_results = [
-        preservation_by_target.get(item["target"])
-        for item in EXPECTED_PRESERVE
-    ]
-    if any(
-        not isinstance(item, dict) or item.get("status") != "preserved"
-        for item in canonical_results
-    ):
-        raise ValueError("preservation_not_passed")
-    final = manifest.get("final")
+def _client_binding(
+    client_session: Path,
+    destination: Path,
+    final: dict[str, object],
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    document, document_sha256 = _read_json_snapshot(
+        client_session,
+        "invalid_client_session",
+    )
     if (
-        manifest.get("state") != "finalized"
-        or not isinstance(final, dict)
-        or final.get("round_number") != round_number
-        or final.get("quality_status") != "accepted"
-        or not isinstance(final.get("image"), dict)
-        or final["image"].get("sha256") != candidate["image_sha256"]
+        validate_session(document, expected_server_version=EXPECTED_SERVER_VERSION)
+        or document.get("session_purpose") != "golden_generation"
     ):
-        raise ValueError("invalid_revision_finalization")
+        raise ValueError("invalid_client_session")
+    client = document.get("client")
+    server = document.get("server")
+    if not isinstance(client, dict) or not isinstance(server, dict):
+        raise ValueError("invalid_client_session")
+    matching_generation = any(
+        isinstance(call, dict)
+        and call.get("name") == "local_gpu_generate_round"
+        and isinstance(call.get("result"), dict)
+        and call["result"].get("run_id") == final["run_id"]
+        and call["result"].get("round_number") == final["round_number"]
+        and call["result"].get("image_sha256") == final["image_sha256"]
+        for call in document.get("tool_calls", [])
+    )
+    if not matching_generation:
+        raise ValueError("invalid_client_session")
+    relative = Path(os.path.relpath(client_session.resolve(), destination.resolve())).as_posix()
+    return (
+        document,
+        {
+            "path": relative,
+            "sha256": document_sha256,
+            "client": client["name"],
+            "version": client["version"],
+            "session_purpose": "golden_generation",
+        },
+        {
+            "version": server["version"],
+            "wheel_sha256": server["wheel_sha256"],
+        },
+    )
+
+
+def _public_mcp_result(
+    path: Path,
+    manifest: dict[str, object],
+    final: dict[str, object],
+) -> dict[str, object]:
+    document, document_sha256 = _read_json_snapshot(path, "invalid_mcp_result")
+    source_final = manifest.get("final")
+    if (
+        document.get("ok") is not True
+        or document.get("run_id") != final["run_id"]
+        or document.get("state") != "finalized"
+        or document.get("final") != source_final
+    ):
+        raise ValueError("invalid_mcp_result")
+    if "confirmation" in document and document.get("confirmation") != final["confirmation"]:
+        raise ValueError("invalid_finalization")
     return {
-        **candidate,
-        "quality_status": "accepted",
-        "parent": expected_parent,
-        "edit_mode": revision.get("edit_mode"),
-        "preserve": copy.deepcopy(EXPECTED_PRESERVE),
-        "change": ["palette_and_lighting"],
-        "finalization_verified": True,
-        "preservation_results": copy.deepcopy(canonical_results),
+        "schema_version": "1.0",
+        "tool": "local_gpu_finalize_run",
+        "source_sha256": document_sha256,
+        "ok": True,
+        "run_id": final["run_id"],
+        "state": "finalized",
+        "final": {
+            "round_number": final["round_number"],
+            "quality_status": "accepted",
+            "image_sha256": final["image_sha256"],
+        },
     }
 
 
@@ -309,134 +555,79 @@ def _artifact_record(path: Path, mime_type: str) -> dict[str, object]:
     }
 
 
-def _sanitized_review(review: dict[str, object]) -> dict[str, object]:
-    fields = ("round_number", "reviewed_at", "scores", "hard_failures", "next_action", "visual_checks")
-    return {field: copy.deepcopy(review.get(field)) for field in fields}
-
-
 def export_real_demo(
-    root_run: Path,
-    child_run: Path,
+    run_root: Path,
     destination: Path,
     client_session: Path,
+    mcp_result: Path,
     *,
     authority_path: Path,
-    showcase_builder: ShowcaseBuilder = build_showcase,
 ) -> dict[str, object]:
-    root_run = Path(root_run)
-    child_run = Path(child_run)
+    run_root = Path(run_root)
     destination = Path(destination)
     client_session = Path(client_session)
+    mcp_result = Path(mcp_result)
     if destination.exists():
         raise ValueError("demo_destination_exists")
 
     rights = _public_authority(Path(authority_path))
-    root_manifest = _read_json(root_run / "manifest.json", "invalid_root_manifest")
-    child_manifest = _read_json(child_run / "manifest.json", "invalid_revision_manifest")
-    parent = child_manifest.get("parent")
-    if not isinstance(parent, dict) or parent.get("run_id") != root_manifest.get("run_id"):
-        raise ValueError("invalid_revision_lineage")
-    parent_round = parent.get("round")
-    if not isinstance(parent_round, int) or isinstance(parent_round, bool):
-        raise ValueError("invalid_revision_lineage")
-    root_selected, root_review = _selected(root_manifest, parent_round)
-    root_summary = _candidate_summary(root_manifest, parent_round, root_review)
-    if parent.get("image_sha256") != root_summary["image_sha256"]:
-        raise ValueError("invalid_revision_lineage")
+    if not _safe_directory(run_root):
+        raise ValueError("invalid_run_root")
+    manifest = _read_json(run_root / "manifest.json", "invalid_run_manifest")
+    if manifest.get("parent") is not None:
+        raise ValueError("ordinary_root_required")
+    final, selected, review, image_path, preview_path = _finalized_root(manifest, run_root)
+    route = _public_route(manifest, selected)
+    generation = _generation_provenance(manifest, selected)
+    client_document, client_binding, installed_package = _client_binding(
+        client_session,
+        destination,
+        final,
+    )
+    public_mcp_result = _public_mcp_result(mcp_result, manifest, final)
 
-    child_final = child_manifest.get("final")
-    child_round = child_final.get("round_number") if isinstance(child_final, dict) else None
-    if not isinstance(child_round, int) or isinstance(child_round, bool):
-        raise ValueError("invalid_revision_finalization")
-    child_selected, child_review = _selected(child_manifest, child_round)
-    revision_summary = _revision_summary(
-        child_manifest,
-        child_round,
-        child_review,
-        root_summary,
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not _safe_directory(destination.parent):
+        raise ValueError("invalid_demo_destination_parent")
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{destination.name}.staging-",
+            dir=destination.parent,
+        )
     )
-    if revision_summary["seed"] != root_summary["seed"]:
-        raise ValueError("seed_not_preserved")
-    route = _public_route(root_manifest, root_selected)
-    if _public_route(child_manifest, child_selected) != route:
-        raise ValueError("revision_route_changed")
-
-    root_image = _safe_artifact(
-        root_run,
-        root_selected.get("image"),
-        mime_type="image/png",
-        expected_width=1280,
-        expected_height=720,
-    )
-    root_preview = _safe_artifact(
-        root_run,
-        root_selected.get("preview"),
-        mime_type="image/jpeg",
-    )
-    final_image = child_final.get("image") if isinstance(child_final, dict) else None
-    child_image = _safe_artifact(
-        child_run,
-        final_image,
-        mime_type="image/png",
-        expected_width=1280,
-        expected_height=720,
-    )
-    child_preview = _safe_artifact(
-        child_run,
-        child_selected.get("preview"),
-        mime_type="image/jpeg",
-    )
-
-    client_document = _read_json(client_session, "invalid_client_session")
-    if validate_session(client_document, expected_server_version=EXPECTED_SERVER_VERSION):
-        raise ValueError("invalid_client_session")
-    client = client_document.get("client")
-    if not isinstance(client, dict):
-        raise ValueError("invalid_client_session")
-    relative_client = Path(os.path.relpath(client_session.resolve(), destination.resolve())).as_posix()
-
-    destination.mkdir(parents=True)
     try:
-        shutil.copyfile(root_image, destination / "before.png")
-        shutil.copyfile(child_image, destination / "after.png")
-        shutil.copyfile(root_preview, destination / "before-preview.jpg")
-        shutil.copyfile(child_preview, destination / "after-preview.jpg")
+        shutil.copyfile(image_path, staging / "final.png")
+        shutil.copyfile(preview_path, staging / "preview.jpg")
+        if sha256_file(staging / "final.png") != final["image_sha256"]:
+            raise ValueError("source_artifact_sha256_mismatch")
+        preview = selected.get("preview")
+        if (
+            not isinstance(preview, dict)
+            or sha256_file(staging / "preview.jpg") != preview.get("sha256")
+        ):
+            raise ValueError("source_artifact_sha256_mismatch")
+        validate_png(staging / "final.png", 1280, 720)
 
-        root_public = {
-            "schema_version": "1.0",
-            "role": "root",
-            "run_id": root_summary["run_id"],
-            "state": "reviewed_candidate",
-            "round_number": root_summary["round_number"],
-            "image_sha256": root_summary["image_sha256"],
-            "seed": root_summary["seed"],
-            "confirmation": root_summary["confirmation"],
-            "route": copy.deepcopy(route),
-            "review": _sanitized_review(root_review),
-        }
-        revision_public = {
-            "schema_version": "1.0",
-            "role": "revision",
-            "run_id": revision_summary["run_id"],
+        run_public = {
+            "schema_version": "2.0",
+            "role": "finalized_root",
+            "run_id": final["run_id"],
             "state": "finalized",
-            "parent": copy.deepcopy(revision_summary["parent"]),
-            "round_number": revision_summary["round_number"],
-            "image_sha256": revision_summary["image_sha256"],
-            "seed": revision_summary["seed"],
-            "confirmation": revision_summary["confirmation"],
-            "edit_mode": revision_summary["edit_mode"],
-            "preserve": copy.deepcopy(revision_summary["preserve"]),
-            "change": copy.deepcopy(revision_summary["change"]),
+            "parent": None,
+            "round_number": final["round_number"],
+            "image_sha256": final["image_sha256"],
             "route": copy.deepcopy(route),
-            "review": _sanitized_review(child_review),
+            "generation": copy.deepcopy(generation),
+            "review": _sanitized_review(review, manifest),
+            "final": copy.deepcopy(final),
         }
-        _write_json(destination / "root-manifest.json", root_public)
-        _write_json(destination / "revision-manifest.json", revision_public)
+        _write_json(staging / "run-manifest.json", run_public)
+        _write_json(staging / "mcp-result.json", public_mcp_result)
 
         transcript_lines = [
             "# Sanitized Observable Transcript",
             "",
-            f"Client: `{client['name']}` `{client['version']}`",
+            f"Client: `{client_binding['client']}` `{client_binding['version']}`",
             "",
             "Only observable MCP calls and sanitized structured results are retained. Prompts, hidden reasoning, account identifiers, endpoints, and machine paths are omitted.",
             "",
@@ -446,75 +637,77 @@ def export_real_demo(
             transcript_lines.append(f"- `{call['name']}` -> `{result}`")
         transcript_lines.extend(
             [
-                f"- Root candidate `{root_summary['run_id']}` round `{root_summary['round_number']}`: `{root_summary['image_sha256']}`",
-                f"- Finalized revision `{revision_summary['run_id']}` round `{revision_summary['round_number']}`: `{revision_summary['image_sha256']}`",
+                f"- Finalized root `{final['run_id']}` round `{final['round_number']}`: `{final['image_sha256']}`",
+                "- The separate `mcp-result.json` binds the genuine finalization result by source SHA-256.",
                 "",
             ]
         )
-        (destination / "transcript.md").write_text(
-            "\n".join(transcript_lines), encoding="utf-8", newline="\n"
+        (staging / "transcript.md").write_text(
+            "\n".join(transcript_lines),
+            encoding="utf-8",
+            newline="\n",
         )
-        readme = """# Genuine SDXL Hot-Revision Demo
+        readme = """# Genuine Ordinary-Route SDXL Demo
 
-`before.png` is the reviewed root candidate. `after.png` is an immutable prompt-refine child finalized through the byte-bound confirmation contract. Both files were generated locally through the reviewed SDXL 1.0 Base ComfyUI route.
+`final.png` is the original finalized PNG generated locally with SDXL 1.0 Base through ordinary `sdxl-txt2img` v1. It is copied byte-for-byte without an upscale or presentation transform.
 
-The revision preserves composition, the primary telescope motif, and the left copy-safe area while changing only palette and lighting. See `showcase-manifest.json` for exact hashes, route identity, settings, lineage, review evidence, client evidence, and limitations.
+See `showcase-manifest.json` for exact hashes, prompts, settings, route identity, review evidence, client binding, MCP finalization-result binding, public rights, and limitations.
 
-This directory contains no model weights, prompts, backend endpoints, account data, hidden reasoning, or machine paths. The simulated protocol animation in the parent demo directory is separate and is not model output.
+This directory contains no model weights, backend endpoints, account data, hidden reasoning, or machine paths. The simulated protocol GIF in the parent demo directory is separate and is not model output.
 """
-        (destination / "README.md").write_text(readme, encoding="utf-8", newline="\n")
-        showcase_builder(
-            destination / "before.png",
-            destination / "after.png",
-            destination / "showcase.gif",
-        )
+        (staging / "README.md").write_text(readme, encoding="utf-8", newline="\n")
 
         artifacts = {
-            name: _artifact_record(destination / name, MIME_TYPES[name])
+            name: _artifact_record(staging / name, MIME_TYPES[name])
             for name in sorted(ARTIFACT_FILES)
         }
-        manifest = {
-            "schema_version": "1.0",
-            "demo_kind": "real_local_gpu_hot_revision",
+        mcp_binding = {
+            "path": "mcp-result.json",
+            "sha256": artifacts["mcp-result.json"]["sha256"],
+            "source_sha256": public_mcp_result["source_sha256"],
+            "tool": "local_gpu_finalize_run",
+        }
+        showcase = {
+            "schema_version": "2.0",
+            "demo_kind": "real_local_gpu_generation",
             "model_output": True,
+            "installed_package": installed_package,
             "public_rights": rights,
             "route": route,
-            "root": root_summary,
-            "revision": revision_summary,
-            "client_session": {
-                "path": relative_client,
-                "sha256": sha256_file(client_session),
-                "client": client["name"],
-                "version": client["version"],
-            },
+            "generation": generation,
+            "final": final,
+            "client_session": client_binding,
+            "mcp_result": mcp_binding,
             "artifacts": artifacts,
             "known_limitations": list(KNOWN_LIMITATIONS),
         }
-        _write_json(destination / "showcase-manifest.json", manifest)
-        findings = validate_real_demo(destination)
+        _write_json(staging / "showcase-manifest.json", showcase)
+        findings = validate_real_demo(staging)
         if findings:
             raise ValueError("invalid_exported_demo:" + ",".join(findings))
-        if {path.name for path in destination.iterdir() if path.is_file()} != EXPECTED_FILES:
+        if {path.name for path in staging.iterdir()} != EXPECTED_FILES:
             raise ValueError("unexpected_demo_files")
-        return manifest
-    except Exception:
-        shutil.rmtree(destination, ignore_errors=True)
+        staging.rename(destination)
+        return showcase
+    except BaseException:
+        if staging.exists():
+            shutil.rmtree(staging)
         raise
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Export a sanitized genuine hot-revision demo.")
-    parser.add_argument("root_run", type=Path)
-    parser.add_argument("child_run", type=Path)
+    parser = argparse.ArgumentParser(description="Export a sanitized genuine ordinary-route demo.")
+    parser.add_argument("run_root", type=Path)
     parser.add_argument("destination", type=Path)
     parser.add_argument("client_session", type=Path)
+    parser.add_argument("mcp_result", type=Path)
     parser.add_argument("--authority", type=Path, required=True)
     args = parser.parse_args()
     manifest = export_real_demo(
-        args.root_run,
-        args.child_run,
+        args.run_root,
         args.destination,
         args.client_session,
+        args.mcp_result,
         authority_path=args.authority,
     )
     print(json.dumps(manifest, indent=2, sort_keys=True))
