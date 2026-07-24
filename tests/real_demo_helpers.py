@@ -12,11 +12,14 @@ MODEL_TOKEN = "model:1a4a27ae037d08ad44e987720d07df0910fff0e1d3210378e6a4886cfc4
 MODEL_SHA256 = "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b"
 WORKFLOW_SHA256 = "05f942291676182d08446b8855d6353a96e10fa3b059703a9f6d41e16d36000e"
 BUNDLE_SHA256 = "ec5ea6fdae221003e32e7e6cac42609a0b62af24f2996a7d46826b153f360f62"
-WIDTH = 1280
-HEIGHT = 720
+WIDTH = 1024
+HEIGHT = 1024
 TIMESTAMP = "2026-07-24T10:00:00Z"
-POSITIVE_PROMPT = "Blue-hour observatory landscape with one brass telescope and clean composition."
-NEGATIVE_PROMPT = "text, watermark, cropped subject, duplicate telescope"
+POSITIVE_PROMPT = (
+    "A solitary white lighthouse on a black basalt sea stack at blue hour, "
+    "complete structure visible, no people or lettering."
+)
+NEGATIVE_PROMPT = "people, text, watermark, cropped lighthouse, duplicate tower"
 RUBRIC = {
     name: {"critical": True, "weight": 2}
     for name in (
@@ -180,11 +183,11 @@ def review() -> dict[str, object]:
         "constraint_results": {
             "width": {
                 "status": "pass",
-                "observation": "The retained image is 1280 pixels wide.",
+                "observation": "The retained image is 1024 pixels wide.",
             },
             "height": {
                 "status": "pass",
-                "observation": "The retained image is 720 pixels high.",
+                "observation": "The retained image is 1024 pixels high.",
             },
             "generated_text": {
                 "status": "pass",

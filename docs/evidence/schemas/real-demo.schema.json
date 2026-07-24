@@ -65,7 +65,7 @@
         "bytes": {"minimum": 1, "type": "integer"},
         "confirmation": {"pattern": "^finalize:[^:]+:[1-9][0-9]*:[0-9a-f]{64}$", "type": "string"},
         "finalization_verified": {"const": true},
-        "height": {"const": 720},
+        "height": {"$ref": "#/$defs/dimension"},
         "image_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
         "mime_type": {"const": "image/png"},
         "quality_status": {"const": "accepted"},
@@ -84,7 +84,7 @@
           "required": ["full_resolution_inspected", "prominent_human", "limb_separation", "feet_and_contact", "hands_and_held_objects", "text_and_watermarks"],
           "type": "object"
         },
-        "width": {"const": 1280}
+        "width": {"$ref": "#/$defs/dimension"}
       },
       "required": ["run_id", "round_number", "image_sha256", "bytes", "width", "height", "mime_type", "quality_status", "confirmation", "finalization_verified", "visual_checks"],
       "type": "object"
@@ -93,14 +93,14 @@
       "additionalProperties": false,
       "properties": {
         "guidance_scale": {"type": "number"},
-        "height": {"const": 720},
+        "height": {"$ref": "#/$defs/dimension"},
         "negative_prompt": {"minLength": 1, "type": "string"},
         "positive_prompt": {"minLength": 1, "type": "string"},
         "sampler": {"minLength": 1, "type": "string"},
         "scheduler": {"minLength": 1, "type": "string"},
         "seed": {"minimum": 0, "type": "integer"},
         "steps": {"minimum": 1, "type": "integer"},
-        "width": {"const": 1280}
+        "width": {"$ref": "#/$defs/dimension"}
       },
       "required": ["positive_prompt", "negative_prompt", "seed", "width", "height", "steps", "guidance_scale", "sampler", "scheduler"],
       "type": "object"
@@ -176,6 +176,12 @@
       },
       "required": ["path", "sha256", "bytes", "mime_type"],
       "type": "object"
+    },
+    "dimension": {
+      "maximum": 1536,
+      "minimum": 256,
+      "multipleOf": 8,
+      "type": "integer"
     },
     "visualCheck": {
       "additionalProperties": false,

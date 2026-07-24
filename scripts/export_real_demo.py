@@ -173,6 +173,19 @@ def _safe_artifact(
     return path
 
 
+def _validated_dimensions(width: object, height: object) -> tuple[int, int]:
+    values = (width, height)
+    if any(
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 256 <= value <= 1536
+        or value % 8 != 0
+        for value in values
+    ):
+        raise ValueError("invalid_finalization")
+    return width, height
+
+
 def _public_authority(path: Path) -> dict[str, str]:
     authority = _read_json(path, "invalid_public_authority")
     backend = authority.get("backend")
@@ -441,12 +454,21 @@ def _finalized_root(
         or selected_image.get("sha256") != candidate.get("image_sha256")
     ):
         raise ValueError("invalid_finalization")
+    width, height = _validated_dimensions(
+        final_image.get("width"),
+        final_image.get("height"),
+    )
+    if (
+        selected_image.get("width") != width
+        or selected_image.get("height") != height
+    ):
+        raise ValueError("invalid_finalization")
     image_path = _safe_artifact(
         run_root,
         final_image,
         mime_type="image/png",
-        expected_width=1280,
-        expected_height=720,
+        expected_width=width,
+        expected_height=height,
     )
     preview_path = _safe_artifact(
         run_root,
@@ -458,8 +480,8 @@ def _finalized_root(
         "round_number": candidate["round_number"],
         "image_sha256": candidate["image_sha256"],
         "bytes": image_path.stat().st_size,
-        "width": final_image.get("width"),
-        "height": final_image.get("height"),
+        "width": width,
+        "height": height,
         "mime_type": final_image.get("mime_type"),
         "quality_status": "accepted",
         "confirmation": candidate["confirmation"],
@@ -579,6 +601,11 @@ def export_real_demo(
     final, selected, review, image_path, preview_path = _finalized_root(manifest, run_root)
     route = _public_route(manifest, selected)
     generation = _generation_provenance(manifest, selected)
+    if (
+        generation.get("width") != final["width"]
+        or generation.get("height") != final["height"]
+    ):
+        raise ValueError("invalid_generation_provenance")
     client_document, client_binding, installed_package = _client_binding(
         client_session,
         destination,
@@ -606,7 +633,7 @@ def export_real_demo(
             or sha256_file(staging / "preview.jpg") != preview.get("sha256")
         ):
             raise ValueError("source_artifact_sha256_mismatch")
-        validate_png(staging / "final.png", 1280, 720)
+        validate_png(staging / "final.png", final["width"], final["height"])
 
         run_public = {
             "schema_version": "2.0",

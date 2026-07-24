@@ -240,6 +240,25 @@ class ExportRealDemoTests(unittest.TestCase):
                     )
                 self.assertFalse(output.exists())
 
+    def test_export_rejects_final_dimension_metadata_drift(self) -> None:
+        from export_real_demo import export_real_demo
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            run_root, client, mcp_result, authority, output = write_source_fixture(base)
+            manifest = read_json(run_root / "manifest.json")
+            manifest["final"]["image"]["width"] = 1280
+            write_json(run_root / "manifest.json", manifest)
+
+            with self.assertRaisesRegex(ValueError, "invalid_finalization"):
+                export_real_demo(
+                    run_root,
+                    output,
+                    client,
+                    mcp_result,
+                    authority_path=authority,
+                )
+
     def test_export_stages_then_removes_failed_self_validation(self) -> None:
         from export_real_demo import export_real_demo
 

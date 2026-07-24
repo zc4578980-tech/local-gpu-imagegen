@@ -277,6 +277,15 @@ def _is_safe_directory(path: Path) -> bool:
     )
 
 
+def _valid_dimension(value: object) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 256 <= value <= 1536
+        and value % 8 == 0
+    )
+
+
 def _valid_generation(value: object) -> bool:
     if not isinstance(value, dict) or set(value) != GENERATION_FIELDS:
         return False
@@ -291,8 +300,8 @@ def _valid_generation(value: object) -> bool:
         and isinstance(seed, int)
         and not isinstance(seed, bool)
         and seed >= 0
-        and value.get("width") == 1280
-        and value.get("height") == 720
+        and _valid_dimension(value.get("width"))
+        and _valid_dimension(value.get("height"))
         and isinstance(steps, int)
         and not isinstance(steps, bool)
         and steps > 0
@@ -376,7 +385,12 @@ def _valid_review(value: object, final: object) -> bool:
     )
 
 
-def _validate_artifacts(root: Path, value: object, findings: set[str]) -> None:
+def _validate_artifacts(
+    root: Path,
+    value: object,
+    final: object,
+    findings: set[str],
+) -> None:
     if not isinstance(value, dict) or set(value) != ARTIFACT_FILES:
         findings.add("invalid_artifact_manifest")
         return
@@ -410,13 +424,24 @@ def _validate_artifacts(root: Path, value: object, findings: set[str]) -> None:
         if actual_sha256 != metadata["sha256"]:
             findings.add(f"artifact_sha256_mismatch:{name}")
         if name == "final.png":
-            try:
-                validated = validate_png(path, 1280, 720)
-            except (ArtifactError, OSError, ValueError):
+            if (
+                not isinstance(final, dict)
+                or not _valid_dimension(final.get("width"))
+                or not _valid_dimension(final.get("height"))
+            ):
                 findings.add("invalid_final_png")
             else:
-                if validated.get("sha256") != metadata["sha256"]:
-                    findings.add("artifact_sha256_mismatch:final.png")
+                try:
+                    validated = validate_png(
+                        path,
+                        final["width"],
+                        final["height"],
+                    )
+                except (ArtifactError, OSError, ValueError):
+                    findings.add("invalid_final_png")
+                else:
+                    if validated.get("sha256") != metadata["sha256"]:
+                        findings.add("artifact_sha256_mismatch:final.png")
         elif name == "preview.jpg":
             try:
                 encoded = path.read_bytes()
@@ -648,8 +673,8 @@ def validate_real_demo(root: Path) -> list[str]:
             or final.get("finalization_verified") is not True
             or final.get("confirmation") != _confirmation(final)
             or final.get("mime_type") != "image/png"
-            or final.get("width") != 1280
-            or final.get("height") != 720
+            or not _valid_dimension(final.get("width"))
+            or not _valid_dimension(final.get("height"))
             or not isinstance(final.get("bytes"), int)
             or isinstance(final.get("bytes"), bool)
             or final.get("bytes", 0) <= 0
@@ -666,7 +691,7 @@ def validate_real_demo(root: Path) -> list[str]:
             findings.add("invalid_generation_provenance")
 
     artifacts = document.get("artifacts")
-    _validate_artifacts(root, artifacts, findings)
+    _validate_artifacts(root, artifacts, final, findings)
     if isinstance(artifacts, dict) and isinstance(final, dict):
         image_artifact = artifacts.get("final.png")
         if (

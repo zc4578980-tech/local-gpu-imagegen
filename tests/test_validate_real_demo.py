@@ -120,6 +120,18 @@ class ValidateRealDemoTests(unittest.TestCase):
 
                 self.assertIn(finding, validate_real_demo(output))
 
+    def test_validator_rejects_generation_dimension_drift(self) -> None:
+        from validate_real_demo import validate_real_demo
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = self._export(Path(directory))
+            manifest_path = output / "showcase-manifest.json"
+            manifest = read_json(manifest_path)
+            manifest["generation"]["width"] = 1280
+            write_json(manifest_path, manifest)
+
+            self.assertIn("invalid_generation_provenance", validate_real_demo(output))
+
     def test_rejects_changed_public_mcp_and_sanitized_manifest_bytes(self) -> None:
         from validate_real_demo import validate_real_demo
 
@@ -277,6 +289,22 @@ class ValidateRealDemoTests(unittest.TestCase):
         self.assertTrue(
             schema["properties"]["final"]["properties"]["confirmation"]["pattern"]
         )
+        dimension = schema["$defs"]["dimension"]
+        self.assertEqual(
+            dimension,
+            {
+                "maximum": 1536,
+                "minimum": 256,
+                "multipleOf": 8,
+                "type": "integer",
+            },
+        )
+        for section in ("final", "generation"):
+            for field in ("width", "height"):
+                self.assertEqual(
+                    schema["properties"][section]["properties"][field],
+                    {"$ref": "#/$defs/dimension"},
+                )
 
 
 if __name__ == "__main__":
