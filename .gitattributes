@@ -1,2 +1,5 @@
 # Shipped workflows are hash-bound artifacts; preserve their exact mixed EOL bytes.
 workflows/comfyui/*.json -text diff
+
+# Acceptance authority hashes the committed fixture bytes exactly.
+tests/fixtures/acceptance/v1-briefs.json -text diff

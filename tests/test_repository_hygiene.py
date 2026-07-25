@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import tomllib
@@ -16,6 +17,27 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertTrue(attributes.is_file())
         rules = attributes.read_text(encoding="utf-8").splitlines()
         self.assertIn("workflows/comfyui/*.json -text diff", rules)
+
+    def test_acceptance_briefs_are_bound_to_committed_bytes(self) -> None:
+        relative = "tests/fixtures/acceptance/v1-briefs.json"
+        rules = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        self.assertIn(f"{relative} -text diff", rules)
+
+        committed = subprocess.run(
+            ["git", "cat-file", "blob", f"HEAD:{relative}"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+        ).stdout
+        authority = json.loads(
+            (ROOT / "docs" / "evidence" / "acceptance-authority.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            authority["briefs_sha256"],
+            hashlib.sha256(committed).hexdigest(),
+        )
 
     def test_mit_metadata_and_public_templates_are_retained(self) -> None:
         project = tomllib.loads(

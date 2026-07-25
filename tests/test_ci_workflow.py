@@ -18,6 +18,16 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn(install, workflow)
         self.assertLess(workflow.index(install), workflow.index(suite))
 
+    def test_pillow_is_installed_for_full_capability_suite(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(
+            encoding="utf-8"
+        )
+        install = 'python -m pip install "setuptools>=68" "Pillow>=10"'
+        suite = "python -m unittest discover -s tests -v"
+
+        self.assertIn(install, workflow)
+        self.assertLess(workflow.index(install), workflow.index(suite))
+
     def test_public_matrix_keeps_four_required_jobs(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(
             encoding="utf-8"
