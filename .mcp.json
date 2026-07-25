@@ -3,7 +3,7 @@
     "local-gpu-imagegen": {
       "command": "python",
       "args": [
-        "scripts\\mcp_server.py"
+        "scripts/mcp_server.py"
       ],
       "cwd": "."
     }

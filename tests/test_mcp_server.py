@@ -1852,6 +1852,7 @@ class McpServerProtocolTests(unittest.TestCase):
         config = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
         server = config["mcpServers"]["local-gpu-imagegen"]
         self.assertTrue(all(not Path(argument).is_absolute() for argument in server["args"]))
+        self.assertTrue(all("\\" not in argument for argument in server["args"]))
 
         request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
         completed = subprocess.run(
