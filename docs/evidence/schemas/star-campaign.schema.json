@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zc4578980-tech/local-gpu-imagegen/blob/main/docs/evidence/schemas/star-campaign.schema.json",
+  "title": "Post-release Star campaign",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "repository",
+    "release",
+    "goal",
+    "events_file",
+    "hash_algorithm"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "campaign_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,99}$"
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "maxLength": 200
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "tag_name",
+        "html_url",
+        "published_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tag_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "html_url": {
+          "type": "string",
+          "pattern": "^https://github\\.com/",
+          "maxLength": 500
+        },
+        "published_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        }
+      }
+    },
+    "goal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric",
+        "target",
+        "target_days",
+        "baseline_grace_seconds",
+        "collection_window_hours"
+      ],
+      "properties": {
+        "metric": {
+          "const": "net_new_repository_stars"
+        },
+        "target": {
+          "const": 100
+        },
+        "target_days": {
+          "const": 30
+        },
+        "baseline_grace_seconds": {
+          "const": 300
+        },
+        "collection_window_hours": {
+          "const": 24
+        }
+      }
+    },
+    "events_file": {
+      "const": "events.jsonl"
+    },
+    "hash_algorithm": {
+      "const": "sha256"
+    }
+  }
+}
