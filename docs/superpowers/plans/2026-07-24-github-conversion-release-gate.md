@@ -1,5 +1,10 @@
 # GitHub Conversion Release-Gate Implementation Plan
 
+> **Status:** Superseded on 2026-07-25 by
+> [`2026-07-25-post-release-star-measurement-design.md`](../specs/2026-07-25-post-release-star-measurement-design.md).
+> The 100-Star objective is now a post-release 30-day net-new goal, not a pre-release publication gate. The text below is retained as historical
+> planning context and must not be applied as current release policy.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn the exact Local GPU Imagegen `0.7.0` candidate into an evidence-first, five-minute GitHub onboarding surface, while preserving byte-bound evidence gates and blocking publication unless the pessimistic first-30-day forecast reaches at least 100 Stars.
