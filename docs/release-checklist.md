@@ -21,7 +21,6 @@ This checklist covers repository release readiness. It does not grant model, wor
 ## Publication gate
 
 - [x] The genuine-image social preview is generated, validated at 1280x640, and visually reviewed without mutating remote metadata.
-- [ ] The evidence-backed pessimistic first-30-day forecast is at least `100 GitHub Stars`.
 - [ ] Explicit authority is granted for each remote metadata change and publication action.
 - [ ] README, changelog, package metadata, plugin metadata, `server.json`, GitHub copy, directory copy, and release notes agree on version, fifteen tools, three backends, the ordinary golden path, and open limitations.
 - [ ] Windows and Ubuntu jobs on Python 3.11 and 3.12 are green at the exact release commit.
@@ -29,6 +28,13 @@ This checklist covers repository release readiness. It does not grant model, wor
 - [ ] The official MCP Registry record resolves version `0.7.0` to the exact PyPI package and stdio command.
 - [ ] Tag `v0.7.0`, the preview release, package URL, Registry URL, and repository evidence URLs resolve to the exact verified release state.
 - [ ] Directory submissions remain unsubmitted until each receives separate authority.
+
+## Post-release adoption measurement
+
+- [ ] At formal GitHub Release publication time, initialize the append-only campaign baseline under `docs/evidence/adoption/<campaign_id>/` within five minutes when possible.
+- [ ] During the inclusive 24-hour T+30 collection window, append the repository-level Star total and validate the complete hash chain.
+- [ ] Measure the goal as T+30 total Stars minus baseline total Stars, targeting `100 net-new GitHub Stars` without interpolation or stargazer identities.
+- [ ] Record `goal_met`, `goal_missed`, or `measurement_incomplete`; a missed or incomplete adoption goal triggers review and iteration but does not retract the Release.
 
 ## Still pending after preview
 

@@ -21,3 +21,17 @@ python .\scripts\validate_acceptance_evidence.py
 ```
 
 With no approved authority or retained runs it returns `ok: true`, zero counts, and `release_ready: false`. The release gate uses `--strict`; that mode requires exactly nine accepted root runs and the three fixture-declared child revisions. Passing proves package consistency and coverage, not objective image quality, performance, compatibility, or production readiness.
+
+## Adoption evidence
+
+Each formal Release campaign owns `docs/evidence/adoption/<campaign_id>/campaign.json` and `docs/evidence/adoption/<campaign_id>/events.jsonl`. The first file fixes the repository, Release ID/tag/publication time, target, and timing policy. The second is canonical append-only JSONL linked by SHA-256.
+
+Collect and validate with the repository-maintenance scripts:
+
+```powershell
+python .\scripts\record_star_observation.py baseline --campaign-id <campaign_id> --repository <owner/repository> --release-tag <tag>
+python .\scripts\record_star_observation.py observe --campaign-dir docs\evidence\adoption\<campaign_id> --phase t30
+python .\scripts\validate_star_campaign.py docs\evidence\adoption\<campaign_id>
+```
+
+The record stores repository-level Star totals only: no stargazer identities, interpolation, traffic attribution, credentials, or raw API bodies. Corrections append a superseding event instead of rewriting history. Validation reports `goal_met`, `goal_missed`, or `measurement_incomplete`. Missing the 100 net-new goal triggers review and iteration; it does not retract the Release.

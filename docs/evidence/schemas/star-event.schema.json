@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zc4578980-tech/local-gpu-imagegen/blob/main/docs/evidence/schemas/star-event.schema.json",
+  "title": "Post-release Star observation event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "sequence",
+    "event_type",
+    "phase",
+    "recorded_at",
+    "scheduled_at",
+    "observed_at",
+    "observation_status",
+    "repository_star_count",
+    "source",
+    "failure",
+    "supersedes_sequence",
+    "correction_reason",
+    "previous_event_sha256",
+    "event_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "event_type": {
+      "enum": [
+        "observation",
+        "correction"
+      ]
+    },
+    "phase": {
+      "enum": [
+        "baseline",
+        "t30"
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "scheduled_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "observation_status": {
+      "enum": [
+        "observed",
+        "observation_failed"
+      ]
+    },
+    "repository_star_count": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "api_url",
+        "response_date",
+        "etag"
+      ],
+      "properties": {
+        "api_url": {
+          "type": "string",
+          "pattern": "^https://api\\.github\\.com/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "maxLength": 500
+        },
+        "response_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "etag": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 500
+        }
+      }
+    },
+    "failure": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "message"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    "supersedes_sequence": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "correction_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "previous_event_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "event_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "observation_status": {
+            "const": "observed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "repository_star_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failure": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "observation_status": {
+            "const": "observation_failed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "repository_star_count": {
+            "type": "null"
+          },
+          "failure": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "observation"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "supersedes_sequence": {
+            "type": "null"
+          },
+          "correction_reason": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "correction"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "supersedes_sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "correction_reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    }
+  ]
+}

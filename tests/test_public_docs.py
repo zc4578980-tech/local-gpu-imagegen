@@ -14,6 +14,21 @@ else:
 ROOT = Path(__file__).resolve().parents[1]
 REAL_DEMO = ROOT / "docs" / "demo" / "real"
 QUICKSTART = ROOT / "docs" / "quickstart.md"
+RELEASE_CHECKLIST = ROOT / "docs" / "release-checklist.md"
+GITHUB_LISTING = ROOT / "docs" / "github-listing.md"
+EVIDENCE_README = ROOT / "docs" / "evidence" / "README.md"
+HISTORICAL_STAR_GATE_DOCS = (
+    ROOT
+    / "docs"
+    / "superpowers"
+    / "specs"
+    / "2026-07-24-github-conversion-release-gate-design.md",
+    ROOT
+    / "docs"
+    / "superpowers"
+    / "plans"
+    / "2026-07-24-github-conversion-release-gate.md",
+)
 PUBLIC_TOOLS = {
     "local_gpu_imagegen_check",
     "local_gpu_generate_image",
@@ -58,6 +73,54 @@ def real_showcase() -> dict[str, object]:
     )
 
 class PublicDocumentationTests(unittest.TestCase):
+    def test_star_goal_is_post_release_measurement_not_publication_gate(
+        self,
+    ) -> None:
+        checklist = RELEASE_CHECKLIST.read_text(encoding="utf-8")
+        listing = GITHUB_LISTING.read_text(encoding="utf-8")
+        evidence = EVIDENCE_README.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "forecast is at least `100 GitHub Stars`",
+            checklist,
+        )
+        self.assertNotIn("Publication remains blocked", listing)
+        self.assertIn("Post-release adoption measurement", checklist)
+        self.assertIn("100 net-new GitHub Stars", checklist)
+        self.assertIn(
+            "formal GitHub Release publication time",
+            checklist,
+        )
+        self.assertIn("does not retract the Release", checklist)
+        self.assertIn("post-release 30-day net-new Star goal", listing)
+        self.assertIn("not a publication blocker", listing)
+        for required in (
+            "docs/evidence/adoption/<campaign_id>/campaign.json",
+            "docs/evidence/adoption/<campaign_id>/events.jsonl",
+            "record_star_observation.py",
+            "validate_star_campaign.py",
+            "repository-level Star totals only",
+            "goal_met",
+            "goal_missed",
+            "measurement_incomplete",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, evidence)
+
+    def test_historical_star_gate_documents_have_superseded_notice(self) -> None:
+        for path in HISTORICAL_STAR_GATE_DOCS:
+            with self.subTest(path=path):
+                prefix = path.read_text(encoding="utf-8")[:1200]
+                self.assertIn("**Status:** Superseded", prefix)
+                self.assertIn(
+                    "2026-07-25-post-release-star-measurement-design.md",
+                    prefix,
+                )
+                self.assertIn("historical", prefix.lower())
+                self.assertIn(
+                    "not a pre-release publication gate",
+                    prefix,
+                )
+
     def test_readme_leads_with_literal_offer_and_installed_path(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         first_viewport = "\n".join(readme.splitlines()[:45])

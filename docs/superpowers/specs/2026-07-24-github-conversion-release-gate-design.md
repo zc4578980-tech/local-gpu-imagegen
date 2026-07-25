@@ -1,5 +1,10 @@
 # GitHub Conversion Release-Gate Design
 
+> **Status:** Superseded on 2026-07-25 by
+> [`2026-07-25-post-release-star-measurement-design.md`](2026-07-25-post-release-star-measurement-design.md).
+> The 100-Star objective is now a post-release 30-day net-new goal, not a pre-release publication gate. The text below is retained as historical
+> planning context and must not be applied as current release policy.
+
 **Date:** 2026-07-24
 
 **Status:** Approved
