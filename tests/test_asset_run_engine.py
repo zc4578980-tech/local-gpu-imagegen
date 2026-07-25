@@ -2378,6 +2378,7 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(sentinel.read_text(encoding="utf-8"), "external target")
         self.assertNotIn("PermissionError", serialized)
 
+    @unittest.skipUnless(os.name == "nt", "Windows junction cleanup semantics")
     def test_nonremovable_source_junction_returns_sanitized_failure(self) -> None:
         self.postprocessor.models = ["realesrgan-x4plus-anime"]
         self.postprocessor.failure = AssetEngineError(
