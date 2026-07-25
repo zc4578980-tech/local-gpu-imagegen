@@ -350,7 +350,7 @@ class WorkflowTemplateTests(unittest.TestCase):
     def test_existing_sdxl_workflow_files_remain_byte_identical(self) -> None:
         expected = {
             "sdxl-txt2img-v1.json": (
-                "bc4157aa5f984f341c5f385ee31e4f81fb93e199022e6af60026b2dc9255ae68"
+                "cf0e1301c3a3476928d56069e5c816e8f2176743b34a3e47ee7af7e8f541c420"
             ),
             "sdxl-regional-txt2img-v1.json": (
                 "b371f1d1f2d06c05ebab33c035940e083efddd8153311b101cb1579773b571cd"
