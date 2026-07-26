@@ -551,6 +551,17 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertEqual(onboarding["server"]["version"], "0.8.0")
         self.assertEqual(onboarding["session_purpose"], "workflow_onboarding")
 
+    def test_preview_and_full_acceptance_gates_remain_distinct(self) -> None:
+        for path in (RELEASE_CHECKLIST, EVIDENCE_README):
+            with self.subTest(path=path):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("v0.8 preview gate", text)
+                self.assertIn("full-acceptance/v1.0 gate", text)
+                self.assertIn(
+                    "does not establish current-v0.8 GPU generation",
+                    text,
+                )
+
     def test_claim_scanner_rejects_equivalent_false_claims(self) -> None:
         false_claims = (
             "Codex is a verified host for this workflow.",

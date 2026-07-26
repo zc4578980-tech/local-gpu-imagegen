@@ -2,6 +2,12 @@
 
 This directory is the public, machine-verifiable record for real Codex MCP acceptance runs. Normal tests do not generate these files and do not require a GPU, model, network connection, or image library.
 
+## Release gate policy
+
+The v0.8 preview gate requires exact-commit model-free tests, a clean wheel install, exactly seventeen tools, fail-closed `doctor` behavior, safe named-client setup contracts, the portable historical Codex 0.7 generation labeled historical, the Codex 0.8 zero-GPU onboarding record labeled non-generation, and explicit disclosure of missing evidence. Passing this gate does not establish current-v0.8 GPU generation, a complete named-client generation release set, image-quality improvement, or full acceptance.
+
+The existing strict acceptance validator remains the full-acceptance/v1.0 gate. Its exact 9-root plus 3-revision requirement is unchanged. The current incomplete matrix is expected to fail that gate; the failure does not block the separately defined v0.8 preview gate and must not be hidden or presented as a strict pass.
+
 `z-image-component-source-audit.json` is a blocked source audit, not an authority grant. It records exact installed/published hashes, component commit provenance, bounded safetensors-header inspection, upstream license evidence, and unresolved repack/output authority. Partial component evidence never promotes the complete route.
 
 `public-route-shortlist.md` is a read-only comparison and recommendation, not an authority grant. It recommends official SDXL 1.0 Base as the first public-evidence reference route for this host, while retaining Z-Image as the private quality-oriented default. No candidate may be downloaded, installed, trusted, generated with, exported, or published merely because it appears in that document.
@@ -20,7 +26,7 @@ Run the non-strict validator during implementation:
 python .\scripts\validate_acceptance_evidence.py
 ```
 
-With no approved authority or retained runs it returns `ok: true`, zero counts, and `release_ready: false`. The release gate uses `--strict`; that mode requires exactly nine accepted root runs and the three fixture-declared child revisions. Passing proves package consistency and coverage, not objective image quality, performance, compatibility, or production readiness.
+With no approved authority or retained runs it returns `ok: true`, zero counts, and `release_ready: false`. The full-acceptance/v1.0 gate uses `--strict`; that mode requires exactly nine accepted root runs and the three fixture-declared child revisions. Passing proves package consistency and coverage, not objective image quality, performance, compatibility, or production readiness.
 
 ## Adoption evidence
 

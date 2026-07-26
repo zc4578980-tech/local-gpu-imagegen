@@ -2,6 +2,12 @@
 
 This checklist covers repository release readiness. It does not grant model, workflow-component, generated-output, client-configuration, publication, or public acceptance authority.
 
+## Gate policy
+
+The v0.8 preview gate requires exact-commit model-free tests, a clean wheel install, exactly seventeen tools, fail-closed `doctor` behavior, safe named-client setup contracts, the portable historical Codex 0.7 generation labeled historical, the Codex 0.8 zero-GPU onboarding record labeled non-generation, and explicit disclosure of missing evidence. Passing this gate does not establish current-v0.8 GPU generation, a complete named-client generation release set, image-quality improvement, or full acceptance.
+
+The unchanged `python scripts/validate_acceptance_evidence.py --strict` command remains the full-acceptance/v1.0 gate. It requires exactly nine accepted roots and three declared child revisions. Its expected failure on the currently incomplete matrix does not block the separately defined v0.8 preview gate, but it does block any full-acceptance or v1.0 claim.
+
 ## Local gate
 
 - [x] The final model-free suite, Python compilation, strict UTF-8 JSON parse, repository hygiene, and public-document truthfulness gates pass at one exact commit.
@@ -15,7 +21,7 @@ This checklist covers repository release readiness. It does not grant model, wor
 - [x] The retained Codex `0.8.0` workflow-onboarding session is zero-GPU evidence and is not generation evidence.
 - [ ] No retained Claude Code hosted session or current-v0.8 named-client generation set exists.
 - [x] One historical ordinary-route SDXL root retains its original PNG and MCP result, passes full-resolution structured review, and is finalized by a later byte-bound user confirmation.
-- [ ] The historical ordinary-route public demo validates portably under `docs/demo/real/`, including public rights, exact artifact hashes, route identity, and sanitized client binding.
+- [x] The historical ordinary-route public demo validates portably under `docs/demo/real/`, including public rights, exact artifact hashes, route identity, and sanitized client binding.
 - [x] README evidence appears before the simulated protocol material and is derived from the validated manifest.
 - [x] Regional and two-stage routes remain labeled experimental, outside the golden path and release blockers, with no visual-quality improvement claim.
 
