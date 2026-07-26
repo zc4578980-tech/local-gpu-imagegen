@@ -4,7 +4,7 @@ This directory is the public, machine-verifiable record for real Codex MCP accep
 
 ## Release gate policy
 
-The v0.8 preview gate requires exact-commit model-free tests, a clean wheel install, exactly seventeen tools, fail-closed `doctor` behavior, safe named-client setup contracts, the portable historical Codex 0.7 generation labeled historical, the Codex 0.8 zero-GPU onboarding record labeled non-generation, and explicit disclosure of missing evidence. Passing this gate does not establish current-v0.8 GPU generation, a complete named-client generation release set, image-quality improvement, or full acceptance.
+The v0.8 preview gate for version `0.8.0` requires exact-commit model-free tests, a clean wheel install, exactly seventeen tools, fail-closed `doctor` behavior, safe named-client setup contracts, the portable historical Codex `0.7.0` generation labeled historical, the Codex `0.8.0` zero-GPU onboarding record labeled non-generation, and explicit disclosure of missing evidence. Passing this gate does not establish current-v0.8 GPU generation, a complete named-client generation release set, image-quality improvement, or full acceptance.
 
 The existing strict acceptance validator remains the full-acceptance/v1.0 gate. Its exact 9-root plus 3-revision requirement is unchanged. The current incomplete matrix is expected to fail that gate; the failure does not block the separately defined v0.8 preview gate and must not be hidden or presented as a strict pass.
 

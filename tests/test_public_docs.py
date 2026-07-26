@@ -562,6 +562,24 @@ class PublicDocumentationTests(unittest.TestCase):
                     text,
                 )
 
+    def test_release_coherence_docs_share_v080_state(self) -> None:
+        release_documents = (
+            RELEASE_CHECKLIST,
+            ROOT / "docs" / "client-compatibility.md",
+            ROOT / "docs" / "directory-listings.md",
+            EVIDENCE_README,
+        )
+        for path in release_documents:
+            with self.subTest(path=path):
+                self.assertIn("0.8.0", path.read_text(encoding="utf-8"))
+
+        for path in (RELEASE_CHECKLIST, ROOT / "docs" / "client-compatibility.md"):
+            with self.subTest(path=path):
+                self.assertIn(
+                    "exactly seventeen tools",
+                    path.read_text(encoding="utf-8"),
+                )
+
     def test_claim_scanner_rejects_equivalent_false_claims(self) -> None:
         false_claims = (
             "Codex is a verified host for this workflow.",

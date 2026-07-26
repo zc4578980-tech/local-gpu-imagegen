@@ -149,7 +149,14 @@ class RepositoryHygieneTests(unittest.TestCase):
         )
         self.assertIn("awesome-mcp-servers", listings)
         self.assertIn("Glama", listings)
+        self.assertIn("local-gpu-imagegen==0.8.0", listings)
         self.assertIn("Status: prepared, not submitted", listings)
+        self.assertIn(
+            "No current-v0.8 hosted-client generation release set is retained.",
+            listings,
+        )
+        self.assertIn("Complete 9+3 acceptance is not claimed.", listings)
+        self.assertNotIn("local-gpu-imagegen==0.7.0", listings)
         self.assertNotIn("Status: submitted", listings)
 
 
