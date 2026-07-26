@@ -11,6 +11,7 @@ All notable changes will be documented in this file.
 
 ### Changed
 
+- Supported ordinary ComfyUI API workflow execution is now the primary launch path for Codex and Claude Code; built-in prompt workflows make no image-quality superiority claim.
 - The public path now leads with installed verification, official-client setup, explicit route authority, structured review, and byte-bound finalization without silent downloads or model switches.
 - `sdxl-regional-txt2img` and `sdxl-two-stage-copy-subject` remain implemented and model-free tested, but both are experimental, not part of the golden path, and provide no fallback from the ordinary route.
 

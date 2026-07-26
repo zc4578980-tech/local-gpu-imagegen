@@ -2,11 +2,7 @@
 
 <!-- mcp-name: io.github.zc4578980-tech/local-gpu-imagegen -->
 
-Connect Codex or Claude Code to the image models you already run locally, with one installable command path and no silent model downloads or switches.
-
-![A solitary lighthouse generated through the validated ordinary local SDXL route](docs/demo/real/final.png)
-
-Original finalized 1024x1024 PNG from ordinary `sdxl-txt2img`; SHA-256 `36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4`. Inspect the [validated showcase manifest](docs/demo/real/showcase-manifest.json) for the route, prompts, settings, review, client binding, rights, and limitations.
+Run the ComfyUI API workflows you already trust from Codex or Claude Code, locally, reproducibly, and without silent downloads or model switches.
 
 ```shell
 uvx local-gpu-imagegen verify
@@ -15,7 +11,20 @@ uvx local-gpu-imagegen setup codex --apply
 
 [Five-minute Quickstart](docs/quickstart.md)
 
-> Create one complete lighthouse environment illustration with no people, text, logo, or watermark. Reuse my existing local backend and model, keep downloads and model switching disabled, use at most two successful rounds, and ask me before finalization.
+## Bring Your Own ComfyUI Workflow
+
+Start with an existing local image backend, model, and one supported ordinary ComfyUI API workflow. Export API JSON from ComfyUI, then ask your Agent to follow this bounded path:
+
+```text
+Export API JSON -> inspect bindings and hashes -> confirm registration
+-> trust the exact local components -> run with a frozen route
+```
+
+The retained Codex workflow-onboarding session inspected and registered a supported graph, then bound its exact model components; it did not submit a prompt or use the GPU. The image below comes from a separate retained Codex generation through the ordinary reviewed route. These are distinct evidence records, and neither proves image-quality superiority.
+
+![A solitary lighthouse generated through the validated ordinary local SDXL route](docs/demo/real/final.png)
+
+Original finalized 1024x1024 PNG from ordinary `sdxl-txt2img`; SHA-256 `36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4`. Inspect the [validated showcase manifest](docs/demo/real/showcase-manifest.json) for the route, prompts, settings, review, client binding, rights, and limitations.
 
 This path requires an existing local image backend and model; there are no silent model downloads or switches.
 
@@ -33,8 +42,10 @@ Before PyPI publication, install the verified wheel or a source checkout, then u
 
 ## Why This Project
 
-- **Reuse the backends you already run:** connect AUTOMATIC1111/Forge or ComfyUI, with Diffusers retained as a compatibility path.
-- **Use the installed CLI:** verify, inspect readiness, and delegate setup to the official Codex or Claude Code command without requiring a source checkout.
+- **Run supported workflows from your Agent:** inspect and register ordinary ComfyUI API graphs instead of rebuilding them as one-off scripts.
+- **Reuse the backends you already run:** ComfyUI is the primary existing-workflow path; AUTOMATIC1111/Forge and Diffusers remain compatibility paths.
+- **Make runs reproducible:** freeze workflow, model identity, prompts, settings, seed, budget, and output hashes in a durable manifest.
+- **Use the installed CLI:** verify readiness and delegate setup to the official Codex or Claude Code command without requiring a source checkout.
 - **Keep model authority explicit:** discovery never loads weights, and generation cannot silently download or switch a model.
 - **Retain structured evidence:** routes, budgets, attempts, image hashes, reviews, and recovery actions remain machine-readable and durable.
 - **Keep acceptance with the user:** original-resolution review and later byte-bound finalization separate a generated image from an accepted final.
