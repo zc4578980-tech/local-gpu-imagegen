@@ -2,8 +2,10 @@
   "schema_version": "1.0",
   "source": "docs/demo/real/final.png",
   "source_sha256": "36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4",
+  "html": "docs/assets/github-social-preview.html",
+  "html_sha256": "d5d1219624974b50fd002a0d704d7bcd9978b807825a8fbbe64c89d7bbf717a7",
   "output": "docs/assets/github-social-preview.png",
-  "output_sha256": "b06f1b7f9ead6f795fb02bd2d53071e3381282e00e3f0a58992b68636b26e94e",
+  "output_sha256": "cc6861a8a8c3f0040963183390ded2e9e4ee2ee316aee22b75eedfa940e599b0",
   "width": 1280,
   "height": 640
 }

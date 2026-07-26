@@ -13,6 +13,8 @@ MANIFEST_FIELDS = {
     "schema_version",
     "source",
     "source_sha256",
+    "html",
+    "html_sha256",
     "output",
     "output_sha256",
     "width",
@@ -20,9 +22,10 @@ MANIFEST_FIELDS = {
 }
 REQUIRED_COPY = (
     "Local GPU Imagegen",
-    "Run your ComfyUI workflows from your Agent",
+    "Run supported ComfyUI workflows from your Agent",
     "Codex + Claude Code",
     "ComfyUI / Forge / Diffusers",
+    "SEPARATE VALIDATED OUTPUT",
     "../demo/real/final.png",
 )
 
@@ -47,12 +50,15 @@ def png_dimensions(path: Path) -> tuple[int, int]:
 
 def record_social_preview(root: Path) -> dict[str, object]:
     source = root / "docs" / "demo" / "real" / "final.png"
+    html = root / "docs" / "assets" / "github-social-preview.html"
     output = root / "docs" / "assets" / "github-social-preview.png"
     width, height = png_dimensions(output)
     manifest = {
         "schema_version": "1.0",
         "source": "docs/demo/real/final.png",
         "source_sha256": _sha256(source),
+        "html": "docs/assets/github-social-preview.html",
+        "html_sha256": _sha256(html),
         "output": "docs/assets/github-social-preview.png",
         "output_sha256": _sha256(output),
         "width": width,
@@ -76,6 +82,7 @@ def validate_social_preview(root: Path) -> list[str]:
         )
         source_sha256 = _sha256(source)
         output_sha256 = _sha256(output)
+        html_sha256 = _sha256(html)
         dimensions = png_dimensions(output)
         source_text = html.read_text(encoding="utf-8")
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
@@ -84,16 +91,22 @@ def validate_social_preview(root: Path) -> list[str]:
         findings.add("invalid_social_preview_manifest")
     if manifest.get("source") != "docs/demo/real/final.png":
         findings.add("invalid_social_preview_source")
+    if manifest.get("html") != "docs/assets/github-social-preview.html":
+        findings.add("invalid_social_preview_html")
     if manifest.get("output") != "docs/assets/github-social-preview.png":
         findings.add("invalid_social_preview_output")
     if manifest.get("source_sha256") != source_sha256:
         findings.add("social_preview_source_sha256_mismatch")
     if manifest.get("output_sha256") != output_sha256:
         findings.add("social_preview_output_sha256_mismatch")
+    if manifest.get("html_sha256") != html_sha256:
+        findings.add("social_preview_html_sha256_mismatch")
     if not SHA256_RE.fullmatch(str(manifest.get("source_sha256", ""))):
         findings.add("invalid_social_preview_source_sha256")
     if not SHA256_RE.fullmatch(str(manifest.get("output_sha256", ""))):
         findings.add("invalid_social_preview_output_sha256")
+    if not SHA256_RE.fullmatch(str(manifest.get("html_sha256", ""))):
+        findings.add("invalid_social_preview_html_sha256")
     if dimensions != (1280, 640):
         findings.add("invalid_social_preview_dimensions")
     if (manifest.get("width"), manifest.get("height")) != dimensions:

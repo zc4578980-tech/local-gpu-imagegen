@@ -212,6 +212,7 @@ class PublicDocumentationTests(unittest.TestCase):
         skill = (ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md").read_text(
             encoding="utf-8"
         )
+        quality_contract = " ".join(quality.replace("**", "").split())
         for required in (
             "semantic substitution",
             "product medium",
@@ -220,7 +221,22 @@ class PublicDocumentationTests(unittest.TestCase):
             "FAIL_WORKFLOW_REGRESSION",
         ):
             with self.subTest(required=required):
-                self.assertIn(required, quality + "\n" + skill)
+                self.assertIn(required, quality_contract)
+        for required in (
+            "semantic substitution",
+            "`constraint_results`",
+            "`hard_failures`",
+            "do not finalize",
+        ):
+            with self.subTest(skill_required=required):
+                self.assertIn(required, skill)
+
+    def test_github_listing_bounds_the_workflow_offer(self) -> None:
+        listing = GITHUB_LISTING.read_text(encoding="utf-8")
+        self.assertIn(
+            "v0.8.0 Preview - Run supported ComfyUI workflows from your Agent",
+            listing,
+        )
 
     def test_release_mainline_keeps_composition_routes_experimental(self) -> None:
         public = "\n".join(
