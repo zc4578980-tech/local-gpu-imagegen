@@ -17,6 +17,7 @@ QUICKSTART = ROOT / "docs" / "quickstart.md"
 RELEASE_CHECKLIST = ROOT / "docs" / "release-checklist.md"
 GITHUB_LISTING = ROOT / "docs" / "github-listing.md"
 EVIDENCE_README = ROOT / "docs" / "evidence" / "README.md"
+QUALITY_CONTROL = ROOT / "docs" / "image-quality-control.md"
 HISTORICAL_STAR_GATE_DOCS = (
     ROOT
     / "docs"
@@ -123,16 +124,20 @@ class PublicDocumentationTests(unittest.TestCase):
 
     def test_readme_leads_with_literal_offer_and_installed_path(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        first_viewport = "\n".join(readme.splitlines()[:45])
+        first_viewport = "\n".join(readme.splitlines()[:70])
         promise = (
-            "Connect Codex or Claude Code to the image models you already run locally, "
-            "with one installable command path and no silent model downloads or switches."
+            "Run the ComfyUI API workflows you already trust from Codex or Claude Code, "
+            "locally, reproducibly, and without silent downloads or model switches."
         )
         self.assertIn("# Local GPU Imagegen", first_viewport)
         self.assertIn(promise, first_viewport)
+        self.assertIn("Bring Your Own ComfyUI Workflow", first_viewport)
         self.assertIn("uvx local-gpu-imagegen verify", first_viewport)
         self.assertIn("uvx local-gpu-imagegen setup codex --apply", first_viewport)
-        self.assertLess(first_viewport.index(promise), first_viewport.index("Why This Project"))
+        self.assertLess(
+            first_viewport.index(promise),
+            first_viewport.index("Bring Your Own ComfyUI Workflow"),
+        )
 
     def test_readme_first_viewport_uses_validated_evidence(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -182,6 +187,40 @@ class PublicDocumentationTests(unittest.TestCase):
         for value in forbidden:
             with self.subTest(value=value):
                 self.assertNotIn(value, quickstart)
+
+    def test_launch_docs_lead_with_supported_workflow_onboarding(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        quickstart = QUICKSTART.read_text(encoding="utf-8")
+        for required in (
+            "supported ordinary ComfyUI API workflow",
+            "Save (API Format)",
+            "local_gpu_inspect_workflow",
+            "local_gpu_register_workflow",
+            "registration does not grant model trust",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, readme + "\n" + quickstart)
+        self.assertLess(
+            quickstart.index("local_gpu_inspect_workflow"),
+            quickstart.index("Profile-Driven Run"),
+        )
+        self.assertIn("did not submit a prompt", readme)
+        self.assertIn("separate retained Codex generation", readme)
+
+    def test_quality_control_rejects_semantic_substitution(self) -> None:
+        quality = QUALITY_CONTROL.read_text(encoding="utf-8")
+        skill = (ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "semantic substitution",
+            "product medium",
+            "failed constraint",
+            "MODEL_QUALITY_LIMIT",
+            "FAIL_WORKFLOW_REGRESSION",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, quality + "\n" + skill)
 
     def test_release_mainline_keeps_composition_routes_experimental(self) -> None:
         public = "\n".join(

@@ -23,7 +23,7 @@ class SocialPreviewTests(unittest.TestCase):
             "Local GPU Imagegen",
             "Codex + Claude Code",
             "ComfyUI / Forge / Diffusers",
-            "Use the image models you already run locally",
+            "Run your ComfyUI workflows from your Agent",
             "../demo/real/final.png",
         ):
             with self.subTest(text=text):
