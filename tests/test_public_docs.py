@@ -528,6 +528,29 @@ class PublicDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(required, public)
 
+    def test_active_release_guides_pin_v080_and_seventeen_tools(self) -> None:
+        for path in (RELEASE_CHECKLIST, ROOT / "docs" / "client-compatibility.md"):
+            with self.subTest(path=path):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("`0.8.0`", text)
+                self.assertIn("exactly seventeen tools", text)
+                self.assertNotIn("exactly fifteen tools", text)
+
+    def test_retained_client_evidence_keeps_historical_and_current_roles(self) -> None:
+        root = ROOT / "docs" / "evidence" / "client-sessions"
+        historical = json.loads(
+            (root / "codex-v070.json").read_text(encoding="utf-8")
+        )
+        onboarding = json.loads(
+            (root / "codex-v080-workflow-onboarding.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(historical["server"]["version"], "0.7.0")
+        self.assertEqual(historical["session_purpose"], "golden_generation")
+        self.assertEqual(onboarding["server"]["version"], "0.8.0")
+        self.assertEqual(onboarding["session_purpose"], "workflow_onboarding")
+
     def test_claim_scanner_rejects_equivalent_false_claims(self) -> None:
         false_claims = (
             "Codex is a verified host for this workflow.",

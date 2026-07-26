@@ -5,16 +5,17 @@ This checklist covers repository release readiness. It does not grant model, wor
 ## Local gate
 
 - [x] The final model-free suite, Python compilation, strict UTF-8 JSON parse, repository hygiene, and public-document truthfulness gates pass at one exact commit.
-- [x] Fresh isolated Python 3.11 and 3.12 environments install the exact candidate wheel outside the checkout and verify version `0.7.0`, protocol `2024-11-05`, and exactly fifteen tools.
-- [x] Installed `verify`, `doctor`, local-wheel `uvx`, and read-only Codex and Claude Code setup paths succeed without a source clone or direct configuration-file edit.
+- [ ] A fresh isolated Python 3.12 environment installs the final exact-commit wheel outside the checkout and verifies version `0.8.0`, protocol `2024-11-05`, and exactly seventeen tools; exact-commit Python 3.11 verification remains a CI gate.
+- [ ] Installed `verify`, fail-closed `doctor`, local-wheel `uvx`, and read-only Codex and Claude Code setup paths succeed against the final exact-commit wheel without a source clone or direct configuration-file edit.
 - [x] Tracked files, staged files, and wheel entries contain no credentials, personal paths, trust state, private runs, rejected images, model weights, or temporary client files.
 
 ## Evidence gate
 
-- [ ] Retained Codex and Claude Code records validate as one `0.7.0` release set, with at least one genuine installed-wheel generation session.
-- [x] One installed Codex session retains a genuine generation result bound to the exact ordinary-route run, round, and image hash; Claude Code generation evidence remains pending.
-- [x] One ordinary-route SDXL root retains its original PNG and MCP result, passes full-resolution structured review, and is finalized by a later byte-bound user confirmation.
-- [x] The ordinary-route public demo validates under `docs/demo/real/`, including public rights, exact artifact hashes, route identity, and sanitized client binding.
+- [x] The retained Codex `0.7.0` generation is historical evidence and is not a v0.8 release-set record.
+- [x] The retained Codex `0.8.0` workflow-onboarding session is zero-GPU evidence and is not generation evidence.
+- [ ] No retained Claude Code hosted session or current-v0.8 named-client generation set exists.
+- [x] One historical ordinary-route SDXL root retains its original PNG and MCP result, passes full-resolution structured review, and is finalized by a later byte-bound user confirmation.
+- [ ] The historical ordinary-route public demo validates portably under `docs/demo/real/`, including public rights, exact artifact hashes, route identity, and sanitized client binding.
 - [x] README evidence appears before the simulated protocol material and is derived from the validated manifest.
 - [x] Regional and two-stage routes remain labeled experimental, outside the golden path and release blockers, with no visual-quality improvement claim.
 
@@ -22,11 +23,11 @@ This checklist covers repository release readiness. It does not grant model, wor
 
 - [x] The genuine-image social preview is generated, validated at 1280x640, and visually reviewed without mutating remote metadata.
 - [ ] Explicit authority is granted for each remote metadata change and publication action.
-- [ ] README, changelog, package metadata, plugin metadata, `server.json`, GitHub copy, directory copy, and release notes agree on version, fifteen tools, three backends, the ordinary golden path, and open limitations.
+- [ ] README, changelog, package metadata, plugin metadata, `server.json`, GitHub copy, directory copy, and release notes agree on version `0.8.0`, exactly seventeen tools, three backends, the ordinary golden path, and open limitations.
 - [ ] Windows and Ubuntu jobs on Python 3.11 and 3.12 are green at the exact release commit.
 - [ ] The exact locally verified wheel is published without rebuilding and its public digest matches.
-- [ ] The official MCP Registry record resolves version `0.7.0` to the exact PyPI package and stdio command.
-- [ ] Tag `v0.7.0`, the preview release, package URL, Registry URL, and repository evidence URLs resolve to the exact verified release state.
+- [ ] The official MCP Registry record resolves version `0.8.0` to the exact PyPI package and stdio command.
+- [ ] Tag `v0.8.0`, the preview release, package URL, Registry URL, and repository evidence URLs resolve to the exact verified release state.
 - [ ] Directory submissions remain unsubmitted until each receives separate authority.
 
 ## Post-release adoption measurement
