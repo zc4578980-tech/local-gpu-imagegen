@@ -6,3 +6,8 @@ tests/fixtures/acceptance/v1-briefs.json -text diff
 
 # The social preview manifest hashes the rendered HTML source bytes.
 docs/assets/github-social-preview.html text eol=lf
+
+# Public evidence manifests bind these text files by exact byte hash.
+docs/demo/real/*.json text eol=lf
+docs/demo/real/*.md text eol=lf
+docs/evidence/client-sessions/*.json text eol=lf

@@ -39,6 +39,21 @@ class ValidateRealDemoTests(unittest.TestCase):
             output = self._export(Path(directory))
             self.assertEqual(validate_real_demo(output), [])
 
+    def test_retained_v070_demo_validates_only_with_explicit_historical_version(
+        self,
+    ) -> None:
+        from validate_real_demo import validate_real_demo
+
+        retained = ROOT / "docs" / "demo" / "real"
+        self.assertEqual(
+            validate_real_demo(retained, expected_server_version="0.7.0"),
+            [],
+        )
+        self.assertIn(
+            "server_version_mismatch",
+            validate_real_demo(retained, expected_server_version="0.8.0"),
+        )
+
     def test_rejects_simulation_private_values_and_changed_image_bytes(self) -> None:
         from validate_real_demo import validate_real_demo
 

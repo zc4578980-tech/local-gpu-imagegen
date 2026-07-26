@@ -22,6 +22,12 @@ class RepositoryHygieneTests(unittest.TestCase):
         rules = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
         self.assertIn("docs/assets/github-social-preview.html text eol=lf", rules)
 
+    def test_hash_bound_public_evidence_uses_portable_lf_checkout(self) -> None:
+        rules = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        self.assertIn("docs/demo/real/*.json text eol=lf", rules)
+        self.assertIn("docs/demo/real/*.md text eol=lf", rules)
+        self.assertIn("docs/evidence/client-sessions/*.json text eol=lf", rules)
+
     def test_acceptance_briefs_are_bound_to_committed_bytes(self) -> None:
         relative = "tests/fixtures/acceptance/v1-briefs.json"
         rules = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()

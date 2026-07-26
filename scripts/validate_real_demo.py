@@ -462,6 +462,8 @@ def _validate_client_session(
     installed_package: object,
     final: object,
     findings: set[str],
+    *,
+    expected_server_version: str,
 ) -> None:
     if not isinstance(binding, dict) or set(binding) != CLIENT_SESSION_FIELDS:
         findings.add("invalid_client_session_binding")
@@ -487,7 +489,7 @@ def _validate_client_session(
         return
     if binding.get("sha256") != actual_sha256:
         findings.add("client_session_sha256_mismatch")
-    if validate_session(document, expected_server_version=EXPECTED_SERVER_VERSION):
+    if validate_session(document, expected_server_version=expected_server_version):
         findings.add("invalid_client_session")
     if not isinstance(document, dict) or not isinstance(document.get("client"), dict):
         findings.add("invalid_client_session")
@@ -610,7 +612,11 @@ def _validate_run_manifest(
         findings.add("invalid_review_evidence")
 
 
-def validate_real_demo(root: Path) -> list[str]:
+def validate_real_demo(
+    root: Path,
+    *,
+    expected_server_version: str = EXPECTED_SERVER_VERSION,
+) -> list[str]:
     root = Path(root)
     findings: set[str] = set()
     if not _is_safe_directory(root):
@@ -641,7 +647,7 @@ def validate_real_demo(root: Path) -> list[str]:
         findings.add("invalid_installed_package")
     else:
         wheel_sha256 = installed.get("wheel_sha256")
-        if installed.get("version") != EXPECTED_SERVER_VERSION:
+        if installed.get("version") != expected_server_version:
             findings.add("server_version_mismatch")
         if (
             not isinstance(wheel_sha256, str)
@@ -715,6 +721,7 @@ def validate_real_demo(root: Path) -> list[str]:
         installed,
         final,
         findings,
+        expected_server_version=expected_server_version,
     )
     _validate_public_mcp_result(root, document.get("mcp_result"), final, findings)
     _validate_run_manifest(root, route, generation, final, findings)
@@ -732,8 +739,16 @@ def validate_real_demo(root: Path) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate a genuine ordinary-route demo.")
     parser.add_argument("root", type=Path)
+    parser.add_argument(
+        "--expected-server-version",
+        default=EXPECTED_SERVER_VERSION,
+        help="Exact server version retained by this demo.",
+    )
     args = parser.parse_args()
-    findings = validate_real_demo(args.root)
+    findings = validate_real_demo(
+        args.root,
+        expected_server_version=args.expected_server_version,
+    )
     report = {"ok": not findings, "findings": findings}
     print(json.dumps(report, indent=2, sort_keys=True), file=None if not findings else sys.stderr)
     return 0 if not findings else 1
