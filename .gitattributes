@@ -3,3 +3,6 @@ workflows/comfyui/*.json -text diff
 
 # Acceptance authority hashes the committed fixture bytes exactly.
 tests/fixtures/acceptance/v1-briefs.json -text diff
+
+# The social preview manifest hashes the rendered HTML source bytes.
+docs/assets/github-social-preview.html text eol=lf

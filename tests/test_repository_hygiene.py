@@ -18,6 +18,10 @@ class RepositoryHygieneTests(unittest.TestCase):
         rules = attributes.read_text(encoding="utf-8").splitlines()
         self.assertIn("workflows/comfyui/*.json -text diff", rules)
 
+    def test_social_preview_html_uses_portable_hash_bound_line_endings(self) -> None:
+        rules = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        self.assertIn("docs/assets/github-social-preview.html text eol=lf", rules)
+
     def test_acceptance_briefs_are_bound_to_committed_bytes(self) -> None:
         relative = "tests/fixtures/acceptance/v1-briefs.json"
         rules = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
