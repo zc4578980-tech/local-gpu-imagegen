@@ -59,6 +59,12 @@ Before PyPI publication, install the verified wheel or a source checkout, then u
 
 The golden path uses ordinary `sdxl-txt2img`. The `sdxl-regional-txt2img` and `sdxl-two-stage-copy-subject` routes remain experimental, are not part of the golden path, and provide no fallback from the ordinary route. Their retained negative evidence does not establish a visual-quality improvement.
 
+### Image Quality Boundary
+
+Model and workflow quality remain user supplied. Local GPU Imagegen adds explicit execution, review, recovery, and evidence; it does not modify diffusion algorithms or guarantee that a prompt workflow improves an image. Review now treats a change to the requested product medium, subject, practical use, or asset slot as semantic substitution and a failed constraint, even when the replacement looks cleaner.
+
+See [Image quality control](docs/image-quality-control.md) and the frozen [workflow no-regression gate](docs/quality-feasibility-gate-report.md). The retained gate ended in `FAIL_WORKFLOW_REGRESSION`; no public image-quality superiority claim is supported.
+
 ## Source Checkout And Backend Setup
 
 ### 1. Verify The MCP Server
