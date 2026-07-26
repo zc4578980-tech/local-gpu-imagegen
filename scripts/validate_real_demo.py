@@ -148,6 +148,58 @@ EXPECTED_RIGHTS = {
     "license_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md",
     "output_redistribution_status": "approved",
 }
+
+
+def valid_passing_semantic_result(
+    value: object,
+    *,
+    required_anchors: object = None,
+    forbidden_substitutions: object = None,
+) -> bool:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"status", "observation", "anchor_results", "substitution_results"}
+        or value.get("status") != "pass"
+        or not isinstance(value.get("observation"), str)
+        or not value["observation"].strip()
+    ):
+        return False
+
+    def valid_items(
+        items: object,
+        identity_field: str,
+        passing_status: str,
+        expected: object,
+    ) -> bool:
+        if not isinstance(items, list) or not items:
+            return False
+        identities: list[object] = []
+        for item in items:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {identity_field, "status", "observation"}
+                or not isinstance(item.get(identity_field), str)
+                or not item[identity_field].strip()
+                or item.get("status") != passing_status
+                or not isinstance(item.get("observation"), str)
+                or not item["observation"].strip()
+            ):
+                return False
+            identities.append(item[identity_field])
+        if len(set(identities)) != len(identities):
+            return False
+        return expected is None or identities == expected
+
+    return valid_items(
+        value.get("anchor_results"), "anchor", "pass", required_anchors
+    ) and valid_items(
+        value.get("substitution_results"),
+        "substitution",
+        "absent",
+        forbidden_substitutions,
+    )
+
+
 MIME_TYPES = {
     "final.png": "image/png",
     "preview.jpg": "image/jpeg",
@@ -375,11 +427,15 @@ def _valid_review(value: object, final: object) -> bool:
         and all(
             isinstance(name, str)
             and bool(name.strip())
-            and isinstance(result, dict)
-            and set(result) == {"status", "observation"}
-            and result.get("status") == "pass"
-            and isinstance(result.get("observation"), str)
-            and bool(result["observation"].strip())
+            and (
+                valid_passing_semantic_result(result)
+                if name == "semantic_fidelity"
+                else isinstance(result, dict)
+                and set(result) == {"status", "observation"}
+                and result.get("status") == "pass"
+                and isinstance(result.get("observation"), str)
+                and bool(result["observation"].strip())
+            )
             for name, result in constraints.items()
         )
     )

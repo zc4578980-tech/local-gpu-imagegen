@@ -120,27 +120,61 @@ def _conditioning() -> dict[str, object]:
     }
 
 
+def _semantic_fidelity() -> dict[str, object]:
+    return {
+        "required": True,
+        "requested_medium": "decorative software product hero asset",
+        "required_anchors": [
+            "brass telescope hero object on the right",
+            "left copy-safe area",
+        ],
+        "forbidden_substitutions": ["paper-only planning workspace"],
+    }
+
+
 def _review(request: dict[str, object]) -> dict[str, object]:
     merged = request["merged_profile"]
     constraints = request["constraints"]
     assert isinstance(merged, dict) and isinstance(constraints, dict)
     rubric = merged["rubric"]
     assert isinstance(rubric, dict)
+    constraint_results = {
+        name: {
+            "status": "fail" if name == "regional_layout" else "pass",
+            "observation": (
+                "The copy/subject relation was violated."
+                if name == "regional_layout"
+                else f"{name} matches the confirmed request."
+            ),
+        }
+        for name in constraints
+    }
+    semantic = constraints["semantic_fidelity"]
+    constraint_results["semantic_fidelity"] = {
+        "status": "pass",
+        "observation": "The telescope hero remains a composable software asset.",
+        "anchor_results": [
+            {
+                "anchor": anchor,
+                "status": "pass",
+                "observation": "The required hero anchor is retained.",
+            }
+            for anchor in semantic["required_anchors"]
+        ],
+        "substitution_results": [
+            {
+                "substitution": substitution,
+                "status": "absent",
+                "observation": "The forbidden replacement is absent.",
+            }
+            for substitution in semantic["forbidden_substitutions"]
+        ],
+    }
     return {
         "scores": {name: 4 for name in rubric},
         "hard_failures": ["explicit_constraint_violation"],
         "critique": "The subject entered the confirmed copy-safe region.",
-        "constraint_results": {
-            name: {
-                "status": "fail" if name == "regional_layout" else "pass",
-                "observation": (
-                    "The copy/subject relation was violated."
-                    if name == "regional_layout"
-                    else f"{name} matches the confirmed request."
-                ),
-            }
-            for name in constraints
-        },
+        "constraint_results": constraint_results,
         "visual_checks": {
             "full_resolution_inspected": True,
             "prominent_human": False,
@@ -352,7 +386,12 @@ class RegionalVerticalSliceTests(unittest.TestCase):
                 "profile": "ui-visual-asset",
                 "subtype": "hero",
                 "style": None,
-                "constraints": {"width": 1280, "height": 720, "regional_layout": layout},
+                "constraints": {
+                    "width": 1280,
+                    "height": 720,
+                    "regional_layout": layout,
+                    "semantic_fidelity": _semantic_fidelity(),
+                },
                 "initial_regional_conditioning": initial_conditioning,
                 "model_choice": regional_id,
                 "backend": "comfyui",
@@ -369,7 +408,12 @@ class RegionalVerticalSliceTests(unittest.TestCase):
                     "intent": "Telescope hero with left copy space",
                     "positive_prompt": "A brass telescope hero object with quiet copy space",
                     "negative_prompt": "baked text, watermark",
-                    "constraints": {"width": 1280, "height": 720, "regional_layout": layout},
+                    "constraints": {
+                        "width": 1280,
+                        "height": 720,
+                        "regional_layout": layout,
+                        "semantic_fidelity": _semantic_fidelity(),
+                    },
                     "parameters": {"regional_conditioning": conditioning},
                     "max_rounds": 2,
                     "upscale_policy": "off",

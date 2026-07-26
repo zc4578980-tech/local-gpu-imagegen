@@ -16,7 +16,8 @@
     "transparent_background": false
   },
   "prompt_guidance": [
-    "State target dimensions, layout-safe regions, crop tolerance, palette, and the surrounding interface context."
+    "State target dimensions, layout-safe regions, crop tolerance, palette, and the surrounding interface context.",
+    "Freeze semantic fidelity before prompting: name the requested medium, required visual anchors, and forbidden substitutions."
   ],
   "prohibited_content": [
     "Do not bake controls or interface labels into the image.",
@@ -31,14 +32,16 @@
     "palette_compatibility": {"weight": 2, "critical": true, "description": "The palette works with the stated interface colors."},
     "style_system_consistency": {"weight": 2, "critical": true, "description": "The asset fits the surrounding visual system."},
     "layout_composability": {"weight": 2, "critical": true, "description": "The asset leaves usable space for interface composition."},
-    "edge_quality": {"weight": 2, "critical": true, "description": "Important subjects and details remain clear at asset edges."}
+    "edge_quality": {"weight": 2, "critical": true, "description": "Important subjects and details remain clear at asset edges."},
+    "semantic_fidelity": {"weight": 3, "critical": true, "description": "The asset preserves the requested product medium and required visual anchors without semantic substitution."}
   },
   "hard_failures": [
     "baked_controls",
     "incorrect_text",
     "unsafe_edge_contact",
     "layout_incompatible",
-    "explicit_constraint_violation"
+    "explicit_constraint_violation",
+    "semantic_substitution"
   ],
   "refine_mutable": ["prompt_wording", "negative_prompt", "steps", "guidance_scale", "strength", "regional_conditioning", "two_stage_conditioning"],
   "explore_mutable": ["prompt_wording", "negative_prompt", "steps", "guidance_scale", "strength", "seed", "composition", "model_choice", "regional_conditioning", "two_stage_conditioning"]

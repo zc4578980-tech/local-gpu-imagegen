@@ -21,6 +21,12 @@ practical use, or asset slot is **semantic substitution**. Record it as a failed
 constraint and do not finalize that round. Fewer rendering defects do not make a
 semantically wrong asset useful.
 
+For `ui-visual-asset` hero runs, freeze this distinction before generation in a
+required `semantic_fidelity` constraint: the requested medium, exact required
+visual anchors, and forbidden substitutions. Review must report every anchor and
+substitution separately. Missing, contradictory, or uncertain semantic evidence
+cannot be hidden inside a high polish score or finalized.
+
 For example, a digital project-planning product cannot be represented only by a
 generic paper notebook and design desk when the requested use requires the image
 to communicate software. A blank or deliberately defocused device screen with

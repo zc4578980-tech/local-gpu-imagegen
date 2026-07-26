@@ -211,6 +211,19 @@ class ValidateRealDemoTests(unittest.TestCase):
 
                 self.assertIn(finding, validate_real_demo(output))
 
+    def test_rejects_failed_semantic_anchor_in_public_review(self) -> None:
+        from validate_real_demo import validate_real_demo
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = self._export(Path(directory))
+            run_manifest_path = output / "run-manifest.json"
+            run_manifest = read_json(run_manifest_path)
+            semantic = run_manifest["review"]["constraint_results"]["semantic_fidelity"]
+            semantic["anchor_results"][0]["status"] = "fail"
+            write_json(run_manifest_path, run_manifest)
+
+            self.assertIn("invalid_review_evidence", validate_real_demo(output))
+
     def test_rejects_non_jpeg_preview_even_when_manifest_hash_matches(self) -> None:
         from validate_real_demo import validate_real_demo
 

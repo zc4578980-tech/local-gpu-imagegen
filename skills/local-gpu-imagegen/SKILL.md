@@ -38,6 +38,12 @@ Never downgrade this recovery to `backend_binding` or `private` identity. Do not
    - required/prohibited content;
    - round budget of 1 to 3 successful rounds;
    - permission for seed/model switching and compatible upscaling.
+   For every `ui-visual-asset` hero, freeze a required `semantic_fidelity`
+   constraint before writing the generation prompt. It must name the requested medium,
+   one or more required visual anchors, and one or more forbidden substitutions.
+   A software-product hero might require a blank or deliberately defocused device
+   area for later real-UI compositing and forbid a paper-only workspace.
+   Do not call `local_gpu_start_run` until this contract is complete.
 6. Do not ask the user to repeat or reconfirm known values. A stated cap selects that maximum as `max_rounds`. Do not start after one conversational turn when any high-impact boundary remains missing. A safe default must be advertised by the selected catalog Profile or model and must not conflict with user constraints.
 7. Call `local_gpu_recommend_models` with the resolved operation, Profile, style, dimensions, affinity, VRAM boundary, and optional preferred model. Accept one exact route and at most two alternatives. Never weaken a hard requirement to obtain a result.
 8. Present a concise resolved summary and display the exact route: Profile/style/model ID, backend, identity strength, SHA-256 prefix or `backend_binding` warning, workflow/template version, prompt compiler/version, dimensions/safe area, preserve/prohibit constraints, selected 1 to 3 successful rounds, and download/upscale policy:
@@ -179,6 +185,13 @@ Run the immutable child with the same bounded initial/refine/explore state rules
 ## Review Evidence
 
 On a vision-capable host, display the original full-resolution image and inspect that image before recording a review. A preview is an auxiliary navigation aid, not sufficient visual evidence. Record `full_resolution_inspected: true`, `prominent_human`, and an observed status plus concise observation for `limb_separation`, `feet_and_contact`, `hands_and_held_objects`, and `text_and_watermarks`. When `prominent_human` is true, the three anatomy checks cannot be `not_applicable`. Any required check that is fail or uncertain requires `next_action` refine or explore; it cannot be finalized.
+
+For a frozen semantic contract, compare the requested medium, then the required visual anchors,
+then the forbidden substitutions. Record one exact
+`anchor_results` item per required anchor and one exact `substitution_results`
+item per forbidden substitution. A failed semantic result requires both
+`explicit_constraint_violation` and `semantic_substitution`; a failed or
+uncertain semantic result cannot request finalization.
 
 Before scoring polish, compare the full-resolution image with the frozen intent. A change to the requested product medium, subject, practical use, or asset slot is semantic substitution. Record it in the existing `constraint_results` as a failed constraint, add a concise `hard_failures` entry, and do not finalize that round, even when the substitute is cleaner or has fewer rendering defects. For example, a paper notebook is not an acceptable substitute for a requested software product merely because it avoids malformed generated UI.
 

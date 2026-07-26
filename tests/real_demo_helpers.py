@@ -34,6 +34,15 @@ RUBRIC = {
         "edge_quality",
     )
 }
+SEMANTIC_FIDELITY = {
+    "required": True,
+    "requested_medium": "decorative software product hero asset",
+    "required_anchors": [
+        "one complete lighthouse subject",
+        "open copy-safe area for interface compositing",
+    ],
+    "forbidden_substitutions": ["paper-only planning workspace"],
+}
 
 
 def write_json(path: Path, value: object) -> None:
@@ -147,7 +156,12 @@ def request() -> dict[str, object]:
         "authorization_scope": "public_evidence",
         "available_backends": ["comfyui"],
         "backend": "comfyui",
-        "constraints": {"width": WIDTH, "height": HEIGHT, "generated_text": False},
+        "constraints": {
+            "width": WIDTH,
+            "height": HEIGHT,
+            "generated_text": False,
+            "semantic_fidelity": SEMANTIC_FIDELITY,
+        },
         "endpoint_identity": "endpoint:private-test",
         "identity_strength": "cryptographic",
         "intent": "private natural-language brief omitted from public evidence",
@@ -205,7 +219,27 @@ def review() -> dict[str, object]:
             "generated_text": {
                 "status": "pass",
                 "observation": "No generated text is visible.",
-            }
+            },
+            "semantic_fidelity": {
+                "status": "pass",
+                "observation": "The decorative software hero retains its subject and compositing area.",
+                "anchor_results": [
+                    {
+                        "anchor": anchor,
+                        "status": "pass",
+                        "observation": "The required hero anchor is retained.",
+                    }
+                    for anchor in SEMANTIC_FIDELITY["required_anchors"]
+                ],
+                "substitution_results": [
+                    {
+                        "substitution": substitution,
+                        "status": "absent",
+                        "observation": "The forbidden replacement is absent.",
+                    }
+                    for substitution in SEMANTIC_FIDELITY["forbidden_substitutions"]
+                ],
+            },
         },
         "critique": "Full-resolution review passed the retained public-demo boundary.",
         "hard_failures": [],
@@ -261,6 +295,7 @@ def round_record(
                 "width": WIDTH,
                 "height": HEIGHT,
                 "generated_text": False,
+                "semantic_fidelity": SEMANTIC_FIDELITY,
             },
             "parameters": {
                 "seed": seed,

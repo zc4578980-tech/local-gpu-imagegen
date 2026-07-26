@@ -65,12 +65,25 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
     @staticmethod
     def _constraints(brief: dict[str, object]) -> dict[str, object]:
         width, height = ASPECT_DIMENSIONS[str(brief["aspect_ratio"])]
-        return {
+        constraints: dict[str, object] = {
             "aspect_ratio": brief["aspect_ratio"],
             "generated_text": False,
             "width": width,
             "height": height,
         }
+        if brief["profile"] == "ui-visual-asset" and brief["subtype"] == "hero":
+            constraints["semantic_fidelity"] = {
+                "required": True,
+                "requested_medium": "software product hero asset",
+                "required_anchors": [
+                    "blank device screen reserved for real UI compositing",
+                    "left copy-safe area",
+                ],
+                "forbidden_substitutions": [
+                    "paper-only planning workspace",
+                ],
+            }
+        return constraints
 
     def _start(self, engine: AssetRunEngine, brief: dict[str, object], max_rounds: int) -> str:
         arguments: dict[str, object] = {
@@ -158,14 +171,38 @@ class ProfileAcceptanceMatrixTests(unittest.TestCase):
     ) -> dict[str, object]:
         manifest = engine.get_run({"run_id": run_id})
         rubric = manifest["request"]["merged_profile"]["rubric"]
+        constraints = manifest["request"]["constraints"]
+        constraint_results = {
+            name: {"status": "pass", "observation": f"Fixture retained {name}."}
+            for name in constraints
+        }
+        semantic = constraints.get("semantic_fidelity")
+        if semantic is not None:
+            constraint_results["semantic_fidelity"] = {
+                "status": "pass",
+                "observation": "Fixture retained every required software-product anchor.",
+                "anchor_results": [
+                    {
+                        "anchor": anchor,
+                        "status": "pass",
+                        "observation": "Fixture retained the required anchor.",
+                    }
+                    for anchor in semantic["required_anchors"]
+                ],
+                "substitution_results": [
+                    {
+                        "substitution": substitution,
+                        "status": "absent",
+                        "observation": "Fixture omitted the forbidden substitution.",
+                    }
+                    for substitution in semantic["forbidden_substitutions"]
+                ],
+            }
         review: dict[str, object] = {
             "scores": {name: 4 for name in rubric},
             "hard_failures": [],
             "critique": "Model-free fixture evidence satisfies the deterministic contract.",
-            "constraint_results": {
-                name: {"status": "pass", "observation": f"Fixture retained {name}."}
-                for name in manifest["request"]["constraints"]
-            },
+            "constraint_results": constraint_results,
             "visual_checks": {
                 "full_resolution_inspected": True,
                 "prominent_human": False,

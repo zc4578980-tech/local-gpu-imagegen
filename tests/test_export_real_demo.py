@@ -132,6 +132,27 @@ class ExportRealDemoTests(unittest.TestCase):
             public = read_json(output / "run-manifest.json")
             self.assertIs(public["review"]["rubric"]["dimensions"]["critical"], False)
 
+    def test_export_rejects_semantic_evidence_that_differs_from_frozen_contract(self) -> None:
+        from export_real_demo import export_real_demo
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, client, mcp_result, authority, output = write_source_fixture(
+                Path(directory)
+            )
+            manifest = read_json(run_root / "manifest.json")
+            semantic = manifest["reviews"][0]["constraint_results"]["semantic_fidelity"]
+            semantic["anchor_results"][0]["anchor"] = "different subject"
+            write_json(run_root / "manifest.json", manifest)
+
+            with self.assertRaisesRegex(ValueError, "invalid_review_evidence"):
+                export_real_demo(
+                    run_root,
+                    output,
+                    client,
+                    mcp_result,
+                    authority_path=authority,
+                )
+
     def test_export_rejects_child_missing_or_changed_final_and_existing_destination(self) -> None:
         from export_real_demo import export_real_demo
 

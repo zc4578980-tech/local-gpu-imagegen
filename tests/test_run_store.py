@@ -677,6 +677,93 @@ class RunStoreTransitionTests(unittest.TestCase):
             self.review_value(next_action=next_action),
         )
 
+    def semantic_run(self) -> str:
+        semantic = {
+            "required": True,
+            "requested_medium": "software product hero asset",
+            "required_anchors": ["blank device screen", "left copy-safe area"],
+            "forbidden_substitutions": ["paper-only planning workspace"],
+        }
+        manifest = self.store.create({
+            "profile": "ui-visual-asset",
+            "subtype": "hero",
+            "constraints": {"semantic_fidelity": semantic},
+            "max_rounds": 2,
+            "merged_profile": {
+                "rubric": {
+                    "intent_adherence": {"weight": 1, "critical": True},
+                    "semantic_fidelity": {"weight": 2, "critical": True},
+                },
+                "hard_failures": ["explicit_constraint_violation", "semantic_substitution"],
+            },
+        })
+        run_id = str(manifest["run_id"])
+        handle = self.store.begin_attempt(run_id, "semantic-initial", INITIAL)
+        image = self.write_image_for(run_id, "round-01.png", b"semantic candidate")
+        self.store.mark_attempt_image(handle, image)
+        self.store.complete_attempt(handle, {})
+        return run_id
+
+    @staticmethod
+    def semantic_review(status: str, *, next_action: str = "refine") -> dict[str, object]:
+        anchor_status = "pass" if status == "pass" else status
+        substitution_status = {"pass": "absent", "fail": "present", "uncertain": "uncertain"}[status]
+        return {
+            "scores": {"intent_adherence": 3, "semantic_fidelity": 3},
+            "hard_failures": [],
+            "critique": "The requested software medium was compared with the observed asset.",
+            "constraint_results": {
+                "semantic_fidelity": {
+                    "status": status,
+                    "observation": "The required anchors and forbidden substitution were inspected.",
+                    "anchor_results": [
+                        {"anchor": "blank device screen", "status": anchor_status, "observation": "Device area inspected."},
+                        {"anchor": "left copy-safe area", "status": anchor_status, "observation": "Copy area inspected."},
+                    ],
+                    "substitution_results": [
+                        {
+                            "substitution": "paper-only planning workspace",
+                            "status": substitution_status,
+                            "observation": "The scene medium was inspected.",
+                        }
+                    ],
+                }
+            },
+            "visual_checks": visual_checks(),
+            "next_action": next_action,
+        }
+
+    def test_semantic_review_requires_exact_anchor_and_substitution_evidence(self) -> None:
+        run_id = self.semantic_run()
+        review = self.semantic_review("pass")
+        review["constraint_results"]["semantic_fidelity"]["anchor_results"].pop()
+
+        with self.assertRaisesRegex(ValidationError, "invalid_semantic_fidelity_results"):
+            self.store.record_review(run_id, 1, review)
+
+    def test_failed_semantic_review_requires_both_hard_failures(self) -> None:
+        run_id = self.semantic_run()
+
+        with self.assertRaisesRegex(ValidationError, "inconsistent_semantic_fidelity"):
+            self.store.record_review(run_id, 1, self.semantic_review("fail"))
+
+    def test_uncertain_semantic_review_cannot_finalize(self) -> None:
+        run_id = self.semantic_run()
+
+        with self.assertRaisesRegex(ValidationError, "semantic_fidelity_requires_revision"):
+            self.store.record_review(run_id, 1, self.semantic_review("uncertain", next_action="finalize"))
+
+    def test_consistent_semantic_review_can_finalize_or_refine(self) -> None:
+        pass_run = self.semantic_run()
+        reviewed = self.store.record_review(pass_run, 1, self.semantic_review("pass", next_action="finalize"))
+        self.assertEqual(reviewed["reviews"][0]["constraint_results"]["semantic_fidelity"]["status"], "pass")
+
+        fail_run = self.semantic_run()
+        failed = self.semantic_review("fail")
+        failed["hard_failures"] = ["explicit_constraint_violation", "semantic_substitution"]
+        reviewed = self.store.record_review(fail_run, 1, failed)
+        self.assertEqual(reviewed["reviews"][0]["next_action"], "refine")
+
     def complete_marked_and_reviewed_initial(self) -> dict[str, object]:
         handle = self.store.begin_attempt(self.manifest["run_id"], "initial-published", INITIAL)
         image = self.write_run_image(contents=b"published final contents")

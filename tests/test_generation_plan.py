@@ -77,6 +77,25 @@ class GenerationPlanTests(unittest.TestCase):
             "upscale_policy": "off",
         }
 
+    @staticmethod
+    def semantic_fidelity() -> dict[str, object]:
+        return {
+            "required": True,
+            "requested_medium": "software product hero asset",
+            "required_anchors": ["one blank device screen reserved for real UI compositing"],
+            "forbidden_substitutions": ["paper-only planning workspace"],
+        }
+
+    def ui_hero_contract(self) -> tuple[dict[str, object], dict[str, object]]:
+        request = copy.deepcopy(self.run_request)
+        request["profile"] = "ui-visual-asset"
+        request["subtype"] = "hero"
+        request["constraints"]["semantic_fidelity"] = self.semantic_fidelity()
+        plan = copy.deepcopy(self.plan)
+        plan["profile"] = "ui-visual-asset"
+        plan["constraints"]["semantic_fidelity"] = self.semantic_fidelity()
+        return request, plan
+
     def regional_contract(self) -> tuple[dict[str, object], dict[str, object]]:
         layout = {
             "mode": "copy-subject-v1",
@@ -159,6 +178,40 @@ class GenerationPlanTests(unittest.TestCase):
         self.assertEqual(validated["positive_prompt"], self.plan["positive_prompt"])
         self.assertEqual(validated["model_choice"], "local:test-model")
         self.assertEqual(validated["upscale_policy"], "off")
+
+    def test_ui_hero_requires_frozen_semantic_fidelity_contract(self) -> None:
+        request = copy.deepcopy(self.run_request)
+        request["profile"] = "ui-visual-asset"
+        request["subtype"] = "hero"
+
+        with self.assertRaisesRegex(ValidationError, "missing_semantic_fidelity"):
+            validate_confirmed_run_request(request)
+
+    def test_ui_hero_rejects_malformed_semantic_fidelity_contract(self) -> None:
+        for changed in (
+            {"required": False, "requested_medium": "software", "required_anchors": ["screen"], "forbidden_substitutions": ["paper-only"]},
+            {"required": True, "requested_medium": " ", "required_anchors": ["screen"], "forbidden_substitutions": ["paper-only"]},
+            {"required": True, "requested_medium": "software", "required_anchors": [], "forbidden_substitutions": ["paper-only"]},
+            {"required": True, "requested_medium": "software", "required_anchors": ["screen", " SCREEN "], "forbidden_substitutions": ["paper-only"]},
+        ):
+            request, _ = self.ui_hero_contract()
+            request["constraints"]["semantic_fidelity"] = changed
+            with self.subTest(changed=changed), self.assertRaisesRegex(
+                ValidationError, "invalid_semantic_fidelity"
+            ):
+                validate_confirmed_run_request(request)
+
+    def test_ui_hero_semantic_fidelity_is_normalized_and_frozen(self) -> None:
+        request, plan = self.ui_hero_contract()
+        request["constraints"]["semantic_fidelity"]["requested_medium"] = "  software product hero asset  "
+
+        normalized = validate_confirmed_run_request(request)
+        self.assertEqual(
+            normalized["constraints"]["semantic_fidelity"]["requested_medium"],
+            "software product hero asset",
+        )
+        validated = validate_generation_plan(plan, self.ui_hero_contract()[0], "initial")
+        self.assertEqual(validated["constraints"]["semantic_fidelity"], self.semantic_fidelity())
 
     def test_plan_schema_retains_exactly_twenty_top_level_fields(self) -> None:
         self.assertEqual(len(PLAN_REQUIRED), 20)

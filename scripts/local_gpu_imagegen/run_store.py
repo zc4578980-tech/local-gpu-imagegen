@@ -1576,26 +1576,120 @@ class RunStore:
         if not isinstance(constraints, dict) or not isinstance(results, dict) or set(results) != set(constraints):
             raise ValidationError("invalid_constraint_results", "Constraint results must exactly match explicit constraints.")
         required_failure = False
+        semantic_status: str | None = None
         for name, result in results.items():
-            if not isinstance(result, dict) or set(result) != {"status", "observation"}:
-                raise ValidationError("invalid_constraint_results", "Each constraint result must have status and observation.")
-            if result.get("status") not in {"pass", "fail", "uncertain"}:
-                raise ValidationError("invalid_constraint_results", "Constraint result status is invalid.")
-            observation = result.get("observation")
-            if not isinstance(observation, str) or not observation.strip():
-                raise ValidationError("invalid_constraint_results", "Constraint observations must be non-empty.")
             specification = constraints[name]
+            if name == "semantic_fidelity":
+                semantic_status = self._validate_semantic_fidelity_results(specification, result)
+                status = semantic_status
+            else:
+                if not isinstance(result, dict) or set(result) != {"status", "observation"}:
+                    raise ValidationError("invalid_constraint_results", "Each constraint result must have status and observation.")
+                if result.get("status") not in {"pass", "fail", "uncertain"}:
+                    raise ValidationError("invalid_constraint_results", "Constraint result status is invalid.")
+                observation = result.get("observation")
+                if not isinstance(observation, str) or not observation.strip():
+                    raise ValidationError("invalid_constraint_results", "Constraint observations must be non-empty.")
+                status = result["status"]
             if (
-                result["status"] == "fail"
+                status == "fail"
                 and isinstance(specification, dict)
                 and specification.get("required") is True
             ):
                 required_failure = True
+        if semantic_status == "fail" and not {
+            "explicit_constraint_violation", "semantic_substitution",
+        } <= set(hard_failures):
+            raise ValidationError(
+                "inconsistent_semantic_fidelity",
+                "Failed semantic fidelity requires explicit_constraint_violation and semantic_substitution.",
+            )
+        if semantic_status in {"fail", "uncertain"} and review.get("next_action") == "finalize":
+            raise ValidationError(
+                "semantic_fidelity_requires_revision",
+                "Failed or uncertain semantic fidelity cannot request finalization.",
+            )
         if required_failure and "explicit_constraint_violation" not in hard_failures:
             raise ValidationError(
                 "inconsistent_hard_failures",
                 "A failed required constraint requires explicit_constraint_violation.",
             )
+
+    @staticmethod
+    def _validate_semantic_fidelity_results(
+        specification: object,
+        result: object,
+    ) -> str:
+        required_fields = {"status", "observation", "anchor_results", "substitution_results"}
+        if not isinstance(specification, dict) or not isinstance(result, dict) or set(result) != required_fields:
+            raise ValidationError(
+                "invalid_semantic_fidelity_results",
+                "Semantic fidelity results require status, observation, anchor_results, and substitution_results.",
+            )
+        observation = result.get("observation")
+        if not isinstance(observation, str) or not observation.strip():
+            raise ValidationError(
+                "invalid_semantic_fidelity_results",
+                "Semantic fidelity observation must be non-empty.",
+            )
+        anchors = specification.get("required_anchors")
+        substitutions = specification.get("forbidden_substitutions")
+        if not isinstance(anchors, list) or not isinstance(substitutions, list):
+            raise ArtifactError("corrupt_manifest", "Semantic fidelity constraint is invalid.")
+        anchor_statuses = RunStore._validate_semantic_evidence_list(
+            result.get("anchor_results"), anchors, "anchor", {"pass", "fail", "uncertain"}
+        )
+        substitution_statuses = RunStore._validate_semantic_evidence_list(
+            result.get("substitution_results"),
+            substitutions,
+            "substitution",
+            {"absent", "present", "uncertain"},
+        )
+        if "fail" in anchor_statuses or "present" in substitution_statuses:
+            computed = "fail"
+        elif "uncertain" in anchor_statuses or "uncertain" in substitution_statuses:
+            computed = "uncertain"
+        else:
+            computed = "pass"
+        if result.get("status") != computed:
+            raise ValidationError(
+                "invalid_semantic_fidelity_results",
+                "Semantic fidelity status is inconsistent with per-item evidence.",
+            )
+        return computed
+
+    @staticmethod
+    def _validate_semantic_evidence_list(
+        value: object,
+        expected: list[object],
+        identity_field: str,
+        allowed_statuses: set[str],
+    ) -> list[str]:
+        if not isinstance(value, list) or len(value) != len(expected):
+            raise ValidationError(
+                "invalid_semantic_fidelity_results",
+                "Semantic fidelity evidence must exactly match the frozen contract.",
+            )
+        statuses: list[str] = []
+        for index, item in enumerate(value):
+            if not isinstance(item, dict) or set(item) != {identity_field, "status", "observation"}:
+                raise ValidationError(
+                    "invalid_semantic_fidelity_results",
+                    "Semantic fidelity evidence item fields are invalid.",
+                )
+            if item.get(identity_field) != expected[index] or item.get("status") not in allowed_statuses:
+                raise ValidationError(
+                    "invalid_semantic_fidelity_results",
+                    "Semantic fidelity evidence differs from the frozen contract.",
+                )
+            observation = item.get("observation")
+            if not isinstance(observation, str) or not observation.strip():
+                raise ValidationError(
+                    "invalid_semantic_fidelity_results",
+                    "Semantic fidelity evidence observations must be non-empty.",
+                )
+            statuses.append(str(item["status"]))
+        return statuses
 
     @staticmethod
     def _validate_preservation_results(

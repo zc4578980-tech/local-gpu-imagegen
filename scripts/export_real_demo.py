@@ -32,6 +32,7 @@ from validate_real_demo import (
     MODEL_ID,
     MODEL_SHA256,
     WORKFLOW_SHA256,
+    valid_passing_semantic_result,
     validate_real_demo,
 )
 
@@ -393,6 +394,17 @@ def _sanitized_review(
         or set(scores) != set(rubric)
         or not isinstance(constraint_results, dict)
         or set(constraint_results) != set(constraints)
+    ):
+        raise ValueError("invalid_review_evidence")
+    semantic_contract = constraints.get("semantic_fidelity")
+    semantic_result = constraint_results.get("semantic_fidelity")
+    if semantic_contract is not None and (
+        not isinstance(semantic_contract, dict)
+        or not valid_passing_semantic_result(
+            semantic_result,
+            required_anchors=semantic_contract.get("required_anchors"),
+            forbidden_substitutions=semantic_contract.get("forbidden_substitutions"),
+        )
     ):
         raise ValueError("invalid_review_evidence")
     public_rubric: dict[str, dict[str, object]] = {}

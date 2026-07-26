@@ -27,6 +27,9 @@ PLAN_REQUIRED = {
 } | set(CONFIRMED_ROUTE_FIELDS)
 _BACKENDS = {"webui", "diffusers", "comfyui"}
 _UPSCALE_POLICIES = {"auto", "off"}
+_SEMANTIC_FIDELITY_FIELDS = {
+    "required", "requested_medium", "required_anchors", "forbidden_substitutions",
+}
 
 
 def validate_generation_plan(
@@ -183,6 +186,19 @@ def validate_confirmed_run_request(run_request: object) -> dict[str, object]:
     normalized = copy.deepcopy(run_request)
     normalized_constraints = normalized["constraints"]
     assert isinstance(normalized_constraints, dict)
+    semantic_required = (
+        normalized["profile"] == "ui-visual-asset"
+        and normalized.get("subtype") == "hero"
+    )
+    if semantic_required and "semantic_fidelity" not in normalized_constraints:
+        raise ValidationError(
+            "missing_semantic_fidelity",
+            "UI hero runs require a frozen semantic_fidelity constraint.",
+        )
+    if "semantic_fidelity" in normalized_constraints:
+        normalized_constraints["semantic_fidelity"] = _validate_semantic_fidelity(
+            normalized_constraints["semantic_fidelity"]
+        )
     regional_route = route.get("workflow_template_id") == REGIONAL_TEMPLATE_ID
     two_stage_route = route.get("workflow_template_id") == TWO_STAGE_TEMPLATE_ID
     has_layout = "regional_layout" in normalized_constraints
@@ -250,6 +266,59 @@ def validate_confirmed_run_request(run_request: object) -> dict[str, object]:
         raise ValidationError(
             "invalid_regional_conditioning",
             "Standard routes cannot accept regional data.",
+        )
+    return normalized
+
+
+def _validate_semantic_fidelity(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != _SEMANTIC_FIDELITY_FIELDS:
+        raise ValidationError(
+            "invalid_semantic_fidelity",
+            "semantic_fidelity requires required, requested_medium, required_anchors, and forbidden_substitutions.",
+        )
+    if value.get("required") is not True:
+        raise ValidationError(
+            "invalid_semantic_fidelity",
+            "semantic_fidelity.required must be true.",
+        )
+    requested_medium = value.get("requested_medium")
+    if not isinstance(requested_medium, str) or not requested_medium.strip() or len(requested_medium.strip()) > 500:
+        raise ValidationError(
+            "invalid_semantic_fidelity",
+            "semantic_fidelity.requested_medium must be a non-empty string of at most 500 characters.",
+        )
+    anchors = _semantic_string_list(value.get("required_anchors"), "required_anchors")
+    substitutions = _semantic_string_list(
+        value.get("forbidden_substitutions"), "forbidden_substitutions"
+    )
+    if {item.casefold() for item in anchors} & {item.casefold() for item in substitutions}:
+        raise ValidationError(
+            "invalid_semantic_fidelity",
+            "Required anchors and forbidden substitutions must not overlap.",
+        )
+    return {
+        "required": True,
+        "requested_medium": requested_medium.strip(),
+        "required_anchors": anchors,
+        "forbidden_substitutions": substitutions,
+    }
+
+
+def _semantic_string_list(value: object, field: str) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not 1 <= len(value) <= 16
+        or not all(isinstance(item, str) and item.strip() and len(item.strip()) <= 500 for item in value)
+    ):
+        raise ValidationError(
+            "invalid_semantic_fidelity",
+            f"semantic_fidelity.{field} must contain 1 to 16 non-empty strings of at most 500 characters.",
+        )
+    normalized = [item.strip() for item in value]
+    if len({item.casefold() for item in normalized}) != len(normalized):
+        raise ValidationError(
+            "invalid_semantic_fidelity",
+            f"semantic_fidelity.{field} must not contain duplicates.",
         )
     return normalized
 

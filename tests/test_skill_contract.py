@@ -170,6 +170,36 @@ class SkillContractTests(unittest.TestCase):
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, self.text)
 
+    def test_ui_hero_requires_semantic_anchors_before_prompting_and_start(self) -> None:
+        section = _section(self.text, "## Adaptive Brief", "## Workflow Onboarding")
+        for required_text in (
+            "`semantic_fidelity`",
+            "requested medium",
+            "required visual anchors",
+            "forbidden substitutions",
+            "paper-only workspace",
+            "before writing the generation prompt",
+            "Do not call `local_gpu_start_run`",
+        ):
+            with self.subTest(required_text=required_text):
+                self.assertIn(required_text, section)
+
+    def test_semantic_review_precedes_polish_and_requires_per_anchor_evidence(self) -> None:
+        section = _section(self.text, "## Review Evidence", "## Hard Boundaries")
+        _assert_ordered(section, (
+            "requested medium",
+            "required visual anchors",
+            "forbidden substitutions",
+            "Before scoring polish",
+        ))
+        for required_text in (
+            "`anchor_results`",
+            "`substitution_results`",
+            "`semantic_substitution`",
+            "cannot request finalization",
+        ):
+            self.assertIn(required_text, section)
+
     def test_requires_route_resolution_before_post_display_confirmation(self) -> None:
         ordered = (
             "`local_gpu_discover_models`",

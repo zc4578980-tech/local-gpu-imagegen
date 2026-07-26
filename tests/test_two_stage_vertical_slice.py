@@ -386,13 +386,30 @@ def _recommend(router: CapabilityRouter) -> dict[str, object]:
     return recommendation["routes"][0]
 
 
+def _semantic_fidelity() -> dict[str, object]:
+    return {
+        "required": True,
+        "requested_medium": "decorative software product hero asset",
+        "required_anchors": [
+            "brass telescope hero object on the right",
+            "protected left copy-safe area",
+        ],
+        "forbidden_substitutions": ["paper-only planning workspace"],
+    }
+
+
 def _start(engine: AssetRunEngine, route: dict[str, object]) -> str:
     started = engine.start_run({
         "intent": "Telescope hero with protected left copy space",
         "profile": "ui-visual-asset",
         "subtype": "hero",
         "style": None,
-        "constraints": {"width": WIDTH, "height": HEIGHT, "two_stage_layout": _layout()},
+        "constraints": {
+            "width": WIDTH,
+            "height": HEIGHT,
+            "two_stage_layout": _layout(),
+            "semantic_fidelity": _semantic_fidelity(),
+        },
         "initial_two_stage_conditioning": _conditioning(),
         "model_choice": route["model_id"],
         "backend": "comfyui",
@@ -411,7 +428,12 @@ def _plan(route: dict[str, object]) -> dict[str, object]:
         "intent": "Telescope hero with protected left copy space",
         "positive_prompt": "quiet empty observatory interior with dark left copy space",
         "negative_prompt": "text, watermark, telescope, tripod",
-        "constraints": {"width": WIDTH, "height": HEIGHT, "two_stage_layout": _layout()},
+        "constraints": {
+            "width": WIDTH,
+            "height": HEIGHT,
+            "two_stage_layout": _layout(),
+            "semantic_fidelity": _semantic_fidelity(),
+        },
         "parameters": {"two_stage_conditioning": _conditioning()},
         "max_rounds": 1,
         "upscale_policy": "off",
@@ -438,14 +460,36 @@ def _passing_review(manifest: dict[str, object]) -> dict[str, object]:
     rubric = merged["rubric"]
     assert isinstance(rubric, dict)
     not_applicable = {"status": "not_applicable", "observation": "No human is present."}
+    constraint_results = {
+        name: {"status": "pass", "observation": f"{name} matches the confirmed request."}
+        for name in constraints
+    }
+    semantic = constraints["semantic_fidelity"]
+    constraint_results["semantic_fidelity"] = {
+        "status": "pass",
+        "observation": "The telescope hero remains a composable software asset.",
+        "anchor_results": [
+            {
+                "anchor": anchor,
+                "status": "pass",
+                "observation": "The required hero anchor is retained.",
+            }
+            for anchor in semantic["required_anchors"]
+        ],
+        "substitution_results": [
+            {
+                "substitution": substitution,
+                "status": "absent",
+                "observation": "The forbidden replacement is absent.",
+            }
+            for substitution in semantic["forbidden_substitutions"]
+        ],
+    }
     return {
         "scores": {name: 4 for name in rubric},
         "hard_failures": [],
         "critique": "Both stages and the machine pixel report pass the confirmed contract.",
-        "constraint_results": {
-            name: {"status": "pass", "observation": f"{name} matches the confirmed request."}
-            for name in constraints
-        },
+        "constraint_results": constraint_results,
         "visual_checks": {
             "full_resolution_inspected": True,
             "prominent_human": False,

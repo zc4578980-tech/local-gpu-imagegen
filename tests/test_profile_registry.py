@@ -70,6 +70,13 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertIn("baked_controls", merged["hard_failures"])
         self.assertIn("incorrect_text", merged["hard_failures"])
 
+    def test_ui_profile_makes_semantic_fidelity_critical(self) -> None:
+        merged = self.registry.merge("ui-visual-asset", None, {})
+
+        self.assertTrue(merged["rubric"]["semantic_fidelity"]["critical"])
+        self.assertIn("semantic_substitution", merged["hard_failures"])
+        self.assertTrue(any("semantic" in guidance.casefold() for guidance in merged["profile"]["prompt_guidance"]))
+
     def test_each_profile_has_examples_for_every_subtype(self) -> None:
         for identifier, profile in self.registry.list_catalog()["profiles"].items():
             with self.subTest(profile=identifier):
