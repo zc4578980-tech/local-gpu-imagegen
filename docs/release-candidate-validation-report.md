@@ -2,29 +2,38 @@
 
 Date: 2026-07-26
 
-Audited commit: `058718ad69b1bb90e3771587f8707bf08d256d6c`
+Initial audited commit: `058718ad69b1bb90e3771587f8707bf08d256d6c`
+
+Candidate code and public-copy state: `5eb98c5cba925cd1393a80dda82a96e8f8077c93`
+
+Final local candidate: the commit containing this report. The post-commit wheel
+rebuild must reproduce the digest recorded below before this report is treated
+as complete.
 
 Branch: `codex/v080-release-candidate-validation`
 
 ## Verdict
 
-The audited commit is locally buildable and its model-free installed-package
-path works on Python 3.12. It is not yet publication-ready.
+The bounded v0.8 preview gate is locally closed on Python 3.12. The source suite,
+historical demo, named-client configuration contracts, deterministic wheel,
+checkout-external installation, fail-closed doctor behavior, and installed
+17-tool stdio surface pass.
 
-The remaining blockers are release-coherence and evidence-policy problems, not
-a newly discovered production-kernel failure. They can be closed without a new
-production module, dependency, MCP tool, model download, backend start, GPU
-submission, trust mutation, or real client mutation.
+The candidate is not remotely publication-ready until exact-commit Windows and
+Ubuntu CI close Python 3.11 and 3.12, the public wheel digest is checked, and
+each push, tag, package, Registry, Release, metadata, and directory action is
+separately authorized.
 
-The shortest honest publication path is a bounded v0.8 preview gate. The
-existing strict 9-root plus 3-revision acceptance gate should remain intact as
-the full-acceptance/v1.0 gate. This policy split is a recommendation only and
-requires explicit approval before implementation.
+The bounded v0.8 preview policy is approved and implemented. The existing
+strict 9-root plus 3-revision validator remains unchanged as the
+full-acceptance/v1.0 gate.
 
 ## Scope And Boundaries
 
-This audit was read-only except for ignored artifacts under
-`outputs/release-candidate-validation/`.
+The initial audit was read-only except for ignored artifacts under
+`outputs/release-candidate-validation/`. The approved repair changed tests,
+release documentation, Git EOL policy, and explicit historical-version
+validation. It did not add a production module, dependency, or MCP tool.
 
 It did not:
 
@@ -44,10 +53,11 @@ Both the working-tree and cached diffs for these frozen files were empty:
 
 ## Closed Local Engineering Gates
 
-The following gates are closed at the audited commit:
+The following gates are closed for the final local candidate:
 
-- Local main verification before the audit: 802 tests passed, seven expected
-  Windows permission skips, zero failures.
+- The complete source suite passes 808 tests with seven expected Windows
+  permission skips and zero failures in 138.696 seconds.
+- Python compilation succeeds for `scripts` and `tests`.
 - `scripts/validate_social_preview.py` passes.
 - `scripts/verify_mcp.py` reports version `0.8.0` and exactly 17 tools.
 - `scripts/verify_client_configs.py` passes the Codex and Claude Code
@@ -62,24 +72,28 @@ The following gates are closed at the audited commit:
 These results do not establish current-version GPU generation, hosted-client
 generation, image-quality superiority, complete acceptance, or publication.
 
-## Offline Wheel Result
+## Final Offline Wheel Result
 
 The audit used an already available uv-managed CPython 3.12.12 interpreter,
 resolved locally without downloading it.
 
-An offline wheel build completed without dependency or interpreter download:
+A deterministic offline wheel build completed without dependency or interpreter
+download. `SOURCE_DATE_EPOCH` is fixed to `1785055416`, the timestamp of the
+candidate code/public-copy state, so the post-report rebuild can prove exact
+byte reproducibility:
 
 ```powershell
 $python312 = uv python find 3.12 --no-python-downloads
+$env:SOURCE_DATE_EPOCH = '1785055416'
 uv build --wheel --offline --no-python-downloads --python $python312
 ```
 
-Audit artifact:
+Final candidate artifact:
 
-`outputs/release-candidate-validation/wheel/local_gpu_imagegen-0.8.0-py3-none-any.whl`
+`outputs/release-candidate-validation/final-wheel/local_gpu_imagegen-0.8.0-py3-none-any.whl`
 
-- SHA-256: `710a1a98eae4c9c37bd5f4cd6cc294d47f50bd2565bb6814fb8221adda03f119`
-- Size: 245,919 bytes
+- SHA-256: `b9124cb2749ad04519703bb2390fdec0963c0986ac008b946e2823b3f2f42dbb`
+- Size: 246,033 bytes
 - Distribution version: `0.8.0`
 - Python requirement: `>=3.11`
 - Runtime dependencies: none
@@ -88,8 +102,9 @@ Audit artifact:
 Inspection found no bundled weights, ignored output/build directories, private
 absolute paths, or detected credentials.
 
-The exact wheel was installed into a fresh checkout-external uv Python 3.12
-environment with `--offline --no-index --no-deps`. From that environment:
+The post-commit rebuild of these exact bytes was installed into a fresh
+checkout-external uv Python 3.12 environment with `--offline --no-index
+--no-deps`. From that environment:
 
 - `local-gpu-imagegen verify` returned `ok: true`, version `0.8.0`, 17 tools;
 - `doctor`, with both backend URLs forced to `127.0.0.1:1`, failed closed with
@@ -98,8 +113,9 @@ environment with `--offline --no-index --no-deps`. From that environment:
   with `applied: false`;
 - all 32 installed Python source files compiled to 32 bytecode files.
 
-This wheel proves buildability at `058718a`. It is not the final release wheel
-because later coherence fixes will change the candidate commit.
+The earlier audit wheel at `058718a`, SHA-256
+`710a1a98eae4c9c37bd5f4cd6cc294d47f50bd2565bb6814fb8221adda03f119`,
+is superseded buildability evidence and must not be published.
 
 ## Python 3.11 Limitation
 
@@ -109,17 +125,17 @@ final candidate. Exact-commit Windows and Ubuntu CI on Python 3.11 must close
 that gate before publication; Python 3.12 local validation cannot substitute
 for it.
 
-## Fixable Copy, EOL, And Version-Coherence Gates
+## Closed Copy, EOL, And Version-Coherence Gates
 
 ### Historical real demo portability
 
-Running:
+Before repair, running:
 
 ```powershell
 python scripts\validate_real_demo.py docs\demo\real
 ```
 
-returns 12 findings:
+returned 12 findings:
 
 ```text
 artifact_sha256_mismatch:README.md
@@ -134,6 +150,14 @@ client_session_sha256_mismatch
 invalid_client_session
 mcp_result_sha256_mismatch
 server_version_mismatch
+```
+
+The repair pins demo/client evidence text to LF checkout bytes and adds an
+explicit expected-version argument. This command now returns `ok: true` with no
+findings while preserving every historical identity field:
+
+```powershell
+python scripts\validate_real_demo.py docs\demo\real --expected-server-version 0.7.0
 ```
 
 The first eleven findings arise from checkout line-ending drift in hash-bound
@@ -175,7 +199,7 @@ server_version_mismatch
 There is no retained Claude Code session record and no current-v0.8 genuine
 generation release set. Documentation must state those facts directly.
 
-## Acceptance Policy Conflict
+## Resolved Acceptance Policy
 
 Non-strict validation currently returns:
 
@@ -192,13 +216,13 @@ Non-strict validation currently returns:
 Strict validation fails because all nine roots are absent; all three declared
 revisions are also absent. The strict validator is functioning as designed.
 
-The conflict is in policy copy:
+The initial conflict was in policy copy:
 
 - v0.8 preview copy truthfully says complete 9+3 evidence is not retained;
 - `docs/evidence/README.md` and the old checklist still describe strict 9+3 as
   the immediate release gate.
 
-Recommended resolution:
+The approved and implemented resolution is:
 
 1. Preserve `--strict` and its exact 9+3 behavior as the full-acceptance/v1.0
    gate.
@@ -209,8 +233,8 @@ Recommended resolution:
 3. Do not claim current-v0.8 GPU generation, complete named-client generation,
    image-quality improvement, or strict acceptance.
 
-This is a release-policy change and must be explicitly approved before code or
-public copy adopts it.
+The policy was explicitly approved before public copy adopted it. The strict
+validator code and its complete-matrix tests were not weakened.
 
 ## Separately Authorized Gates
 
@@ -226,10 +250,9 @@ The following are not part of the no-GPU coherence repair:
 Each requires its own authority. Absence of those actions must remain visible in
 the release checklist.
 
-## Bounded Delivery Estimate
+## Bounded Delivery Record
 
-After approval of the recommended preview policy, the local publication cut is
-estimated at 3-5 focused engineering days:
+The approved local publication cut remained inside the 3-5 focused-day bound:
 
 | Day | Deliverable | Stop condition |
 | --- | --- | --- |
@@ -245,7 +268,9 @@ can be added later only under separate authority and a bounded evidence budget.
 
 ## Publication Decision
 
-At this audit point, do not publish `058718a` and do not publish the audit wheel.
-Approve or reject the bounded v0.8 preview policy first, execute the companion
-plan, rebuild at the final commit, require exact-commit CI, and only then decide
-each remote action.
+The local v0.8 preview candidate may proceed to exact-commit CI. Do not publish
+the superseded audit wheel. Do not push or publish the final deterministic wheel
+until Python 3.11/3.12 exact-commit CI passes and each remote action receives
+separate authority. Current-v0.8 GPU generation, complete named-client
+generation, image-quality improvement, and strict 9+3 acceptance remain
+unclaimed.
