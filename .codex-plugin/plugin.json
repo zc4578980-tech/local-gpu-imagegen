@@ -1,7 +1,7 @@
 {
   "name": "local-gpu-imagegen",
   "version": "0.8.0",
-  "description": "Run supported local ComfyUI workflows from Codex or Claude Code with explicit routes and no silent downloads.",
+  "description": "Run supported ComfyUI workflows from Codex or Claude Code: explicit routes, no silent downloads.",
   "author": {
     "name": "Capricorn"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Local GPU Imagegen",
     "shortDescription": "Run supported ComfyUI workflows from Codex or Claude Code.",
-    "longDescription": "Run supported ordinary ComfyUI API workflows from Codex or Claude Code through an installed MCP CLI, with bounded local model discovery, explicit model identity, registration, route confirmation, durable recovery, and no silent downloads or model switches. AUTOMATIC1111/Forge and Diffusers remain compatibility paths. No model weights are bundled or downloaded implicitly. Model-free tests cover the workflow, WebUI, and ComfyUI adapter contracts. Retained onboarding and generation evidence are separate, the complete real 9+3 host/vision acceptance matrix is not retained, and no image-quality superiority is claimed. Regional and two-stage composition remain experimental.",
+    "longDescription": "Run supported ordinary ComfyUI API workflows from Codex or Claude Code through an installed MCP CLI for local visual asset work. Adaptive briefing, bounded local model discovery, explicit model identity, registration, route confirmation, durable recovery, and no silent downloads or model switches keep control explicit. AUTOMATIC1111/Forge and Diffusers remain compatibility paths. No model weights are bundled or downloaded implicitly. Model-free tests cover the workflow, WebUI, and ComfyUI adapter contracts. Retained onboarding and generation evidence are separate. Real ComfyUI generation evidence remains local development validation rather than public acceptance evidence; the complete real 9+3 host/vision acceptance matrix is not retained, and no image-quality superiority is claimed. Regional and two-stage composition remain experimental.",
     "developerName": "Capricorn",
     "category": "Creative",
     "capabilities": [

@@ -20,7 +20,7 @@
 
     #preview {
       display: grid;
-      grid-template-columns: 46% 54%;
+      grid-template-columns: 58% 42%;
       width: 1280px;
       height: 640px;
       color: #f4f7f5;
@@ -33,7 +33,7 @@
       flex-direction: column;
       justify-content: center;
       min-width: 0;
-      padding: 58px 54px 58px 70px;
+      padding: 52px 58px 50px 70px;
     }
 
     .message::before {
@@ -56,17 +56,17 @@
     }
 
     .label {
-      margin-bottom: 28px;
+      margin-bottom: 22px;
       color: #61d394;
       font-size: 18px;
       line-height: 1.2;
     }
 
     h1 {
-      max-width: 470px;
-      margin: 0 0 46px;
+      max-width: 600px;
+      margin: 0 0 32px;
       font-family: "Arial Narrow", "Aptos Narrow", "Segoe UI", sans-serif;
-      font-size: 46px;
+      font-size: 50px;
       font-stretch: condensed;
       font-weight: 700;
       line-height: 1.08;
@@ -83,6 +83,29 @@
       color: #aeb9b4;
       font-size: 17px;
       line-height: 1.3;
+    }
+
+    .flow {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      margin: 34px 0 30px;
+      color: #f4f7f5;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .step {
+      padding: 12px 13px;
+      border: 1px solid #4a5752;
+      border-radius: 4px;
+      background: #171d20;
+    }
+
+    .arrow {
+      color: #f3c969;
     }
 
     figure {
@@ -121,13 +144,20 @@
   <main id="preview" aria-label="Local GPU Imagegen social preview">
     <section class="message">
       <p class="label">LOCAL GPU IMAGEGEN</p>
-      <h1 aria-label="Use the image models you already run locally">Use the image models<br>you already run locally</h1>
+      <h1 aria-label="Run your ComfyUI workflows from your Agent">Run your ComfyUI<br>workflows from<br>your Agent</h1>
+      <div class="flow" aria-label="Inspect, confirm, and run">
+        <span class="step">INSPECT</span>
+        <span class="arrow">-&gt;</span>
+        <span class="step">CONFIRM</span>
+        <span class="arrow">-&gt;</span>
+        <span class="step">RUN</span>
+      </div>
       <p class="clients">Codex + Claude Code</p>
       <p class="backends">ComfyUI / Forge / Diffusers</p>
     </section>
     <figure>
       <img src="../demo/real/final.png" alt="Validated lighthouse generation">
-      <figcaption>GENUINE LOCAL GPU RESULT</figcaption>
+      <figcaption>SEPARATE VALIDATED OUTPUT</figcaption>
     </figure>
   </main>
 </body>

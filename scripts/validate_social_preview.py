@@ -20,7 +20,7 @@ MANIFEST_FIELDS = {
 }
 REQUIRED_COPY = (
     "Local GPU Imagegen",
-    "Use the image models you already run locally",
+    "Run your ComfyUI workflows from your Agent",
     "Codex + Claude Code",
     "ComfyUI / Forge / Diffusers",
     "../demo/real/final.png",

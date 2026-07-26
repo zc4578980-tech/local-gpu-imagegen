@@ -338,6 +338,7 @@ git commit -m "docs: reject semantic drift in visual review"
 - Modify: `docs/assets/github-social-preview.html`
 - Modify generated: `docs/assets/github-social-preview.png`
 - Modify generated: `docs/assets/github-social-preview.json`
+- Modify: `scripts/validate_social_preview.py`
 - Modify: `PROJECT_NODES.md`
 - Modify: `NEXT_SESSION.md`
 
