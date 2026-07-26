@@ -33,26 +33,57 @@ uvx local-gpu-imagegen doctor
 
 Checkpoint: doctor reports the selected backend reachable. A backend or model that is not already running is outside this five-minute path.
 
-## 5. Ask For One Bounded Image
+## 5. Export One Supported ComfyUI Workflow
 
-Use this request:
+In ComfyUI, enable Developer mode and use `Save (API Format)`. UI-format JSON
+with `nodes`, `links`, and widget arrays is not accepted. The supported ordinary
+ComfyUI API workflow is a `txt2img` graph with either one checkpoint loader or a
+reviewed split-model topology, known built-in nodes, one owned image output, and
+bindable prompt, dimensions, seed, sampler, scheduler, steps, and CFG inputs.
+
+Give the exported local path to your Agent:
+
+> Inspect my supported ordinary ComfyUI API workflow at
+> `<path-to-workflow-api.json>`. Show its source hash, semantic workflow hash,
+> inferred bindings, components, limitations, and exact registration
+> confirmation. Do not register, trust, download, or run anything until I
+> confirm each displayed boundary.
+
+The Agent follows this sequence:
+
+```text
+local_gpu_discover_models (api_only when inventory is absent)
+-> local_gpu_inspect_workflow
+-> display source/workflow hashes, bindings, components, and limitations
+-> wait for the exact registration confirmation in a later message
+-> local_gpu_register_workflow
+-> separate local_gpu_set_model_trust for the registered workflow and components
+-> local_gpu_recommend_models
+-> display and confirm the frozen route
+-> local_gpu_start_run -> local_gpu_generate_round
+```
+
+Inspection is read-only and does not start ComfyUI or submit a prompt.
+Registration copies an immutable reviewed graph only after exact confirmation;
+registration does not grant model trust, public authority, or model-download
+permission. Trust and route confirmation remain separate gates.
+
+See the [retained Codex onboarding session](demo/workflow-onboarding.md). It is
+real zero-GPU client evidence for discovery, inspection, registration, and trust
+binding, not generated-image or quality evidence.
+
+## Profile-Driven Run
+
+You can instead ask the bundled Agent Skill to resolve a shipped route from a
+visual brief. For example:
 
 > Create one complete lighthouse environment illustration with no people, text, logo, or watermark. Reuse my existing local backend and model, keep downloads and model switching disabled, use at most two successful rounds, and ask me before finalization.
 
 Before generation, the Agent should show the results of `local_gpu_discover_models`, any required `local_gpu_set_model_trust` action, `local_gpu_recommend_models`, and the exact selected route. It should wait for your confirmation before `local_gpu_generate_round`, display each retained image for review, and wait for a later byte-bound finalization confirmation.
 
-Optional existing ComfyUI workflows use a separate safe onboarding path for ordinary `txt2img` only:
-
-```text
-API-only discovery (when current inventory is absent)
--> local_gpu_inspect_workflow
--> display hashes, inferred binding, components, limitations, confirmation
--> later exact user confirmation
--> local_gpu_register_workflow
--> separate local_gpu_set_model_trust with `registered_workflow_id`
-```
-
-The supported graphs are single checkpoint or split model API workflows. Inspection displays `source_sha256`, `workflow_sha256`, and component identities; registration does not grant model trust. UI format, custom nodes, regional/two-stage onboarding, and implicit backend startup remain outside this path. Zero-GPU real-client onboarding evidence is retained, without prompt submission or GPU generation.
+Both paths require an already-running supported backend and model. UI-format
+conversion, custom nodes, img2img, inpaint, regional/two-stage onboarding,
+implicit backend startup, and model installation remain outside this quickstart.
 
 ## Roll Back Client Setup
 

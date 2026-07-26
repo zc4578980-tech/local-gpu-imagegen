@@ -1,5 +1,13 @@
 # Demo Evidence
 
+## Real Codex Workflow Onboarding (Zero GPU)
+
+The [workflow-onboarding evidence note](workflow-onboarding.md) summarizes one
+retained installed Codex session that discovered current ComfyUI inventory,
+inspected and registered one supported API workflow, fingerprinted the exact
+checkpoint, and completed the separate trust-binding flow. It did not submit a
+prompt, use the GPU, or produce the image below.
+
 ## Genuine Local-GPU Ordinary Route
 
 The [original finalized PNG](real/final.png), [validated showcase manifest](real/showcase-manifest.json), and [evidence notes](real/README.md) retain one ordinary `sdxl-txt2img` SDXL/ComfyUI result. The package binds the original bytes, sanitized MCP result, route identity, full-resolution review, public rights, client record, exact hashes, and known limitations. It proves only this bounded result and makes no measured image-quality or performance claim.
