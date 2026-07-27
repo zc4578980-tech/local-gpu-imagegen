@@ -82,18 +82,47 @@ class WorkflowOnboarding:
         self.workflows = workflows
         self.inventory_provider = inventory_provider
 
-    def inspect(self, path: Path) -> dict[str, object]:
+    def _prepare_source(
+        self,
+        path: Path,
+    ) -> tuple[bytes, dict[str, object], dict[str, object]]:
         encoded, source_value = read_workflow_source(Path(path))
         graph = _extract_graph(source_value)
         inferred = infer_workflow_binding(graph)
         prepared = self.workflows.prepare_import(
-            graph, inferred["binding"], _component_model_names(inferred["components"])
+            graph,
+            inferred["binding"],
+            _component_model_names(inferred["components"]),
         )
         if prepared["operation"] != "txt2img":
             _reject(
                 "unsupported_workflow_operation",
                 "Workflow onboarding supports ordinary txt2img only.",
             )
+        return encoded, inferred, prepared
+
+    def prepare_trust_binding(
+        self,
+        path: Path,
+        binding: object,
+    ) -> dict[str, object]:
+        _encoded, inferred, prepared = self._prepare_source(Path(path))
+        if binding != inferred["binding"]:
+            _reject(
+                "invalid_workflow_binding",
+                "Workflow trust binding differs from the current inferred binding.",
+            )
+        _matched, failures = self._match_inventory(inferred["components"])
+        if failures:
+            _reject(
+                "workflow_model_binding_ambiguous",
+                "Workflow trust preparation requires exact current component identities.",
+                {"inventory_diagnostics": failures},
+            )
+        return prepared
+
+    def inspect(self, path: Path) -> dict[str, object]:
+        encoded, inferred, prepared = self._prepare_source(Path(path))
         source_sha256 = hashlib.sha256(encoded).hexdigest()
         matched, match_failures = self._match_inventory(inferred["components"])
         result: dict[str, object] = {

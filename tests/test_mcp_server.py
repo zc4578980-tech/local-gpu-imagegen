@@ -28,6 +28,7 @@ from local_gpu_imagegen.two_stage_layout import (  # noqa: E402
     TWO_STAGE_TEMPLATE_ID,
     build_control_identity,
 )
+from local_gpu_imagegen.workflow_onboarding import WorkflowOnboarding  # noqa: E402
 from local_gpu_imagegen.workflow_templates import WorkflowTemplateRegistry  # noqa: E402
 
 
@@ -657,12 +658,12 @@ class McpServerUnitTests(unittest.TestCase):
                     arguments["confirmation"],
                 )
 
-    def test_registered_workflow_binds_exact_unet_loader_identity(self) -> None:
+    def test_raw_path_trust_inspection_prepares_without_registering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_dir = Path(directory) / "state"
-            source = Path(directory) / "z-image.json"
+            source = Path(directory) / "sd15.json"
             document = json.loads(
-                (ROOT / "workflows" / "comfyui" / "z-image-turbo-txt2img-v1.json").read_text(
+                (ROOT / "workflows" / "comfyui" / "sd15-txt2img-v1.json").read_text(
                     encoding="utf-8"
                 )
             )
@@ -674,35 +675,50 @@ class McpServerUnitTests(unittest.TestCase):
             record = {
                 "backend": "comfyui",
                 "endpoint_identity": "endpoint:comfyui",
-                "backend_model_id": "z_image_turbo_nvfp4.safetensors",
-                "format": ".safetensors",
+                "backend_model_id": "model.safetensors",
+                "format": "comfyui-choice",
                 "byte_size": None,
                 "modified_ns": None,
                 "sha256": None,
                 "identity_strength": "backend_binding",
                 "metadata": {
-                    "loader_class": "UNETLoader",
-                    "loader_input": "unet_name",
+                    "loader_class": "CheckpointLoaderSimple",
+                    "loader_input": "ckpt_name",
                 },
             }
-            services = Mock()
-            services.discovery.inventory.return_value = [record]
-            services.workflows = WorkflowTemplateRegistry(
+            discovery = Mock()
+            discovery.inventory.return_value = [record]
+            workflows = WorkflowTemplateRegistry(
                 ROOT / "workflows" / "comfyui",
                 state_dir,
             )
+            services = SimpleNamespace(
+                discovery=discovery,
+                workflows=workflows,
+                onboarding=WorkflowOnboarding(
+                    workflows,
+                    lambda: discovery.inventory(),
+                ),
+            )
 
-            trust_binding, registered, bundle = mcp_server._registered_workflow_binding(
+            trust_binding, prepared, bundle = mcp_server._registered_workflow_binding(
                 services,
                 record,
                 str(source),
                 graph_binding,
             )
 
-        self.assertEqual(trust_binding["backend_model_id"], record["backend_model_id"])
-        self.assertEqual(trust_binding["backend_identity_token"], mcp_server.identity_token(record))
-        self.assertTrue(registered["template_id"].startswith("imported:"))
-        self.assertIsNone(bundle)
+            self.assertEqual(
+                trust_binding["backend_model_id"],
+                record["backend_model_id"],
+            )
+            self.assertEqual(
+                trust_binding["backend_identity_token"],
+                mcp_server.identity_token(record),
+            )
+            self.assertTrue(prepared["template_id"].startswith("imported:"))
+            self.assertIsNone(bundle)
+            self.assertFalse((state_dir / "workflows").exists())
 
     def test_registered_workflow_id_binds_exact_component_bundle(self) -> None:
         registered = {

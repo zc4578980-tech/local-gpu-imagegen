@@ -381,6 +381,37 @@ class WorkflowOnboardingTests(unittest.TestCase):
         )
         self.assertTrue(all("identity_token" in item for item in result["components"]))
 
+    def test_prepare_trust_binding_is_read_only_and_matches_inspection(self) -> None:
+        self.use_exact_single_inventory()
+        inspected = self.onboarding.inspect(self.single_path)
+        self.assertTrue(
+            hasattr(self.onboarding, "prepare_trust_binding"),
+            "Workflow onboarding must expose read-only trust preparation.",
+        )
+
+        prepared = self.onboarding.prepare_trust_binding(
+            self.single_path,
+            inspected["binding"],
+        )
+
+        self.assertEqual(
+            prepared["template_id"],
+            f"imported:{inspected['workflow_sha256']}",
+        )
+        self.assertEqual(
+            prepared["workflow_sha256"],
+            inspected["workflow_sha256"],
+        )
+        self.assertEqual(
+            prepared["bindings"],
+            {
+                key: value
+                for key, value in inspected["binding"].items()
+                if key != "output"
+            },
+        )
+        self.assertFalse((self.state_dir / "workflows").exists())
+
     def test_duplicate_or_cross_endpoint_inventory_never_emits_confirmation(self) -> None:
         for inventory in self.ambiguous_inventory_cases():
             self.inventory[:] = inventory

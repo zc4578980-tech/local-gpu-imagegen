@@ -1470,12 +1470,7 @@ def _registered_workflow_binding(
         item for item in inventory
         if isinstance(item, dict) and item.get("backend") == "comfyui"
     ]
-    available_models = sorted({
-        str(item["backend_model_id"])
-        for item in comfy_records
-        if isinstance(item.get("backend_model_id"), str)
-    })
-    registered = services.workflows.register_import(Path(path), binding, available_models)
+    registered = services.onboarding.prepare_trust_binding(Path(path), binding)
     graph = registered.get("graph")
     loader_bindings = []
     if isinstance(graph, dict):
