@@ -233,6 +233,26 @@ class McpServerUnitTests(unittest.TestCase):
                 ["workflow_path"],
             ),
         )
+        inspect_output = by_name["local_gpu_inspect_workflow"]["outputSchema"]["oneOf"][0]
+        defaults = inspect_output["properties"]["workflow_defaults"]
+        self.assertIn("workflow_defaults", inspect_output["required"])
+        self.assertFalse(defaults["additionalProperties"])
+        self.assertEqual(
+            set(defaults["properties"]),
+            {
+                "positive_prompt",
+                "negative_prompt",
+                "width",
+                "height",
+                "seed",
+                "steps",
+                "guidance_scale",
+                "sampler_name",
+                "scheduler",
+            },
+        )
+        self.assertEqual(set(defaults["required"]), set(defaults["properties"]))
+        self.assertEqual(len(tools), 17)
         register = by_name["local_gpu_register_workflow"]["inputSchema"]
         self.assertEqual(
             register["required"],

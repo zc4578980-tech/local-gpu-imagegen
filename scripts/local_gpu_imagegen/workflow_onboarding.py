@@ -25,6 +25,17 @@ EXCLUDED_CLASSES = frozenset((
     "ConditioningSetAreaPercentage", "ConditioningCombine", "SolidMask", "MaskComposite",
     "FeatherMask", "ImageCompositeMasked", "MaskToImage",
 ))
+WORKFLOW_DEFAULT_BINDINGS = (
+    ("positive_prompt", "positive_prompt"),
+    ("negative_prompt", "negative_prompt"),
+    ("width", "width"),
+    ("height", "height"),
+    ("seed", "seed"),
+    ("steps", "steps"),
+    ("guidance_scale", "guidance_scale"),
+    ("sampler_name", "sampler"),
+    ("scheduler", "scheduler"),
+)
 
 
 def _hex64(value: object) -> bool:
@@ -65,6 +76,49 @@ def _extract_graph(value: object) -> dict[str, object]:
         "unsupported_workflow_envelope",
         "Workflow must be a bare API graph or contain one API graph under prompt.",
     )
+
+
+def _workflow_defaults(
+    graph: dict[str, object],
+    binding: dict[str, object],
+) -> dict[str, object]:
+    values: dict[str, object] = {}
+    try:
+        for public_name, binding_name in WORKFLOW_DEFAULT_BINDINGS:
+            node_id, section, field = binding[binding_name]
+            values[public_name] = copy.deepcopy(graph[node_id][section][field])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValidationError(
+            "invalid_workflow_defaults",
+            "Workflow default bindings do not resolve to exact current values.",
+        ) from error
+    if any(
+        type(values[name]) is not int
+        for name in ("width", "height", "seed", "steps")
+    ):
+        _reject(
+            "invalid_workflow_defaults",
+            "Workflow integer defaults have invalid types.",
+        )
+    guidance = values["guidance_scale"]
+    if not isinstance(guidance, (int, float)) or isinstance(guidance, bool):
+        _reject(
+            "invalid_workflow_defaults",
+            "Workflow guidance default must be numeric.",
+        )
+    for name in ("positive_prompt", "negative_prompt"):
+        if not isinstance(values[name], str):
+            _reject(
+                "invalid_workflow_defaults",
+                "Workflow prompt defaults must be strings.",
+            )
+    for name in ("sampler_name", "scheduler"):
+        if not isinstance(values[name], str) or not values[name].strip():
+            _reject(
+                "invalid_workflow_defaults",
+                "Workflow sampler defaults must be non-empty strings.",
+            )
+    return values
 
 
 class WorkflowOnboarding:
@@ -133,6 +187,10 @@ class WorkflowOnboarding:
             "topology": inferred["topology"],
             "binding": inferred["binding"],
             "owned_output": {"node_id": inferred["output_node"]},
+            "workflow_defaults": _workflow_defaults(
+                prepared["graph"],
+                prepared["bindings"],
+            ),
             "components": matched,
             "limitations": [
                 "ordinary_txt2img_only", "no_custom_nodes_or_graph_editing",

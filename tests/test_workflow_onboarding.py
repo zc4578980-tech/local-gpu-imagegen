@@ -66,6 +66,28 @@ def comfy_record(
     }
 
 
+def expected_defaults(
+    *,
+    width: int,
+    height: int,
+    steps: int,
+    guidance_scale: float,
+    sampler_name: str,
+    scheduler: str,
+) -> dict[str, object]:
+    return {
+        "positive_prompt": "",
+        "negative_prompt": "",
+        "width": width,
+        "height": height,
+        "seed": 0,
+        "steps": steps,
+        "guidance_scale": guidance_scale,
+        "sampler_name": sampler_name,
+        "scheduler": scheduler,
+    }
+
+
 class WorkflowBindingInferenceTests(unittest.TestCase):
     def test_infers_single_checkpoint_and_passes_authoritative_validator(self) -> None:
         document = shipped("sd15-txt2img-v1.json")
@@ -411,6 +433,99 @@ class WorkflowOnboardingTests(unittest.TestCase):
             },
         )
         self.assertFalse((self.state_dir / "workflows").exists())
+
+    def test_inspection_returns_exact_single_and_split_workflow_defaults(self) -> None:
+        cases = (
+            (
+                self.single_graph,
+                self.single_path,
+                expected_defaults(
+                    width=512,
+                    height=512,
+                    steps=20,
+                    guidance_scale=7.0,
+                    sampler_name="euler",
+                    scheduler="normal",
+                ),
+            ),
+            (
+                self.split_graph,
+                self.split_path,
+                expected_defaults(
+                    width=768,
+                    height=768,
+                    steps=8,
+                    guidance_scale=1.0,
+                    sampler_name="res_multistep",
+                    scheduler="simple",
+                ),
+            ),
+        )
+        for graph, path, expected in cases:
+            self.inventory[:] = [
+                comfy_record(
+                    component["backend_model_id"],
+                    component["loader_class"],
+                    component["loader_input"],
+                )
+                for component in workflow_component_bindings(graph)
+            ]
+            with self.subTest(path=path.name):
+                self.assertEqual(
+                    self.onboarding.inspect(path)["workflow_defaults"],
+                    expected,
+                )
+
+    def test_workflow_defaults_ignore_node_ids_and_json_key_order(self) -> None:
+        self.inventory[:] = [
+            comfy_record(
+                component["backend_model_id"],
+                component["loader_class"],
+                component["loader_input"],
+            )
+            for component in workflow_component_bindings(self.split_graph)
+        ]
+        expected = expected_defaults(
+            width=768,
+            height=768,
+            steps=8,
+            guidance_scale=1.0,
+            sampler_name="res_multistep",
+            scheduler="simple",
+        )
+        for seed in range(10):
+            path = self.write_json(
+                f"split-{seed}.json",
+                remap_graph(self.split_graph, seed),
+                compact=bool(seed % 2),
+            )
+            with self.subTest(seed=seed):
+                self.assertEqual(
+                    self.onboarding.inspect(path)["workflow_defaults"],
+                    expected,
+                )
+
+    def test_missing_boolean_or_invalid_workflow_defaults_fail_closed(self) -> None:
+        self.use_exact_single_inventory()
+        binding = infer_workflow_binding(self.single_graph)["binding"]
+        cases = (
+            ("missing_scheduler", binding["scheduler"], None),
+            ("boolean_steps", binding["steps"], True),
+            ("boolean_guidance", binding["guidance_scale"], True),
+            ("numeric_prompt", binding["positive_prompt"], 7),
+            ("empty_sampler", binding["sampler"], ""),
+        )
+        for label, path, replacement in cases:
+            graph = copy.deepcopy(self.single_graph)
+            node_id, section, field = path
+            if replacement is None:
+                del graph[node_id][section][field]
+            else:
+                graph[node_id][section][field] = replacement
+            source = self.write_json(f"{label}.json", graph)
+            with self.subTest(label=label), self.assertRaises(AssetEngineError):
+                self.onboarding.inspect(source)
+            self.assertFalse((self.state_dir / "workflows").exists())
 
     def test_duplicate_or_cross_endpoint_inventory_never_emits_confirmation(self) -> None:
         for inventory in self.ambiguous_inventory_cases():

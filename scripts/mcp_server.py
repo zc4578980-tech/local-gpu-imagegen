@@ -383,6 +383,26 @@ def tool_schema() -> list[dict[str, Any]]:
     json_object = {"type": "object", "additionalProperties": True}
     json_value = {"type": ["object", "array", "string", "number", "boolean", "null"]}
     json_array = {"type": "array", "items": json_value}
+    workflow_defaults = _object_schema({
+        "positive_prompt": {"type": "string"},
+        "negative_prompt": {"type": "string"},
+        "width": {
+            "type": "integer", "minimum": 256, "maximum": 1536, "multipleOf": 8,
+        },
+        "height": {
+            "type": "integer", "minimum": 256, "maximum": 1536, "multipleOf": 8,
+        },
+        "seed": {"type": "integer", "minimum": 0, "maximum": 2**64 - 1},
+        "steps": {"type": "integer", "minimum": 1, "maximum": 80},
+        "guidance_scale": {
+            "type": "number", "exclusiveMinimum": 0, "maximum": 30,
+        },
+        "sampler_name": {"type": "string", "minLength": 1},
+        "scheduler": {"type": "string", "minLength": 1},
+    }, [
+        "positive_prompt", "negative_prompt", "width", "height", "seed",
+        "steps", "guidance_scale", "sampler_name", "scheduler",
+    ])
     preserve_item = _object_schema({
         "target": {"type": "string", "minLength": 1},
         "strength": {"type": "string", "enum": ["hard", "soft"]},
@@ -523,6 +543,7 @@ def tool_schema() -> list[dict[str, Any]]:
                 "topology": {"type": "string", "enum": ["single_checkpoint", "split_model"]},
                 "binding": json_object,
                 "owned_output": json_object,
+                "workflow_defaults": workflow_defaults,
                 "components": json_array,
                 "limitations": {"type": "array", "items": {"type": "string"}},
                 "recoverable_next_actions": {"type": "array", "items": {"type": "string"}},
@@ -531,7 +552,8 @@ def tool_schema() -> list[dict[str, Any]]:
                 "inventory_diagnostics": json_array,
             }, [
                 "status", "registrable", "source_sha256", "workflow_sha256", "topology",
-                "binding", "owned_output", "components", "limitations", "recoverable_next_actions",
+                "binding", "owned_output", "workflow_defaults", "components", "limitations",
+                "recoverable_next_actions",
             ]),
         },
         {
