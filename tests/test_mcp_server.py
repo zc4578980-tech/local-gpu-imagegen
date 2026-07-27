@@ -80,6 +80,29 @@ def visual_checks() -> dict[str, object]:
     }
 
 
+def workflow_capabilities(defaults: dict[str, object]) -> dict[str, object]:
+    return {
+        "model_family": "unknown",
+        "prompt_dialect": "natural-v1",
+        "operations": ["txt2img"],
+        "minimum_dimension": 256,
+        "maximum_dimension": 1536,
+        "minimum_vram_gb": 0,
+        "negative_prompt": "supported",
+        "affinity": ["illustration"],
+        "recommended": {
+            "resolution": {
+                "width": defaults["width"],
+                "height": defaults["height"],
+            },
+            "steps": defaults["steps"],
+            "guidance": defaults["guidance_scale"],
+            "sampler": defaults["sampler_name"],
+            "scheduler": defaults["scheduler"],
+        },
+    }
+
+
 class McpServerUnitTests(unittest.TestCase):
     def test_schema_exposes_expected_tools(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
@@ -739,6 +762,135 @@ class McpServerUnitTests(unittest.TestCase):
             self.assertTrue(prepared["template_id"].startswith("imported:"))
             self.assertIsNone(bundle)
             self.assertFalse((state_dir / "workflows").exists())
+
+    def test_imported_workflow_defaults_are_frozen_through_private_route(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "workflow.json"
+            document = json.loads(
+                (
+                    ROOT
+                    / "workflows"
+                    / "comfyui"
+                    / "sd15-txt2img-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            source.write_text(json.dumps(document["graph"]), encoding="utf-8")
+            filesystem = {
+                "backend": "filesystem",
+                "endpoint_identity": "filesystem:test",
+                "backend_model_id": "model.safetensors",
+                "format": ".safetensors",
+                "byte_size": 1024,
+                "modified_ns": 1,
+                "sha256": "a" * 64,
+                "identity_strength": "cryptographic",
+                "metadata": {},
+            }
+            comfy = {
+                "backend": "comfyui",
+                "endpoint_identity": "endpoint:comfyui",
+                "backend_model_id": "model.safetensors",
+                "format": "comfyui-choice",
+                "byte_size": None,
+                "modified_ns": None,
+                "sha256": None,
+                "identity_strength": "backend_binding",
+                "metadata": {
+                    "loader_class": "CheckpointLoaderSimple",
+                    "loader_input": "ckpt_name",
+                },
+            }
+            inventory = [filesystem, comfy]
+            discovery = Mock()
+            discovery.inventory.return_value = inventory
+            workflows = WorkflowTemplateRegistry(
+                ROOT / "workflows" / "comfyui",
+                root / "workflow-state",
+            )
+            onboarding = WorkflowOnboarding(
+                workflows,
+                lambda: discovery.inventory(),
+            )
+            trust = TrustRegistry(root / "trust-state")
+            services = SimpleNamespace(
+                discovery=discovery,
+                workflows=workflows,
+                onboarding=onboarding,
+                trust=trust,
+            )
+            inspected = onboarding.inspect(source)
+            defaults = inspected["workflow_defaults"]
+            registered = onboarding.register(
+                source,
+                inspected["proposal_digest"],
+                inspected["confirmation"],
+            )
+            capabilities = workflow_capabilities(defaults)
+            base = {
+                "identity_token": mcp_server.identity_token(filesystem),
+                "capabilities": capabilities,
+                "registered_workflow_id": registered["registered_workflow_id"],
+                "component_identity_tokens": [
+                    mcp_server.identity_token(filesystem)
+                ],
+            }
+
+            with patch.object(
+                mcp_server,
+                "get_runtime_services",
+                return_value=services,
+            ):
+                trust_inspection = mcp_server.handle_tool_call({
+                    "name": "local_gpu_set_model_trust",
+                    "arguments": {
+                        **base,
+                        "action": "inspect_workflow_binding",
+                    },
+                })
+                self.assertFalse(trust_inspection["isError"])
+                confirmation = trust_inspection["structuredContent"][
+                    "confirmations"
+                ]["approve_private"]
+                approved = mcp_server.handle_tool_call({
+                    "name": "local_gpu_set_model_trust",
+                    "arguments": {
+                        **base,
+                        "action": "approve_private",
+                        "confirmation": confirmation,
+                    },
+                })
+                self.assertFalse(approved["isError"])
+
+            record = TrustRegistry(root / "trust-state").list_records()[0]
+            self.assertEqual(record["capabilities"], capabilities)
+            models_root = root / "models"
+            models_root.mkdir()
+            catalog = ModelCatalog(
+                models_root,
+                lambda: inventory,
+                TrustRegistry(root / "trust-state"),
+                lambda: {"available_backends": ["comfyui"]},
+                workflows,
+            )
+            router = CapabilityRouter(catalog, PromptCompilerRegistry())
+            recommendation = router.recommend({
+                "authorization_scope": "private",
+                "operation": "txt2img",
+                "profile": "standalone-illustration",
+                "style": None,
+                "width": defaults["width"],
+                "height": defaults["height"],
+                "affinity_tags": ["illustration"],
+                "required_vram_gb": 0,
+                "preferred_model_id": None,
+            })
+
+            self.assertEqual(len(recommendation["routes"]), 1)
+            self.assertEqual(
+                recommendation["routes"][0]["recommended_settings"],
+                capabilities["recommended"],
+            )
 
     def test_registered_workflow_id_binds_exact_component_bundle(self) -> None:
         registered = {

@@ -11,6 +11,62 @@ Brief first, resolve one exact local route, confirm after displaying it, then ru
 
 The plugin exposes exactly seventeen MCP tools: `local_gpu_imagegen_check`, `local_gpu_generate_image`, `local_gpu_discover_models`, `local_gpu_inspect_workflow`, `local_gpu_register_workflow`, `local_gpu_list_profiles`, `local_gpu_set_model_trust`, `local_gpu_recommend_models`, `local_gpu_start_run`, `local_gpu_get_run`, `local_gpu_branch_run`, `local_gpu_prepare_mask`, `local_gpu_confirm_mask`, `local_gpu_generate_round`, `local_gpu_record_review`, `local_gpu_finalize_run`, and `local_gpu_cleanup_run`. Use the fifteen high-level discovery/onboarding/profile/run/revision tools for adaptive runs. The check and direct-generation tools are compatibility tools, not shortcuts around briefing, route resolution, and confirmation.
 
+## Codex-First Workflow Runner
+
+Use this golden path when the user supplies one existing supported ComfyUI API
+workflow and asks Codex to run it. The user sees exactly two user decisions:
+one preparation decision and one execution decision. Internal confirmation
+tokens are copied by the Agent only after the matching proposal has been
+displayed and approved in a later user message.
+
+Before the preparation decision, call `local_gpu_discover_models` in
+`api_only` mode when inventory is absent, call
+`local_gpu_inspect_workflow`, then call `local_gpu_set_model_trust` with
+`action` set to `inspect_workflow_binding`, the raw `workflow_path`, the exact inferred
+binding and component identities, and one capability object. These calls are
+read-only. Build `capabilities.recommended` only from `workflow_defaults`: map
+`width` and `height` into `recommended.resolution`, `steps` unchanged,
+`guidance_scale` to `recommended.guidance`, `sampler_name` to `recommended.sampler`,
+and `scheduler` unchanged. Use the same `capabilities`
+object for later `approve_private`. Never substitute Profile or repository
+defaults.
+
+The nine exact defaults are `positive_prompt`, `negative_prompt`, `width`,
+`height`, `seed`, `steps`, `guidance_scale`, `sampler_name`, and `scheduler`.
+The Agent must display one preparation proposal containing the source and
+workflow hash prefixes, topology, owned output, endpoint, all component
+identities, all nine workflow defaults, requested prompt overrides,
+limitations, both exact confirmations, and the statement that no model, node,
+or runtime download will occur. Then stop and wait for a later user message. A
+natural-language approval permits `local_gpu_register_workflow` with the
+stored registration confirmation and then `local_gpu_set_model_trust` with
+`action` set to `approve_private`, the registered workflow ID, the same component
+identities, the same `capabilities` object, and the stored trust confirmation.
+
+Registration and trust approval are sequential. If registration succeeds and
+trust approval fails, report the immutable copy as an inert registration and
+stop. Do not delete it, weaken identity, repeat approval, recommend a route, or
+start a run.
+
+After successful private trust, call `local_gpu_recommend_models` for the exact
+imported route. The Agent must display one execution route containing the
+endpoint, registered workflow, model identity, positive and negative prompts,
+width, height, seed, steps, guidance, sampler, scheduler, and every field that
+differs from `workflow_defaults`. State `max_rounds: 1`, `upscale_policy: off`,
+no automatic retry, no model switch, no CPU fallback, no workflow fallback,
+and no download. Ensure that only fields explicitly overridden by the user may differ
+from the inspected defaults. A changed or expired route must be
+displayed again. Then stop and wait for a later user message.
+
+After approval, call `local_gpu_start_run`, immediately call
+`local_gpu_get_run`, construct the existing complete frozen generation plan,
+and call `local_gpu_generate_round` once with `action: initial`. A backend
+failure remains attached to the recoverable run ID and never triggers an
+automatic retry or fallback. On success, return the original image, actual
+workflow/model/parameter summary, durable `run_id`, and evidence location
+labeled `generated / unreviewed`. Review and finalization are optional
+follow-up work; they do not block the first result.
+
 ## Adaptive Brief
 
 1. Extract known values first.

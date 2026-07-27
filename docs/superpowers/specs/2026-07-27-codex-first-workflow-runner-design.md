@@ -24,10 +24,12 @@ must prove that no workflow state directory exists after the inspection. The
 later approved `local_gpu_register_workflow` call remains the first workflow
 write.
 
-This correction remains inside the approved two production owners and adds no
-tool, module, dependency, state, or user decision. If it cannot be completed
-inside those boundaries and the approximately 150-line production ceiling,
-implementation stops for design review.
+The initial correction remained inside two production owners. On 2026-07-27,
+the Task 3 route test proved that `ModelCatalog` validated every workflow as a
+shipped template, which made registered imported workflows unroutable. After
+the required design stop, the user approved one bounded third-owner change in
+`model_catalog.py`. It adds no tool, module, dependency, state, or user
+decision and remains inside the approximately 150-line production ceiling.
 
 ## Objective
 
@@ -254,22 +256,23 @@ the workflow diagnostic rather than inventing a default.
 The read-only trust inspection and later private approval must use the same
 capability object, with its recommended generation settings derived from these
 exact workflow defaults. Route recommendation must echo that frozen default
-set before applying any explicit user override. If the current catalog/router
-contracts cannot preserve that behavior without changing a third production
-owner, implementation stops for design review instead of silently substituting
-product presets.
+set before applying any explicit user override. The approved catalog change
+uses the existing registered-workflow resolver only for `imported:` IDs while
+retaining shipped inspection for standard, regional, and two-stage templates.
 
 The MCP response schema exposes `workflow_defaults` without duplicating any
 extraction or hash logic in the transport layer.
 
 ## Module Ownership
 
-Production changes are limited to two existing owners:
+Production changes are limited to three existing owners:
 
 - `scripts/local_gpu_imagegen/workflow_onboarding.py` extracts and returns the
   bounded defaults from authoritative inferred bindings.
 - `scripts/mcp_server.py` describes the additional bounded output object and
   continues thin dispatch.
+- `scripts/local_gpu_imagegen/model_catalog.py` selects the existing imported
+  resolver for `imported:` IDs while preserving shipped-template validation.
 
 Non-production changes are limited to:
 
@@ -278,7 +281,7 @@ Non-production changes are limited to:
 - a dated `docs/alternatives.md` with source-linked competitive context; and
 - focused tests and retained evidence documentation.
 
-The discovery service, trust registry, catalog, router, engine, run store,
+The discovery service, trust registry, router, engine, run store,
 backend adapters, workflow templates, profiles, and 17-tool MCP surface retain
 their responsibilities. No new module, dependency, tool, model, workflow, or
 state store is added.
@@ -433,7 +436,7 @@ distribution is not a public claim or engineering guarantee.
 
 ## Complexity And Cost Boundaries
 
-- two existing production files at most;
+- three existing production files at most;
 - approximately 75-150 net new production lines;
 - no new production module, dependency, MCP tool, model, workflow, profile,
   backend, state store, or generic graph abstraction;
@@ -443,7 +446,7 @@ distribution is not a public claim or engineering guarantee.
 - two to four focused engineering days for implementation, evidence, and local
   release preparation.
 
-Implementation stops for design review if it needs a third production owner,
+Implementation stops for design review if it needs a fourth production owner,
 more than about 150 net production lines, a new tool or dependency, custom-node
 execution, UI-format conversion, another GPU attempt after two infrastructure
 failures, or a weakened drift/confirmation boundary.

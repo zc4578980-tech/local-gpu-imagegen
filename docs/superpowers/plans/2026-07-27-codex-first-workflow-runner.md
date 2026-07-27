@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Work only in the existing `.worktrees/codex-first-workflow-runner` linked worktree on `codex/codex-first-workflow-runner`, based exactly on `main@3fb45163ec61189c2d2c89a7c183612a55cb6058`.
-- Production changes are limited to `scripts/local_gpu_imagegen/workflow_onboarding.py` and `scripts/mcp_server.py`, with approximately 75-150 net new production lines across both files.
+- Production changes are limited to `scripts/local_gpu_imagegen/workflow_onboarding.py`, `scripts/mcp_server.py`, and the approved imported-route branch in `scripts/local_gpu_imagegen/model_catalog.py`, with approximately 75-150 net new production lines across all three files.
 - Adaptive Quality remains paused; this slice makes no image-quality improvement claim and adds no quality benchmark or multi-round GPU evaluation.
 - Budget two to four focused implementation days and never exceed the user's five-focused-day hard ceiling without a new design review.
 - Add no production module, dependency, MCP tool, profile, model, workflow, backend, state store, generic graph abstraction, custom-node support, UI-format conversion, process control, or download path.
@@ -23,12 +23,13 @@
 - The user sees exactly two decisions: one preparation decision covering immutable registration plus private trust, and one execution decision covering one frozen route and one successful-round budget.
 - The model-free phase starts no backend, uses no GPU, changes no trust/client state, downloads nothing, and performs no remote action.
 - A later live gate requires a fresh Codex session, a newly displayed exact route, and a new user confirmation. It permits one accepted ComfyUI prompt ID and at most one successful image, with no retry, recovery attempt, quality comparison, model switch, CPU fallback, or download.
-- Stop for design review if implementation needs a third production owner, more than about 150 net production lines, a new tool or dependency, duplicated graph/hash extraction in transport, or a weakened confirmation/drift boundary.
+- Stop for design review if implementation needs a fourth production owner, more than about 150 net production lines, a new tool or dependency, duplicated graph/hash extraction in transport, or a weakened confirmation/drift boundary. The third owner was approved on 2026-07-27 after the Task 3 route test proved imported registrations were otherwise unroutable.
 
 ## File Structure
 
 - Modify `scripts/local_gpu_imagegen/workflow_onboarding.py`: prepare raw-path trust input in memory, extract validated workflow defaults, and return them from `inspect`.
 - Modify `scripts/mcp_server.py`: use the in-memory onboarding path for legacy raw-path trust inspection and expose the exact nested `workflow_defaults` schema.
+- Modify `scripts/local_gpu_imagegen/model_catalog.py`: resolve `imported:` workflow IDs through the existing registered-workflow path while retaining shipped inspection for all shipped templates.
 - Modify `tests/test_workflow_onboarding.py`: prove exact/default-order behavior and fail-closed malformed defaults.
 - Modify `tests/test_mcp_server.py`: prove raw-path inspection is read-only, the schema is strict, trust stores the same defaults, routing echoes them, and the tool count stays 17.
 - Modify `skills/local-gpu-imagegen/SKILL.md`: define the Codex-first two-decision recipe, exact default mapping, inert-registration recovery, one-round behavior, and no-fallback rules.
@@ -515,6 +516,7 @@ git commit -m "feat: expose imported workflow defaults"
 ### Task 3: Prove One Frozen Default Set Reaches Trust And Routing
 
 **Files:**
+- Modify: `scripts/local_gpu_imagegen/model_catalog.py`
 - Modify: `tests/test_mcp_server.py`
 - Modify: `tests/test_skill_contract.py`
 - Modify: `skills/local-gpu-imagegen/SKILL.md`
@@ -677,7 +679,7 @@ def test_imported_workflow_defaults_are_frozen_through_private_route(self) -> No
 python -m unittest tests.test_mcp_server.McpServerUnitTests.test_imported_workflow_defaults_are_frozen_through_private_route -v
 ```
 
-Expected: PASS after Task 2. This locks existing trust/catalog/router behavior without changing a third production owner.
+Expected during implementation: FAIL with zero routes because the catalog sends an `imported:` ID to shipped-only inspection. Stop for design review, then after approval select the existing imported resolver in `model_catalog.py` and rerun this test plus shipped regional/two-stage routing regressions.
 
 - [ ] **Step 4: Add red Agent contract tests**
 
@@ -812,7 +814,7 @@ Expected: PASS.
 - [ ] **Step 8: Commit the Agent contract**
 
 ```shell
-git add skills/local-gpu-imagegen/SKILL.md tests/test_skill_contract.py tests/test_mcp_server.py
+git add scripts/local_gpu_imagegen/model_catalog.py skills/local-gpu-imagegen/SKILL.md tests/test_skill_contract.py tests/test_mcp_server.py docs/superpowers/specs/2026-07-27-codex-first-workflow-runner-design.md docs/superpowers/plans/2026-07-27-codex-first-workflow-runner.md
 git commit -m "docs: define Codex-first workflow runner"
 ```
 
@@ -1092,10 +1094,10 @@ Expected: PASS. No workflow JSON bytes or hashes changed.
 
 ```shell
 git diff main@3fb45163ec61189c2d2c89a7c183612a55cb6058 --name-only
-git diff --numstat main@3fb45163ec61189c2d2c89a7c183612a55cb6058 -- scripts/local_gpu_imagegen/workflow_onboarding.py scripts/mcp_server.py
+git diff --numstat main@3fb45163ec61189c2d2c89a7c183612a55cb6058 -- scripts/local_gpu_imagegen/workflow_onboarding.py scripts/mcp_server.py scripts/local_gpu_imagegen/model_catalog.py
 ```
 
-Expected: the only production paths are `workflow_onboarding.py` and `mcp_server.py`, and their combined net production increase is approximately 75-150 lines. Stop for design review rather than trim tests or weaken validation if the ceiling is exceeded.
+Expected: the only production paths are `workflow_onboarding.py`, `mcp_server.py`, and the approved imported-route branch in `model_catalog.py`; their combined net production increase is approximately 75-150 lines. Stop for design review rather than trim tests or weaken validation if the ceiling is exceeded.
 
 - [ ] **Step 5: Review branch history and worktree**
 

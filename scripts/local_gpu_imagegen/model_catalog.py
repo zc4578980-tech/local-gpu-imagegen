@@ -340,7 +340,12 @@ class ModelCatalog:
         operation = capabilities["capabilities"]["operations"][0]
         recommended = capabilities["recommended"]
         try:
-            resolved = self.workflows.inspect_shipped(
+            resolver = (
+                self.workflows.resolve
+                if template_id.startswith("imported:")
+                else self.workflows.inspect_shipped
+            )
+            resolved = resolver(
                 template_id,
                 str(current["backend_model_id"]),
                 operation,

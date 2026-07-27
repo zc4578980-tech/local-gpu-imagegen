@@ -140,6 +140,70 @@ class SkillContractTests(unittest.TestCase):
         cls.text = SKILL_PATH.read_text(encoding="utf-8")
         cls.plugin = json.loads(PLUGIN_PATH.read_text(encoding="utf-8"))
 
+    def test_codex_first_runner_has_exactly_two_post_display_decisions(self) -> None:
+        section = _section(
+            self.text,
+            "## Codex-First Workflow Runner",
+            "## Adaptive Brief",
+        )
+        _assert_ordered(section, (
+            "`local_gpu_discover_models`",
+            "`local_gpu_inspect_workflow`",
+            "`inspect_workflow_binding`",
+            "display one preparation proposal",
+            "stop and wait for a later user message",
+            "`local_gpu_register_workflow`",
+            "`approve_private`",
+            "`local_gpu_recommend_models`",
+            "display one execution route",
+            "stop and wait for a later user message",
+            "`local_gpu_start_run`",
+            "`local_gpu_get_run`",
+            "`local_gpu_generate_round`",
+            "generated / unreviewed",
+        ))
+        for required in (
+            "exactly two user decisions",
+            "same `capabilities` object",
+            "`guidance_scale` to `recommended.guidance`",
+            "`sampler_name` to `recommended.sampler`",
+            "`max_rounds: 1`",
+            "`upscale_policy: off`",
+            "inert registration",
+            "no automatic retry",
+            "no model switch",
+            "no CPU fallback",
+            "no workflow fallback",
+            "no download",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, section)
+
+    def test_codex_first_runner_preserves_defaults_except_explicit_overrides(self) -> None:
+        section = _section(
+            self.text,
+            "## Codex-First Workflow Runner",
+            "## Adaptive Brief",
+        )
+        for field in (
+            "`positive_prompt`",
+            "`negative_prompt`",
+            "`width`",
+            "`height`",
+            "`seed`",
+            "`steps`",
+            "`guidance_scale`",
+            "`sampler_name`",
+            "`scheduler`",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, section)
+        self.assertIn(
+            "only fields explicitly overridden by the user may differ",
+            section,
+        )
+        self.assertIn("changed or expired route", section)
+
     def test_extracts_known_values_and_only_asks_for_missing_high_impact_boundaries(self) -> None:
         for required_text in (
             "Extract known values first",
