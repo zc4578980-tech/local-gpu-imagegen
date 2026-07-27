@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Work only in `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\.worktrees\codex-first-workflow-runner` on `codex/codex-first-workflow-runner`, based exactly on `main@3fb45163ec61189c2d2c89a7c183612a55cb6058`.
+- Work only in the existing `.worktrees/codex-first-workflow-runner` linked worktree on `codex/codex-first-workflow-runner`, based exactly on `main@3fb45163ec61189c2d2c89a7c183612a55cb6058`.
 - Production changes are limited to `scripts/local_gpu_imagegen/workflow_onboarding.py` and `scripts/mcp_server.py`, with approximately 75-150 net new production lines across both files.
 - Adaptive Quality remains paused; this slice makes no image-quality improvement claim and adds no quality benchmark or multi-round GPU evaluation.
 - Budget two to four focused implementation days and never exceed the user's five-focused-day hard ceiling without a new design review.
