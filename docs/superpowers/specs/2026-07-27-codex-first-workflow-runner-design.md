@@ -2,11 +2,32 @@
 
 **Date:** 2026-07-27
 
-**Status:** Approved in sections by the user
+**Status:** Approved by the user; planning-audit correction recorded below
 
 **Branch:** `codex/codex-first-workflow-runner`
 
 **Baseline:** `main@3fb45163ec61189c2d2c89a7c183612a55cb6058`
+
+## Planning-Audit Correction
+
+The implementation-plan audit found that the legacy raw-path branch in
+`mcp_server._registered_workflow_binding` calls
+`WorkflowTemplateRegistry.register_import`. That helper persists an imported
+workflow, so the current branch is not actually read-only even when the trust
+action is `inspect_workflow_binding`.
+
+The approved behavior remains unchanged: everything before the preparation
+decision must be read-only. The implementation must first add an in-memory
+preparation path owned by `workflow_onboarding.py` and make raw-path trust
+inspection consume that prepared document without storing it. A focused test
+must prove that no workflow state directory exists after the inspection. The
+later approved `local_gpu_register_workflow` call remains the first workflow
+write.
+
+This correction remains inside the approved two production owners and adds no
+tool, module, dependency, state, or user decision. If it cannot be completed
+inside those boundaries and the approximately 150-line production ceiling,
+implementation stops for design review.
 
 ## Objective
 
