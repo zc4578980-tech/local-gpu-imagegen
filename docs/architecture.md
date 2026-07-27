@@ -48,6 +48,27 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 
 Before step 9, the Agent Skill asks only for missing high-impact boundaries, displays the exact route and run summary, and requires post-display confirmation. On a vision-capable host it displays and inspects the original full-resolution image, records structured visual checks, and chooses refine or explore when a required check fails or is uncertain. An eligible review exposes quality status `candidate`; the Agent displays `finalize:<run_id>:<round_number>:<image_sha256>` and stops until a later user message supplies that exact value. A text-only host stops after one retained round without inventing review evidence or finalizing it.
 
+### Codex-first imported workflow
+
+The bounded imported-workflow path is:
+
+```text
+read-only source preparation
+-> inferred binding + exact workflow_defaults
+-> preparation display and later approval
+-> immutable registration + private trust
+-> route recommended_settings from the same defaults
+-> execution display and later approval
+-> one successful unreviewed round
+```
+
+Raw-path trust inspection uses
+`WorkflowOnboarding.prepare_trust_binding` and does not create the workflow
+state directory. After registration, `ModelCatalog` resolves only `imported:`
+IDs through the registered-workflow path; shipped, regional, and two-stage
+templates retain shipped inspection. The route echoes the same recommended
+defaults stored in private trust before any explicit user override.
+
 ## Discovery, Trust, And Frozen Routes
 
 `api_only` contacts only explicitly configured WebUI/ComfyUI adapters. `selected_folders`, `common_locations`, and `full_drive` plans show roots, exclusions, endpoint transmission, expiration, and a scope hash before scanning. Filesystem traversal never follows symlinks, junctions, or reparse points; `.ckpt` files are opaque and never passed to pickle, Torch, model tooling, or adjacent code.

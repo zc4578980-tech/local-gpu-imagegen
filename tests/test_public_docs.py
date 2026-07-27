@@ -14,6 +14,7 @@ else:
 ROOT = Path(__file__).resolve().parents[1]
 REAL_DEMO = ROOT / "docs" / "demo" / "real"
 QUICKSTART = ROOT / "docs" / "quickstart.md"
+ALTERNATIVES = ROOT / "docs" / "alternatives.md"
 RELEASE_CHECKLIST = ROOT / "docs" / "release-checklist.md"
 GITHUB_LISTING = ROOT / "docs" / "github-listing.md"
 EVIDENCE_README = ROOT / "docs" / "evidence" / "README.md"
@@ -73,7 +74,80 @@ def real_showcase() -> dict[str, object]:
         (REAL_DEMO / "showcase-manifest.json").read_text(encoding="utf-8")
     )
 
+
+def _assert_ordered(text: str, values: tuple[str, ...]) -> None:
+    positions = [text.index(value) for value in values]
+    if positions != sorted(positions):
+        raise AssertionError(f"Values are out of order: {values}")
+
+
 class PublicDocumentationTests(unittest.TestCase):
+    def test_codex_first_viewport_states_literal_offer_and_ready_request(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        first_viewport = readme[:3500]
+        for required in (
+            "Run a supported ComfyUI workflow from Codex without modifying your setup.",
+            "uvx local-gpu-imagegen setup codex --apply",
+            "Run this supported ComfyUI API workflow from Codex: <path>.",
+            "Use this prompt: <prompt>. Preserve every other workflow setting.",
+            "Python 3.11 or 3.12",
+            "already-running local ComfyUI",
+            "already-installed model",
+            "ordinary `txt2img` API workflow",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, first_viewport)
+        for forbidden in (
+            "any workflow",
+            "arbitrary workflow",
+            "better image quality",
+            "production ready",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, first_viewport.lower())
+
+    def test_quickstart_uses_two_decisions_and_one_successful_round(self) -> None:
+        quickstart = QUICKSTART.read_text(encoding="utf-8")
+        _assert_ordered(quickstart, (
+            "Preparation decision",
+            "local_gpu_inspect_workflow",
+            "local_gpu_register_workflow",
+            "Execution decision",
+            "local_gpu_recommend_models",
+            "local_gpu_start_run",
+            "local_gpu_generate_round",
+            "generated / unreviewed",
+        ))
+        for required in (
+            "one successful round",
+            "no retry",
+            "no model switch",
+            "no download",
+            "UI-format conversion",
+            "custom nodes",
+        ):
+            self.assertIn(required, quickstart)
+
+    def test_alternatives_are_dated_source_linked_and_non_hostile(self) -> None:
+        alternatives = ALTERNATIVES.read_text(encoding="utf-8")
+        for required in (
+            "Checked 2026-07-27",
+            "https://github.com/artokun/comfyui-mcp",
+            "https://github.com/joenorton/comfyui-mcp-server",
+            "https://github.com/filliptm/ComfyUI_FL-MCP",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, alternatives)
+        lowered = alternatives.lower()
+        for category in (
+            "broad control plane",
+            "lightweight relay",
+            "bounded codex runner",
+        ):
+            self.assertIn(category, lowered)
+        self.assertNotIn(" Stars", alternatives)
+        self.assertNotIn("better than", alternatives.lower())
+
     def test_star_goal_is_post_release_measurement_not_publication_gate(
         self,
     ) -> None:
@@ -125,10 +199,7 @@ class PublicDocumentationTests(unittest.TestCase):
     def test_readme_leads_with_literal_offer_and_installed_path(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         first_viewport = "\n".join(readme.splitlines()[:70])
-        promise = (
-            "Run the ComfyUI API workflows you already trust from Codex or Claude Code, "
-            "locally, reproducibly, and without silent downloads or model switches."
-        )
+        promise = "Run a supported ComfyUI workflow from Codex without modifying your setup."
         self.assertIn("# Local GPU Imagegen", first_viewport)
         self.assertIn(promise, first_viewport)
         self.assertIn("Bring Your Own ComfyUI Workflow", first_viewport)

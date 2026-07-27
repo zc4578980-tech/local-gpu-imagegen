@@ -2,23 +2,30 @@
 
 <!-- mcp-name: io.github.zc4578980-tech/local-gpu-imagegen -->
 
-Run the ComfyUI API workflows you already trust from Codex or Claude Code, locally, reproducibly, and without silent downloads or model switches.
+Run a supported ComfyUI workflow from Codex without modifying your setup.
 
 ```shell
 uvx local-gpu-imagegen verify
 uvx local-gpu-imagegen setup codex --apply
 ```
 
-[Five-minute Quickstart](docs/quickstart.md)
-
-## Bring Your Own ComfyUI Workflow
-
-Start with an existing local image backend, model, and one supported ordinary ComfyUI API workflow. Export API JSON from ComfyUI, then ask your Agent to follow this bounded path:
+Ask Codex:
 
 ```text
-Export API JSON -> inspect bindings and hashes -> confirm registration
--> trust the exact local components -> run with a frozen route
+Run this supported ComfyUI API workflow from Codex: <path>.
+Use this prompt: <prompt>. Preserve every other workflow setting.
 ```
+
+This path requires Python 3.11 or 3.12, Codex, an already-running local ComfyUI
+instance, an already-installed model, and one ordinary `txt2img` API workflow
+using the supported built-in topology. It uses your existing local
+image backend and model with no silent model downloads or switches. It does
+not install a backend, download a model, convert UI-format JSON, or run custom
+nodes.
+
+[Five-minute Quickstart](docs/quickstart.md) | [Alternatives](docs/alternatives.md)
+
+## Bring Your Own ComfyUI Workflow
 
 The retained Codex workflow-onboarding session inspected and registered a supported graph, then bound its exact model components; it did not submit a prompt or use the GPU. The image below comes from a separate retained Codex generation through the ordinary reviewed route. These are distinct evidence records, and neither proves image-quality superiority.
 

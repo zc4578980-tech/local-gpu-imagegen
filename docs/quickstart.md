@@ -33,40 +33,42 @@ uvx local-gpu-imagegen doctor
 
 Checkpoint: doctor reports the selected backend reachable. A backend or model that is not already running is outside this five-minute path.
 
-## 5. Export One Supported ComfyUI Workflow
+## 5. Run One Supported Workflow
 
-In ComfyUI, enable Developer mode and use `Save (API Format)`. UI-format JSON
-with `nodes`, `links`, and widget arrays is not accepted. The supported ordinary
-ComfyUI API workflow is a `txt2img` graph with either one checkpoint loader or a
-reviewed split-model topology, known built-in nodes, one owned image output, and
-bindable prompt, dimensions, seed, sampler, scheduler, steps, and CFG inputs.
-
-Give the exported local path to your Agent:
-
-> Inspect my supported ordinary ComfyUI API workflow at
-> `<path-to-workflow-api.json>`. Show its source hash, semantic workflow hash,
-> inferred bindings, components, limitations, and exact registration
-> confirmation. Do not register, trust, download, or run anything until I
-> confirm each displayed boundary.
-
-The Agent follows this sequence:
+For one supported ordinary ComfyUI API workflow, enable Developer mode, use
+`Save (API Format)`, then ask Codex:
 
 ```text
-local_gpu_discover_models (api_only when inventory is absent)
--> local_gpu_inspect_workflow
--> display source/workflow hashes, bindings, components, and limitations
--> wait for the exact registration confirmation in a later message
--> local_gpu_register_workflow
--> separate local_gpu_set_model_trust for the registered workflow and components
--> local_gpu_recommend_models
--> display and confirm the frozen route
--> local_gpu_start_run -> local_gpu_generate_round
+Run this supported ComfyUI API workflow from Codex: <path>.
+Use this prompt: <prompt>. Preserve every other workflow setting.
 ```
 
+### Preparation decision
+
+Codex performs API-only discovery when needed, calls
+`local_gpu_inspect_workflow`, and inspects the exact component binding without
+writing state. It then displays workflow hashes, defaults, endpoint,
+components, requested overrides, limitations, and the two stored
+confirmations. Approve only after that complete proposal is visible.
+`local_gpu_register_workflow` writes one immutable copy, and private trust
+binds the same workflow, endpoint, and components. A trust failure leaves an
+inert registration and stops.
+
+### Execution decision
+
+Codex calls `local_gpu_recommend_models`, resolves and displays one exact route,
+all prompt and generation values, the fields changed from imported defaults,
+and a one successful round budget. Approve only after that route is visible.
+Codex then calls `local_gpu_start_run`, restores the frozen run, and calls
+`local_gpu_generate_round` once. The run uses no retry, no model switch, no CPU
+or workflow fallback, and no download.
+
+A successful first round returns the original image and durable run evidence
+as `generated / unreviewed`. Review and finalization are optional follow-up
+work; they do not block the first result.
+
 Inspection is read-only and does not start ComfyUI or submit a prompt.
-Registration copies an immutable reviewed graph only after exact confirmation;
-registration does not grant model trust, public authority, or model-download
-permission. Trust and route confirmation remain separate gates.
+Registration does not grant public authority or model-download permission.
 
 See the [retained Codex onboarding session](demo/workflow-onboarding.md). It is
 real zero-GPU client evidence for discovery, inspection, registration, and trust
@@ -81,8 +83,8 @@ visual brief. For example:
 
 Before generation, the Agent should show the results of `local_gpu_discover_models`, any required `local_gpu_set_model_trust` action, `local_gpu_recommend_models`, and the exact selected route. It should wait for your confirmation before `local_gpu_generate_round`, display each retained image for review, and wait for a later byte-bound finalization confirmation.
 
-Both paths require an already-running supported backend and model. UI-format
-conversion, custom nodes, img2img, inpaint, regional/two-stage onboarding,
+Both paths require an already-running supported backend and model. UI-format conversion,
+custom nodes, img2img, inpaint, regional/two-stage onboarding,
 implicit backend startup, and model installation remain outside this quickstart.
 
 ## Roll Back Client Setup
