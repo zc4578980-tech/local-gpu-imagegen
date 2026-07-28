@@ -104,6 +104,25 @@ class FileVerificationRegistryTests(unittest.TestCase):
         self.assertEqual(refreshed["created_at"], first["created_at"])
         self.assertEqual(len(document["records"]), 1)
 
+    def test_record_verified_rejects_extra_fingerprint_fields(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "invalid_file_fingerprint"):
+            self.registry.record_verified(
+                local_path=self.model,
+                resolved_root=self.root,
+                backend_model_id="model.safetensors",
+                fingerprint={
+                    "sha256": "a" * 64,
+                    "byte_size": self.model.stat().st_size,
+                    "modified_ns": self.model.stat().st_mtime_ns,
+                    "token": "secret",
+                },
+            )
+
+    def test_registry_rejects_state_outside_user_local_roots(self) -> None:
+        outside = Path("\\\\server\\share\\local-gpu-imagegen")
+        with self.assertRaisesRegex(ValidationError, "invalid_file_verification_state_dir"):
+            FileVerificationRegistry(outside)
+
     def test_corrupt_unknown_duplicate_credential_and_nonlocal_state_fail_closed(self) -> None:
         record = self.authorize()
         path = self.state_dir / "file-verifications.json"

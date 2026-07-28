@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .artifacts import atomic_write_json
 from .errors import ArtifactError, ValidationError
+from .trust_registry import _link_like, _reject_credentials
 
 
 DOCUMENT_FIELDS = {"schema_version", "records"}
@@ -28,7 +29,15 @@ CREDENTIAL_KEYS = {
 
 class FileVerificationRegistry:
     def __init__(self, state_dir: Path, *, now: Callable[[], str] | None = None) -> None:
-        self.path = Path(state_dir) / "file-verifications.json"
+        resolved = Path(state_dir).expanduser().resolve()
+        allowed = [Path.home().resolve()]
+        for variable in ("LOCALAPPDATA", "XDG_STATE_HOME"):
+            value = os.environ.get(variable)
+            if value:
+                allowed.append(Path(value).expanduser().resolve())
+        if str(resolved).startswith("\\\\") or not any(_within(resolved, root) for root in allowed):
+            raise ValidationError("invalid_file_verification_state_dir", "File verification state must be user-local.")
+        self.path = resolved / "file-verifications.json"
         self.now = now or (lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 
     def resolve(
@@ -58,6 +67,8 @@ class FileVerificationRegistry:
         backend_model_id: str,
         fingerprint: dict[str, object],
     ) -> dict[str, object]:
+        if set(fingerprint) != {"sha256", "byte_size", "modified_ns"}:
+            raise ValidationError("invalid_file_fingerprint", "Fingerprint contains unsupported fields.")
         boundary = {
             "local_path": str(Path(local_path).resolve()),
             "resolved_root": str(Path(resolved_root).resolve()),
