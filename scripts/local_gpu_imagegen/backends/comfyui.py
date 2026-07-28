@@ -418,7 +418,6 @@ def _validate_request(value: object, endpoint_identity: str) -> dict[str, object
     for field in (
         "idempotency_key",
         "positive_prompt",
-        "negative_prompt",
         "sampler",
         "scheduler",
         "output_path",
@@ -429,6 +428,11 @@ def _validate_request(value: object, endpoint_identity: str) -> dict[str, object
                 "invalid_backend_request",
                 f"ComfyUI {field} must be a non-empty string.",
             )
+    if not isinstance(value["negative_prompt"], str):
+        raise ValidationError(
+            "invalid_backend_request",
+            "ComfyUI negative_prompt must be a string.",
+        )
     if JOB_ID_PATTERN.fullmatch(value["idempotency_key"]) is None:
         raise ValidationError(
             "invalid_backend_request",

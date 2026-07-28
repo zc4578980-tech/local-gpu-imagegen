@@ -619,6 +619,32 @@ class ComfyUIAdapterTests(unittest.TestCase):
         self.assertEqual(submitted["client_id"], "test-attempt")
         self.assertEqual(submitted["prompt"], self.workflow["graph"])
 
+    def test_generate_accepts_empty_negative_prompt(self) -> None:
+        workflow = self.registry.resolve(
+            "sd15-txt2img",
+            MODEL,
+            "txt2img",
+            {
+                "positive_prompt": "calm sea",
+                "negative_prompt": "",
+                "seed": 42,
+                "steps": 20,
+                "guidance_scale": 7.0,
+                "sampler": "euler",
+                "scheduler": "normal",
+                "width": 512,
+                "height": 512,
+            },
+        )
+
+        result = self.adapter.generate(
+            self.request(workflow=workflow, negative_prompt="")
+        )
+
+        self.assertEqual(result["workflow_job_id"], "prompt-1")
+        submitted = json.loads(self.server.requests[0]["body"].decode("utf-8"))
+        self.assertEqual(submitted["prompt"]["7"]["inputs"]["text"], "")
+
     def test_regional_generate_rechecks_nodes_before_prompt_submission(self) -> None:
         self.install_regional_object_info()
         request = self.regional_request()

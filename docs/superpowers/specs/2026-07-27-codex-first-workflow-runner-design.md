@@ -31,6 +31,12 @@ the required design stop, the user approved one bounded third-owner change in
 `model_catalog.py`. It adds no tool, module, dependency, state, or user
 decision and remains inside the approximately 150-line production ceiling.
 
+On 2026-07-28, the user approved
+`scripts/local_gpu_imagegen/backends/comfyui.py` as the fourth production
+owner after the stopped pre-acceptance live attempt exposed the empty-negative
+default mismatch. The correction is net `+4` production lines; the combined
+production net is `113`, still within the approximate `75-150` ceiling.
+
 ## Objective
 
 Turn the existing safe ComfyUI workflow-onboarding capability into a narrow,
@@ -265,7 +271,7 @@ extraction or hash logic in the transport layer.
 
 ## Module Ownership
 
-Production changes are limited to three existing owners:
+Production changes are limited to four existing owners:
 
 - `scripts/local_gpu_imagegen/workflow_onboarding.py` extracts and returns the
   bounded defaults from authoritative inferred bindings.
@@ -273,13 +279,17 @@ Production changes are limited to three existing owners:
   continues thin dispatch.
 - `scripts/local_gpu_imagegen/model_catalog.py` selects the existing imported
   resolver for `imported:` IDs while preserving shipped-template validation.
+- `scripts/local_gpu_imagegen/backends/comfyui.py` accepts an empty string for
+  the validated ComfyUI negative-prompt default while retaining non-string
+  rejection.
 
 Non-production changes are limited to:
 
 - `skills/local-gpu-imagegen/SKILL.md` for the two-decision Codex path;
 - README and quickstart presentation;
 - a dated `docs/alternatives.md` with source-linked competitive context; and
-- focused tests and retained evidence documentation.
+- focused tests, including `tests/test_comfyui_adapter.py`, and retained
+  evidence documentation.
 
 The discovery service, trust registry, router, engine, run store,
 backend adapters, workflow templates, profiles, and 17-tool MCP surface retain
@@ -436,8 +446,9 @@ distribution is not a public claim or engineering guarantee.
 
 ## Complexity And Cost Boundaries
 
-- three existing production files at most;
-- approximately 75-150 net new production lines;
+- four existing production files at most;
+- `113` combined net new production lines, within the approximately `75-150`
+  ceiling;
 - no new production module, dependency, MCP tool, model, workflow, profile,
   backend, state store, or generic graph abstraction;
 - no quality benchmark or multi-round GPU evaluation;
@@ -446,7 +457,7 @@ distribution is not a public claim or engineering guarantee.
 - two to four focused engineering days for implementation, evidence, and local
   release preparation.
 
-Implementation stops for design review if it needs a fourth production owner,
+Implementation stops for design review if it needs a fifth production owner or
 more than about 150 net production lines, a new tool or dependency, custom-node
 execution, UI-format conversion, another GPU attempt after two infrastructure
 failures, or a weakened drift/confirmation boundary.
