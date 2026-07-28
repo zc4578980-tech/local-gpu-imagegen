@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from local_gpu_imagegen.backends.base import BackendRegistry  # noqa: E402
 from local_gpu_imagegen.discovery import DiscoveryService  # noqa: E402
 from local_gpu_imagegen.errors import ConflictError, ValidationError  # noqa: E402
+from local_gpu_imagegen.file_verification import FileVerificationRegistry  # noqa: E402
 from local_gpu_imagegen.model_identity import identity_token, validate_discovery_record  # noqa: E402
 
 
@@ -71,8 +72,12 @@ class DiscoveryTests(unittest.TestCase):
         self.root.mkdir()
         self.clock = MutableClock()
         self.adapter = FakeAdapter()
+        self.file_verifications = FileVerificationRegistry(
+            Path(self.temporary_directory.name) / "state"
+        )
         self.service = DiscoveryService(
             BackendRegistry([self.adapter]),
+            self.file_verifications,
             clock=self.clock,
             ttl_seconds=300,
             common_roots_provider=lambda: [self.root],
@@ -95,6 +100,17 @@ class DiscoveryTests(unittest.TestCase):
     def execute_index(self, **changes: object) -> dict[str, object]:
         plan = self.index_plan(**changes)
         return self.service.execute(str(plan["plan_id"]), str(plan["confirmation"]))
+
+    def exact_plan(self, **changes: object) -> dict[str, object]:
+        request: dict[str, object] = {
+            "mode": "exact_file",
+            "stage": "verify",
+            "roots": [str(self.root)],
+            "explicit_includes": [str(self.root / "model.safetensors")],
+            "expected_backend_model_id": "model.safetensors",
+        }
+        request.update(changes)
+        return self.service.plan(request)
 
     def test_plan_displays_exact_scope_hash_confirmation_and_cost(self) -> None:
         plan = self.index_plan()
@@ -143,6 +159,94 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(self.adapter.discovery_calls, 1)
         self.assertEqual(len(result["candidates"]), 1)
         self.assertFalse(result["candidates"][0]["trusted"])
+
+    def test_exact_file_first_plan_is_stat_only_and_confirmation_bound(self) -> None:
+        model = self.root / "model.safetensors"
+        model.write_bytes(safetensors_bytes({}, b"weights"))
+        with patch(
+            "local_gpu_imagegen.discovery.fingerprint_selected_file",
+            side_effect=AssertionError("plan hashed model bytes"),
+        ):
+            plan = self.exact_plan()
+        self.assertTrue(plan["confirmation_required"])
+        self.assertEqual(plan["roots"], [str(self.root.resolve())])
+        self.assertEqual(plan["explicit_includes"], [str(model.resolve())])
+        self.assertEqual(plan["expected_backend_model_id"], "model.safetensors")
+        self.assertEqual(plan["byte_size"], model.stat().st_size)
+        self.assertIn("complete contents", str(plan["cost_warning"]))
+
+    def test_exact_file_execution_hashes_persists_then_inserts_inventory(self) -> None:
+        model = self.root / "model.safetensors"
+        model.write_bytes(safetensors_bytes({}, b"weights"))
+        plan = self.exact_plan()
+        result = self.service.execute(str(plan["plan_id"]), str(plan["confirmation"]))
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["backend"], "filesystem")
+        self.assertEqual(candidate["backend_model_id"], "model.safetensors")
+        self.assertEqual(candidate["identity_strength"], "cryptographic")
+        self.assertEqual(candidate["sha256"], hashlib.sha256(model.read_bytes()).hexdigest())
+        stored = self.file_verifications.resolve(backend_model_id="model.safetensors")
+        self.assertEqual(stored["sha256"], candidate["sha256"])
+        self.assertEqual(self.service.inventory(), [candidate])
+
+    def test_active_authorization_rehashes_in_fresh_service_without_confirmation(self) -> None:
+        model = self.root / "model.safetensors"
+        model.write_bytes(safetensors_bytes({}, b"weights"))
+        first = self.exact_plan()
+        self.service.execute(str(first["plan_id"]), str(first["confirmation"]))
+        fresh = DiscoveryService(
+            BackendRegistry([self.adapter]), self.file_verifications,
+            clock=self.clock, network_root_detector=lambda _path: False,
+        )
+        plan = fresh.plan({
+            "mode": "exact_file", "stage": "verify",
+            "expected_backend_model_id": "model.safetensors",
+        })
+        self.assertFalse(plan["confirmation_required"])
+        result = fresh.execute(str(plan["plan_id"]), None)
+        self.assertEqual(result["candidates"][0]["sha256"], hashlib.sha256(model.read_bytes()).hexdigest())
+
+    def test_changed_bytes_mark_authorization_drifted_without_inventory_restore(self) -> None:
+        model = self.root / "model.safetensors"
+        model.write_bytes(b"first")
+        first = self.exact_plan()
+        self.service.execute(str(first["plan_id"]), str(first["confirmation"]))
+        authorization = self.file_verifications.resolve(backend_model_id="model.safetensors")
+        model.write_bytes(b"changed")
+        fresh = DiscoveryService(BackendRegistry([self.adapter]), self.file_verifications)
+        plan = fresh.plan({
+            "mode": "exact_file", "stage": "verify",
+            "roots": [str(self.root)], "explicit_includes": [str(model)],
+            "expected_backend_model_id": "model.safetensors",
+            "authorization_id": authorization["authorization_id"],
+        })
+        with self.assertRaisesRegex(ConflictError, "model_identity_drifted"):
+            fresh.execute(str(plan["plan_id"]), str(plan["confirmation"]))
+        self.assertEqual(fresh.inventory(), [])
+        self.assertEqual(
+            self.file_verifications.resolve(
+                authorization_id=authorization["authorization_id"], active_only=False
+            )["status"],
+            "drifted",
+        )
+
+    def test_exact_file_revoke_requires_confirmation_and_never_reads_model(self) -> None:
+        model = self.root / "model.safetensors"
+        model.write_bytes(b"weights")
+        verified = self.exact_plan()
+        self.service.execute(str(verified["plan_id"]), str(verified["confirmation"]))
+        authorization = self.file_verifications.resolve(backend_model_id="model.safetensors")
+        plan = self.service.plan({
+            "mode": "exact_file", "stage": "revoke",
+            "authorization_id": authorization["authorization_id"],
+        })
+        with patch(
+            "local_gpu_imagegen.discovery.fingerprint_selected_file",
+            side_effect=AssertionError("revoke hashed model bytes"),
+        ):
+            result = self.service.execute(str(plan["plan_id"]), str(plan["confirmation"]))
+        self.assertEqual(result["authorization"]["status"], "revoked")
+        self.assertEqual(result["candidates"], [])
 
     def test_stage_one_reads_safe_metadata_without_hashing_weights(self) -> None:
         model = self.root / "anime.safetensors"
@@ -297,6 +401,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_network_root_requires_a_second_exact_confirmation(self) -> None:
         service = DiscoveryService(
             BackendRegistry([self.adapter]),
+            self.file_verifications,
             clock=self.clock,
             common_roots_provider=lambda: [],
             network_root_detector=lambda _path: True,

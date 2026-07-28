@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .backends.base import BackendRegistry
 from .errors import ConflictError, ValidationError
+from .file_verification import FileVerificationRegistry
 from .model_identity import (
     fingerprint_selected_file,
     identity_token,
@@ -19,13 +20,8 @@ from .model_identity import (
 )
 
 
-DISCOVERY_MODES = frozenset({
-    "api_only",
-    "selected_folders",
-    "common_locations",
-    "full_drive",
-})
-DISCOVERY_STAGES = frozenset({"index", "fingerprint"})
+DISCOVERY_MODES = frozenset({"api_only", "selected_folders", "common_locations", "full_drive", "exact_file"})
+DISCOVERY_STAGES = frozenset({"index", "fingerprint", "verify", "revoke"})
 MODEL_EXTENSIONS = (".ckpt", ".safetensors")
 DEFAULT_EXCLUSIONS = (
     "$Recycle.Bin",
@@ -51,6 +47,7 @@ class DiscoveryService:
     def __init__(
         self,
         adapters: BackendRegistry,
+        file_verifications: FileVerificationRegistry,
         *,
         clock: Callable[[], float] = time.time,
         ttl_seconds: float = 300,
@@ -63,6 +60,8 @@ class DiscoveryService:
                 "invalid_discovery_registry",
                 "Discovery requires a backend registry.",
             )
+        if not isinstance(file_verifications, FileVerificationRegistry):
+            raise ValidationError("invalid_file_verification_registry", "Discovery requires a file verification registry.")
         if not callable(clock):
             raise ValidationError("invalid_discovery_clock", "Discovery clock must be callable.")
         if (
@@ -75,6 +74,7 @@ class DiscoveryService:
                 "Discovery plan lifetime must be positive.",
             )
         self.adapters = adapters
+        self.file_verifications = file_verifications
         self.clock = clock
         self.ttl_seconds = float(ttl_seconds)
         self.common_roots_provider = common_roots_provider or _common_model_roots
@@ -106,7 +106,7 @@ class DiscoveryService:
     def execute(
         self,
         plan_id: str,
-        confirmation: str,
+        confirmation: str | None,
         *,
         network_confirmation: str | None = None,
         cancel: CancelCallback | None = None,
@@ -130,7 +130,15 @@ class DiscoveryService:
 
         plan = self._current_plan(plan_id, confirmation, network_confirmation)
         del self._plans[plan_id]
-        if plan["mode"] == "api_only":
+        if plan["mode"] == "exact_file" and plan["stage"] == "revoke":
+            authorization = self.file_verifications.set_status(str(plan["authorization_id"]), "revoked")
+            return {
+                "plan_id": plan_id, "scope_hash": plan["scope_hash"], "incomplete": False,
+                "candidates": [], "authorization": authorization, "trusted": False,
+            }
+        if plan["mode"] == "exact_file":
+            candidates, incomplete = self._execute_exact_file(plan)
+        elif plan["mode"] == "api_only":
             candidates = self._api_candidates(plan)
             incomplete = False
         elif plan["stage"] == "index":
@@ -175,6 +183,8 @@ class DiscoveryService:
                 "invalid_discovery_stage",
                 "Discovery stage is unsupported.",
             )
+        if mode == "exact_file":
+            return self._normalize_exact_file(request)
 
         selected_candidates = _string_list(
             request.get("selected_candidates", []),
@@ -319,6 +329,98 @@ class DiscoveryService:
         }
         return normalized, frozen_candidates
 
+    def _normalize_exact_file(
+        self, request: dict[str, object]
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
+        stage = request["stage"]
+        if request.get("backends") not in (None, []) or request.get("selected_candidates") not in (None, []):
+            raise ValidationError("invalid_discovery_plan", "Exact-file discovery does not accept backends or selected candidates.")
+        authorization_id = request.get("authorization_id")
+        expected = request.get("expected_backend_model_id")
+        authorization = self.file_verifications.resolve(
+            backend_model_id=expected if isinstance(expected, str) else None,
+            authorization_id=authorization_id if isinstance(authorization_id, str) else None,
+            active_only=stage != "revoke",
+        )
+        if authorization_id is not None and authorization is None:
+            raise ValidationError("file_verification_not_found", "Exact file verification authorization does not exist.")
+        if stage == "revoke":
+            if authorization is None or authorization["status"] == "revoked":
+                raise ValidationError("file_verification_not_found", "Exact file verification authorization is not revocable.")
+            normalized = {
+                "mode": "exact_file", "scan_mode": "exact_file", "stage": "revoke",
+                "backends": [], "endpoints": [], "roots": [authorization["resolved_root"]],
+                "network_roots": [], "selected_candidates": [], "extensions": [], "exclusions": [],
+                "explicit_includes": [authorization["local_path"]],
+                "authorization_id": authorization["authorization_id"],
+                "expected_backend_model_id": authorization["backend_model_id"],
+                "confirmation_required": True,
+                "cost_warning": "Revocation changes only local authorization status; model bytes are not read.",
+            }
+            return normalized, []
+        if authorization is not None:
+            root = Path(str(authorization["resolved_root"]))
+            path = Path(str(authorization["local_path"]))
+            expected = str(authorization["backend_model_id"])
+            roots = _resolved_paths(request.get("roots", []), "roots") if request.get("roots") else [str(root)]
+            includes = _resolved_paths(request.get("explicit_includes", []), "explicit_includes") if request.get("explicit_includes") else [str(path)]
+            if roots != [str(root)] or includes != [str(path)]:
+                raise ValidationError("file_verification_path_mismatch", "Exact-file reuse must keep the authorized root and path.")
+        else:
+            if not isinstance(expected, str) or not expected.strip():
+                raise ValidationError("invalid_discovery_plan", "First exact-file verification requires the workflow loader model name.")
+            roots = _resolved_paths(request.get("roots", []), "roots")
+            includes = _resolved_paths(request.get("explicit_includes", []), "explicit_includes")
+            if len(roots) != 1 or len(includes) != 1:
+                raise ValidationError("invalid_discovery_plan", "Exact-file verification requires exactly one root and one explicit file.")
+            root, path = Path(roots[0]), Path(includes[0])
+        indexed = self._stat_exact_file(path, root, str(expected))
+        reusable = authorization is not None and indexed["byte_size"] == authorization["byte_size"] and indexed["modified_ns"] == authorization["modified_ns"]
+        normalized = {
+            "mode": "exact_file", "scan_mode": "exact_file", "stage": "verify",
+            "backends": [], "endpoints": [], "roots": [str(root)], "network_roots": [],
+            "selected_candidates": [], "extensions": list(MODEL_EXTENSIONS), "exclusions": [],
+            "explicit_includes": [str(path)], "expected_backend_model_id": str(expected),
+            "authorization_id": authorization["authorization_id"] if authorization else None,
+            "confirmation_required": not reusable,
+            "byte_size": indexed["byte_size"], "modified_ns": indexed["modified_ns"],
+            "cost_warning": "Verification hashes this exact model file and may read its complete contents.",
+        }
+        return normalized, [indexed]
+    def _stat_exact_file(self, path: Path, root: Path, expected: str) -> dict[str, object]:
+        if self.network_root_detector(root) or not _within(path, root) or path.suffix.lower() not in MODEL_EXTENSIONS:
+            raise ValidationError("unsafe_model_path", "Exact model path must stay inside one local model root.")
+        try:
+            file_stat = os.stat(path, follow_symlinks=False)
+        except OSError as error:
+            raise ValidationError("unsafe_model_path", "Exact model file is unavailable.") from error
+        if _link_like(path) or not stat.S_ISREG(file_stat.st_mode):
+            raise ValidationError("unsafe_model_path", "Exact model path must be a regular non-link file.")
+        boundary = {"resolved_root": str(root), "relative_path": str(path.relative_to(root)), "byte_size": file_stat.st_size, "modified_ns": file_stat.st_mtime_ns}
+        return {
+            **boundary, "candidate_id": "candidate:" + _canonical_hash(boundary),
+            "source_type": "filesystem", "local_path": str(path), "filename": path.name,
+            "format": path.suffix.lower(), "metadata": {}, "sha256": None,
+            "identity_strength": None, "backend_model_id": expected, "trusted": False,
+        }
+    def _execute_exact_file(self, plan: dict[str, object]) -> tuple[list[dict[str, object]], bool]:
+        indexed = plan["_frozen_candidates"][0]
+        try:
+            fingerprint = fingerprint_selected_file(Path(str(indexed["local_path"])), indexed)
+        except ConflictError:
+            if plan.get("authorization_id"):
+                self.file_verifications.set_status(str(plan["authorization_id"]), "drifted")
+            raise
+        authorization = self.file_verifications.resolve(authorization_id=plan.get("authorization_id")) if plan.get("authorization_id") else None
+        if authorization is not None and fingerprint["sha256"] != authorization["sha256"]:
+            self.file_verifications.set_status(str(authorization["authorization_id"]), "drifted")
+            raise ConflictError("model_identity_drifted", "Authorized model bytes changed after the last approved verification.")
+        stored = self.file_verifications.record_verified(
+            local_path=Path(str(indexed["local_path"])), resolved_root=Path(str(indexed["resolved_root"])),
+            backend_model_id=str(indexed["backend_model_id"]), fingerprint=fingerprint,
+        )
+        return [_exact_record(indexed, fingerprint, stored)], False
+
     def _current_plan(
         self,
         plan_id: str,
@@ -337,7 +439,13 @@ class DiscoveryService:
                 "discovery_plan_expired",
                 "Discovery plan expired before execution.",
             )
-        if confirmation != stored["confirmation"]:
+        if confirmation is None and stored.get("confirmation_required") is not False:
+            raise ValidationError(
+                "discovery_confirmation_mismatch",
+                "Discovery execution requires the displayed confirmation.",
+                {"confirmation": stored["confirmation"]},
+            )
+        if confirmation is not None and confirmation != stored["confirmation"]:
             raise ValidationError(
                 "discovery_confirmation_mismatch",
                 "Discovery execution requires the exact displayed confirmation.",
@@ -506,6 +614,32 @@ def _index_candidate(path: Path, root: Path, file_stat: os.stat_result) -> dict[
         "identity_strength": None,
         "trusted": False,
     }
+
+
+def _exact_record(
+    indexed: dict[str, object],
+    fingerprint: dict[str, object],
+    authorization: dict[str, object],
+) -> dict[str, object]:
+    record = validate_discovery_record({
+        "backend": "filesystem",
+        "endpoint_identity": "filesystem:" + _canonical_hash({"root": indexed["resolved_root"]}),
+        "backend_model_id": indexed["backend_model_id"],
+        "format": indexed["format"],
+        "byte_size": fingerprint["byte_size"],
+        "modified_ns": fingerprint["modified_ns"],
+        "sha256": fingerprint["sha256"],
+        "identity_strength": "cryptographic",
+        "metadata": {},
+    })
+    record.update({
+        "candidate_id": indexed["candidate_id"], "source_type": "filesystem",
+        "resolved_root": indexed["resolved_root"], "local_path": indexed["local_path"],
+        "relative_path": indexed["relative_path"], "filename": indexed["filename"],
+        "authorization_id": authorization["authorization_id"], "trusted": False,
+    })
+    record["identity_token"] = identity_token(record)
+    return record
 
 
 def _read_safetensors_metadata(path: Path) -> dict[str, object]:
