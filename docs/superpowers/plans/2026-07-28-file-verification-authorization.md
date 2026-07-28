@@ -14,7 +14,7 @@
 - Preserve cryptographic filesystem identity; never downgrade this path to `backend_binding` or private backend-only authority.
 - Keep exactly 17 MCP tools. Add no tool, model, workflow, backend, downloader, GPU behavior, retry, fallback, or image-quality claim.
 - The only production owners in this slice are `scripts/local_gpu_imagegen/file_verification.py`, `scripts/local_gpu_imagegen/discovery.py`, `scripts/local_gpu_imagegen/services.py`, and `scripts/mcp_server.py`.
-- The new slice has a hard ceiling of 150 net production lines across those four files. Stop for design review before weakening validation or adding another owner if the ceiling is exceeded.
+- The new slice has a hard ceiling of 330 net production lines across those four files, approved after Task 1 review. Stop for design review before weakening validation or adding another owner if the ceiling is exceeded.
 - Exact-file planning performs stat and path-safety checks only. Full SHA-256 happens only during exact-file verification execution.
 - Never hash authorized files at process startup. Revalidate only the exact file referenced by the workflow currently requested.
 - Accept exactly one local root and one explicit file when an active authorization cannot be uniquely resolved. Reject UNC/network paths, escapes, links, junctions, reparse points, directories, ambiguity, and model-name mismatch.
@@ -415,7 +415,7 @@ git diff --numstat -- scripts/local_gpu_imagegen/file_verification.py
 git diff --check
 ```
 
-Expected: record the registry's exact net production increase and subtract it from the slice-wide 150-line ceiling; `git diff --check` emits no output. Do not trim schema checks to create room for later integration.
+Expected: record the registry's exact net production increase and subtract it from the slice-wide 330-line ceiling; `git diff --check` emits no output. Do not trim schema checks to create room for later integration.
 
 - [ ] **Step 6: Commit the registry boundary**
 
@@ -681,7 +681,7 @@ git add scripts/local_gpu_imagegen/discovery.py tests/test_discovery.py
 git commit -m "feat: verify one authorized model file"
 ```
 
-Expected: record the cumulative new production net lines and the exact remainder under the 150-line ceiling. If the remaining lines cannot fit the already specified runtime and MCP edits, stop before Task 3 for design review.
+Expected: record the cumulative new production net lines and the exact remainder under the 330-line ceiling. If the remaining lines cannot fit the already specified runtime and MCP edits, stop before Task 3 for design review.
 
 ### Task 3: Runtime, MCP, And Fresh-Process Composition
 
@@ -841,7 +841,7 @@ git add scripts/local_gpu_imagegen/services.py scripts/mcp_server.py tests/test_
 git commit -m "feat: restore authorized identity in fresh processes"
 ```
 
-Expected: the four production owners total at most 150 net new lines for this slice. Stop before commit if the ceiling is exceeded; tests and docs do not count toward that production ceiling.
+Expected: the four production owners total at most 330 net new lines for this slice. Stop before commit if the ceiling is exceeded; tests and docs do not count toward that production ceiling.
 
 ### Task 4: Agent And Public Recovery Contract
 
