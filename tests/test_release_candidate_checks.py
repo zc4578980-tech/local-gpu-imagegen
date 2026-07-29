@@ -95,13 +95,23 @@ class ReleaseCandidateStaticTests(unittest.TestCase):
             (root / f"untracked-{number:02}.txt").write_text("x", encoding="utf-8")
         _, facts = checks.inspect_checkout(root, commit)
         self.assertEqual(facts["untracked_count"], 24)
-        self.assertEqual(len(facts["untracked_files"]), 20)
+        self.assertNotIn("untracked_files", facts)
 
         def unavailable(_: Path, *args: str) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(["git", *args], 1, "", "not a repository")
 
         results, _ = checks.inspect_checkout(root, commit, runner=unavailable)
         self.assertIn("git_checkout_unavailable", self.codes(results))
+
+    def test_checkout_does_not_expose_untracked_names(self) -> None:
+        root, commit = self.make_git_checkout()
+        private_name = "models/private-run.safetensors"
+        (root / "models").mkdir()
+        (root / private_name).write_text("private", encoding="utf-8")
+        _, facts = checks.inspect_checkout(root, commit)
+        self.assertEqual(facts["untracked_count"], 1)
+        self.assertNotIn("untracked_files", facts)
+        self.assertNotIn(private_name, str(facts))
 
     def test_checkout_blocks_porcelain_tracked_state_and_runner_exception(self) -> None:
         root, commit = self.make_git_checkout()
@@ -321,6 +331,16 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
         self.assertIn("wheel_metadata_invalid", self.codes(results))
 
+        for wheel_version in (
+            "Wheel-Version: 1.0\nWheel-Version: 1.0\n",
+            "Wheel-Version: 1.0\nWheel-Version: 2.0\n",
+        ):
+            with self.subTest(wheel_version=wheel_version):
+                root = self.make_release_root()
+                wheel = self.make_wheel(root, wheel_headers=wheel_version + "Tag: py3-none-any\n")
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("wheel_metadata_invalid", self.codes(results))
+
     def test_wheel_rejects_non_normalized_member_spelling(self) -> None:
         for entry in ("local_gpu_imagegen//file.py", "local_gpu_imagegen/./file.py"):
             with self.subTest(entry=entry):
@@ -335,3 +355,11 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         with patch.object(checks, "_stream_sha256", side_effect=OSError("unavailable")):
             results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
         self.assertEqual(self.codes(results), {"wheel_unavailable"})
+
+    def test_wheel_reports_archive_read_failure_without_error_text(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root)
+        with patch.object(checks, "_archive_bytes", side_effect=RuntimeError("encrypted member")):
+            results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("wheel_archive_invalid", self.codes(results))
+        self.assertNotIn("encrypted member", str(results))

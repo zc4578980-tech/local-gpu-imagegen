@@ -60,11 +60,6 @@ def _run_git(
         return None
 
 
-def _untracked_name(status_line: str) -> str:
-    name = status_line[3:].strip().replace("\\", "/")
-    return name.lstrip("/")
-
-
 def inspect_checkout(
     root: Path,
     expected_commit: str,
@@ -110,10 +105,10 @@ def inspect_checkout(
         results.append(blocked_check("git_checkout", "git_checkout_unavailable"))
         return results, facts
 
-    untracked: list[str] = []
+    untracked_count = 0
     for line in status.stdout.splitlines():
         if line.startswith("?? "):
-            untracked.append(_untracked_name(line))
+            untracked_count += 1
         elif len(line) < 3 or line[2] != " ":
             results.append(blocked_check("git_checkout", "git_checkout_status_invalid"))
         else:
@@ -121,9 +116,8 @@ def inspect_checkout(
                 results.append(blocked_check("index", "index_dirty"))
             if line[1] != " ":
                 results.append(blocked_check("tracked_worktree", "tracked_worktree_dirty"))
-    facts["untracked_count"] = len(untracked)
-    facts["untracked_files"] = untracked[:20]
-    results.append(passed_check("untracked_files", count=len(untracked)))
+    facts["untracked_count"] = untracked_count
+    results.append(passed_check("untracked_files", count=untracked_count))
     return results, facts
 
 
@@ -294,7 +288,7 @@ def inspect_wheel(
                     or metadata.get("Version") != EXPECTED_VERSION
                     or metadata.get("Requires-Python") != EXPECTED_REQUIRES_PYTHON
                     or metadata.get_all("Requires-Dist")
-                    or wheel_metadata.get("Wheel-Version") != "1.0"
+                    or wheel_metadata.get_all("Wheel-Version") != ["1.0"]
                     or wheel_metadata.get_all("Tag") != ["py3-none-any"]
                 ):
                     results.append(blocked_check("wheel_metadata", "wheel_metadata_invalid"))
@@ -307,7 +301,16 @@ def inspect_wheel(
                 results.append(blocked_check("wheel_content", "sensitive_wheel_content"))
             else:
                 results.append(passed_check("wheel_content"))
-    except (OSError, UnicodeDecodeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile):
+    except (
+        OSError,
+        EOFError,
+        NotImplementedError,
+        RuntimeError,
+        UnicodeDecodeError,
+        ValueError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+    ):
         results.append(blocked_check("wheel_archive", "wheel_archive_invalid"))
 
     if _project_matches(root):
