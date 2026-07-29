@@ -444,6 +444,21 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                 results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
                 self.assertIn("sensitive_wheel_content", self.codes(results))
 
+    def test_wheel_rejects_generic_windows_absolute_paths(self) -> None:
+        for content in (
+            "D:\\AI\\models\\private.safetensors",
+            "E:\\models\\private.safetensors",
+        ):
+            with self.subTest(content=content):
+                root = self.make_release_root()
+                wheel = self.make_wheel(
+                    root,
+                    extra_entry="local_gpu_imagegen/private.txt",
+                    extra_content=content,
+                )
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("sensitive_wheel_content", self.codes(results))
+
     def test_wheel_hash_and_zip_parse_the_same_single_opened_snapshot(self) -> None:
         root = self.make_release_root()
         wheel = self.make_wheel(root)
@@ -501,7 +516,13 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                 opened_stat = type(
                     "OpenedStat",
                     (),
-                    {"st_mode": mode, "st_file_attributes": attributes, "st_size": size},
+                    {
+                        "st_mode": mode,
+                        "st_file_attributes": attributes,
+                        "st_size": size,
+                        "st_dev": real_stat.st_dev,
+                        "st_ino": real_stat.st_ino,
+                    },
                 )()
                 with patch.object(checks.os, "fstat", return_value=opened_stat):
                     results, _ = checks.inspect_wheel(root, wheel, digest)
@@ -510,24 +531,112 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         initial_stat = type(
             "OpenedStat",
             (),
-            {"st_mode": stat.S_IFREG, "st_file_attributes": 0, "st_size": real_stat.st_size},
+            {
+                "st_mode": stat.S_IFREG,
+                "st_file_attributes": 0,
+                "st_size": real_stat.st_size,
+                "st_dev": real_stat.st_dev,
+                "st_ino": real_stat.st_ino,
+            },
         )()
         for final_size in (real_stat.st_size - 1, real_stat.st_size + 1):
             with self.subTest(final_size=final_size):
                 changed_stat = type(
                     "OpenedStat",
                     (),
-                    {"st_mode": stat.S_IFREG, "st_file_attributes": 0, "st_size": final_size},
+                    {
+                        "st_mode": stat.S_IFREG,
+                        "st_file_attributes": 0,
+                        "st_size": final_size,
+                        "st_dev": real_stat.st_dev,
+                        "st_ino": real_stat.st_ino,
+                    },
                 )()
                 with patch.object(checks.os, "fstat", side_effect=(initial_stat, changed_stat)):
                     results, _ = checks.inspect_wheel(root, wheel, digest)
                 self.assertIn("wheel_changed_during_read", self.codes(results))
+
+    def test_wheel_rejects_lstat_path_types_before_open(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root)
+        digest = self.sha(wheel)
+        real_stat = os.lstat(wheel)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        original_open = Path.open
+
+        for mode, attributes in (
+            (stat.S_IFDIR, 0),
+            (stat.S_IFREG, reparse_flag),
+        ):
+            with self.subTest(mode=mode, attributes=attributes):
+                path_stat = type(
+                    "PathStat",
+                    (),
+                    {
+                        "st_mode": mode,
+                        "st_file_attributes": attributes,
+                        "st_size": real_stat.st_size,
+                        "st_dev": real_stat.st_dev,
+                        "st_ino": real_stat.st_ino,
+                    },
+                )()
+                opened_paths: list[Path] = []
+
+                def tracked_open(path: Path, *args: object, **kwargs: object) -> object:
+                    opened_paths.append(path)
+                    return original_open(path, *args, **kwargs)
+
+                with (
+                    patch.object(checks.os, "lstat", return_value=path_stat),
+                    patch.object(Path, "open", tracked_open),
+                    patch.object(checks.zipfile, "ZipFile", wraps=zipfile.ZipFile) as zip_file,
+                ):
+                    results, _ = checks.inspect_wheel(root, wheel, digest)
+
+                self.assertIn("wheel_not_regular", self.codes(results))
+                self.assertEqual(opened_paths, [])
+                zip_file.assert_not_called()
+
+    def test_wheel_rejects_identity_change_between_lstat_and_open(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root)
+        digest = self.sha(wheel)
+        path_stat = os.lstat(wheel)
+        original_open = Path.open
+        opened_paths: list[Path] = []
+        replaced_stat = type(
+            "OpenedStat",
+            (),
+            {
+                "st_mode": stat.S_IFREG,
+                "st_file_attributes": 0,
+                "st_size": path_stat.st_size,
+                "st_dev": path_stat.st_dev,
+                "st_ino": path_stat.st_ino + 1,
+            },
+        )()
+
+        def tracked_open(path: Path, *args: object, **kwargs: object) -> object:
+            opened_paths.append(path)
+            return original_open(path, *args, **kwargs)
+
+        with (
+            patch.object(checks.os, "fstat", return_value=replaced_stat),
+            patch.object(Path, "open", tracked_open),
+            patch.object(checks.zipfile, "ZipFile", wraps=zipfile.ZipFile) as zip_file,
+        ):
+            results, _ = checks.inspect_wheel(root, wheel, digest)
+
+        self.assertIn("wheel_identity_changed", self.codes(results))
+        self.assertEqual(opened_paths, [wheel])
+        zip_file.assert_not_called()
 
     def test_wheel_rejects_a_stream_read_over_the_outer_budget(self) -> None:
         root = self.make_release_root()
         wheel = root / checks.EXPECTED_WHEEL
         with wheel.open("wb") as target:
             target.truncate(checks.MAX_WHEEL_BYTES + 1)
+        real_stat = os.lstat(wheel)
         reported_stat = type(
             "OpenedStat",
             (),
@@ -535,10 +644,13 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                 "st_mode": stat.S_IFREG,
                 "st_file_attributes": 0,
                 "st_size": checks.MAX_WHEEL_BYTES,
+                "st_dev": real_stat.st_dev,
+                "st_ino": real_stat.st_ino,
             },
         )()
 
         with (
+            patch.object(checks.os, "lstat", return_value=reported_stat),
             patch.object(checks.os, "fstat", return_value=reported_stat),
             patch.object(checks.zipfile, "ZipFile") as zip_file,
         ):

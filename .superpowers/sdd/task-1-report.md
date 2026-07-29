@@ -457,3 +457,89 @@ Python 3.11 grammar: OK
   teardown API, default Python 3.13, and offline Python 3.12 were verified.
 - This remains synthetic, static, offline validation only; no real candidate
   wheel was built or consumed.
+
+---
+
+## Parent Pre-Review Fix Evidence (2026-07-29)
+
+### RED Evidence
+
+Command after adding the three focused tests and before production changes:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_rejects_lstat_path_types_before_open tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_rejects_identity_change_between_lstat_and_open tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_rejects_generic_windows_absolute_paths -v
+```
+
+```text
+Ran 3 tests in 0.048s
+FAILED (failures=5)
+```
+
+The five failures proved that mocked non-regular and reparse paths reached
+`Path.open`, an opened object with a different identity reached ZIP parsing,
+and generic `D:\AI\...` / `E:\models\...` absolute paths were not detected.
+
+### GREEN Evidence
+
+Focused command:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_rejects_lstat_path_types_before_open tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_rejects_identity_change_between_lstat_and_open tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_rejects_generic_windows_absolute_paths -v
+```
+
+```text
+Ran 3 tests in 0.044s
+OK
+```
+
+Required full focused suite:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks -v
+```
+
+```text
+Ran 34 tests in 6.651s
+OK
+```
+
+Required compilation check:
+
+```powershell
+python -m py_compile scripts\release_candidate_checks.py tests\test_release_candidate_checks.py
+```
+
+Result: exit code 0 with no output.
+
+Required whitespace check:
+
+```powershell
+git diff --check
+```
+
+Result: exit code 0; Git emitted only LF-to-CRLF working-copy warnings.
+
+### Changed Files
+
+- `scripts/release_candidate_checks.py`
+- `tests/test_release_candidate_checks.py`
+- `.superpowers/sdd/task-1-report.md`
+
+### Self-Review
+
+- `inspect_wheel` now rejects unavailable, non-regular, reparse, and oversized
+  paths from `lstat` before `Path.open`.
+- The first `fstat` must match the `lstat` identity through
+  `os.path.samestat`; identity replacement blocks before hashing or `ZipFile`.
+- Hashing and ZIP parsing still consume only the one bounded snapshot made
+  from the opened file object.
+- Focused mocks prove path type failures perform zero opens and zero ZIP
+  parses, while identity replacement performs one open and zero ZIP parses.
+- Private-path scanning now rejects any alphabetic Windows drive absolute path
+  using either slash direction, while retaining `/home/` and `/Users/` checks.
+- No real candidate, network, download, MCP/client/GPU state, remote,
+  publication, version, protocol, or tool-surface operation was performed.
+
+### Concerns
+
+- None beyond the existing static, synthetic validation boundary.

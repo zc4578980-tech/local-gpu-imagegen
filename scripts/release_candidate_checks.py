@@ -29,7 +29,7 @@ MAX_ENTRY_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
 # Allows ZIP overhead above the 16 MiB content limit while bounding file I/O.
 MAX_WHEEL_BYTES = 32 * 1024 * 1024
-PRIVATE_PATH_RE = re.compile(rb"(?i)(?:[a-z]:[\\/]+users[\\/]|/(?:home|users)/)")
+PRIVATE_PATH_RE = re.compile(rb"(?i)(?:[a-z]:[\\/]|/(?:home|users)/)")
 CREDENTIAL_RE = re.compile(
     rb"(?i)(?:"
     rb"\b(?:authorization|proxy-authorization|x-api-key|api-key)\s*:|"
@@ -151,7 +151,7 @@ class _WheelSnapshotError(Exception):
         self.code = code
 
 
-def _snapshot_wheel(path: Path) -> tuple[io.BytesIO, str]:
+def _snapshot_wheel(path: Path, path_stat: os.stat_result) -> tuple[io.BytesIO, str]:
     snapshot = io.BytesIO()
     digest = hashlib.sha256()
     try:
@@ -161,6 +161,8 @@ def _snapshot_wheel(path: Path) -> tuple[io.BytesIO, str]:
             reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
             if not stat.S_ISREG(opened_stat.st_mode) or bool(attributes & reparse_flag):
                 raise _WheelSnapshotError("wheel_not_regular")
+            if not os.path.samestat(path_stat, opened_stat):
+                raise _WheelSnapshotError("wheel_identity_changed")
             if opened_stat.st_size > MAX_WHEEL_BYTES:
                 raise _WheelSnapshotError("wheel_file_too_large")
 
@@ -299,7 +301,18 @@ def inspect_wheel(
     if not SHA256_RE.fullmatch(expected_sha256):
         return [blocked_check("candidate_sha256", "candidate_sha256_invalid")], {}
     try:
-        wheel_snapshot, actual_sha256 = _snapshot_wheel(wheel)
+        path_stat = os.lstat(wheel)
+    except OSError:
+        return [blocked_check("wheel_file", "wheel_unavailable")], {}
+    attributes = getattr(path_stat, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if not stat.S_ISREG(path_stat.st_mode) or bool(attributes & reparse_flag):
+        return [blocked_check("wheel_file", "wheel_not_regular")], {}
+    if path_stat.st_size > MAX_WHEEL_BYTES:
+        return [blocked_check("wheel_file", "wheel_file_too_large")], {}
+
+    try:
+        wheel_snapshot, actual_sha256 = _snapshot_wheel(wheel, path_stat)
     except _WheelSnapshotError as exc:
         return [blocked_check("wheel_file", exc.code)], {}
     results: list[dict[str, object]] = []
