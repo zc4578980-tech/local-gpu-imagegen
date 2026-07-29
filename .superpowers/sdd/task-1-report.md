@@ -336,3 +336,124 @@ OK
   `UserWarning`; the test remains passing and isolated.
 - The total-size no-read assertion was characterization coverage rather than a
   RED defect because the behavior was already correct before that assertion.
+
+---
+
+## Final Gate Fix Evidence (2026-07-29)
+
+### RED Evidence
+
+Command after adding focused tests for all six final-gate findings:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks -v
+```
+
+Result before production changes:
+
+```text
+Ran 30 tests in 6.671s
+FAILED (failures=21)
+```
+
+The failures covered duplicate and unsorted checkout IDs, the Python
+3.12-only teardown API, duplicate JSON keys, path replacement between hash and
+ZIP parsing, NUL/normalized/case-colliding names, nonempty directories,
+private paths and credential markers, opened-object checks, growth detection,
+parser defects, missing explicit `.dist-info` pass, and contradictory late
+archive results.
+
+### GREEN Evidence
+
+Required focused suite:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks -v
+```
+
+```text
+Ran 31 tests in 6.716s
+OK
+```
+
+Required compilation check:
+
+```powershell
+python -m py_compile scripts\release_candidate_checks.py tests\test_release_candidate_checks.py
+```
+
+Result: exit code 0 with no output.
+
+Required whitespace check:
+
+```powershell
+git diff --check
+```
+
+Result: exit code 0; Git emitted only the repository's existing LF-to-CRLF
+working-copy warnings.
+
+An offline Python 3.12 interpreter was available, so the same focused suite was
+also run there:
+
+```powershell
+py -V:Astral/CPython3.12.12 -m unittest tests.test_release_candidate_checks -v
+```
+
+```text
+Ran 31 tests in 6.695s
+OK
+```
+
+No offline Python 3.11 interpreter was installed according to `py -0p`, the
+local uv Python directory, and `conda env list`; the known `pytorch-vla`
+environment reported Python 3.12.13. No interpreter was installed or
+downloaded. A 3.11 grammar check was run as an additional compatibility guard:
+
+```powershell
+python -c "import ast, pathlib; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8'), filename=p, feature_version=(3, 11)) for p in ('scripts/release_candidate_checks.py', 'tests/test_release_candidate_checks.py')]; print('Python 3.11 grammar: OK')"
+```
+
+```text
+Python 3.11 grammar: OK
+```
+
+### Changed Files
+
+- `scripts/release_candidate_checks.py`
+- `tests/test_release_candidate_checks.py`
+- `.superpowers/sdd/task-1-report.md`
+
+### Commit
+
+- `f81baeaf34e1ad21258656b022481e76c048213b fix: close release candidate final gate`
+
+### Self-Review
+
+- Every returned check list is sorted by ID and contains one result per ID;
+  blocked results replace earlier passes, including late archive failures.
+- Valid and invalid `.dist-info` layouts now return explicit pass/block checks.
+- Wheel bytes are opened once, verified with `fstat`, bounded to 32 MiB while
+  being hash-streamed into one `BytesIO` snapshot, and that snapshot alone is
+  passed to `ZipFile`; growth, truncation, replacement, and over-budget reads
+  have focused tests.
+- ZIP validation rejects NUL or normalized-name-changing sources,
+  case-insensitive collisions, and nonempty directory entries before content
+  reads.
+- Both email messages reject parser defects, and `server.json` rejects
+  duplicate keys through `object_pairs_hook` at every nesting level.
+- Sensitive scanning covers any Windows drive with slash or backslash,
+  POSIX `/home/` and `/Users/`, and bounded credential assignment/header
+  markers without returning matched content.
+- Test teardown uses `shutil.rmtree(..., onerror=...)`, which is supported by
+  Python 3.11. The duplicate-member fixture warning is now locally suppressed.
+- No version, protocol, tool surface, MCP/client/GPU state, metadata, remote,
+  candidate artifact, network, or publication behavior was changed.
+
+### Concerns
+
+- Python 3.11 runtime execution could not be performed because no offline 3.11
+  interpreter was installed. Python 3.11 grammar compatibility, the 3.11-safe
+  teardown API, default Python 3.13, and offline Python 3.12 were verified.
+- This remains synthetic, static, offline validation only; no real candidate
+  wheel was built or consumed.
