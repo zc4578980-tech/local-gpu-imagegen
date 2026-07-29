@@ -2,6 +2,9 @@
 
 <!-- mcp-name: io.github.zc4578980-tech/local-gpu-imagegen -->
 
+An MCP-first control plane with cryptographic model identity, explicit approvals,
+and durable run evidence for the ComfyUI setup you already use.
+
 Run a supported ComfyUI workflow from Codex without modifying your setup.
 
 ```shell
@@ -23,7 +26,10 @@ image backend and model with no silent model downloads or switches. It does
 not install a backend, download a model, convert UI-format JSON, or run custom
 nodes.
 
-[Five-minute Quickstart](docs/quickstart.md) | [Alternatives](docs/alternatives.md)
+ComfyUI generates the pixels. Local GPU Imagegen controls authority,
+reproducibility, review, and recovery around that generation.
+
+[Five-minute Quickstart](docs/quickstart.md) | [Launch playbook](docs/launch-playbook.md) | [Alternatives](docs/alternatives.md)
 
 ## Bring Your Own ComfyUI Workflow
 

@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REAL_DEMO = ROOT / "docs" / "demo" / "real"
 QUICKSTART = ROOT / "docs" / "quickstart.md"
 ALTERNATIVES = ROOT / "docs" / "alternatives.md"
+LAUNCH_PLAYBOOK = ROOT / "docs" / "launch-playbook.md"
 RELEASE_CHECKLIST = ROOT / "docs" / "release-checklist.md"
 GITHUB_LISTING = ROOT / "docs" / "github-listing.md"
 EVIDENCE_README = ROOT / "docs" / "evidence" / "README.md"
@@ -60,6 +61,7 @@ PUBLIC_RELEASE_DOCS = ACTIVE_PUBLIC_DOCS + (
     ROOT / "CHANGELOG.md",
     ROOT / "docs" / "github-listing.md",
     QUICKSTART,
+    LAUNCH_PLAYBOOK,
     ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md",
 )
 ACTIVE_VERSION_FILES = ACTIVE_PUBLIC_DOCS + (
@@ -86,6 +88,10 @@ class PublicDocumentationTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         first_viewport = readme[:3500]
         for required in (
+            "MCP-first control plane",
+            "cryptographic model identity",
+            "explicit approvals",
+            "durable run evidence",
             "Run a supported ComfyUI workflow from Codex without modifying your setup.",
             "uvx local-gpu-imagegen setup codex --apply",
             "Run this supported ComfyUI API workflow from Codex: <path>.",
@@ -105,6 +111,36 @@ class PublicDocumentationTests(unittest.TestCase):
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, first_viewport.lower())
+
+    def test_launch_copy_separates_pixel_generation_from_control_plane_value(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        normalized = " ".join(readme.split())
+        for required in (
+            "ComfyUI generates the pixels",
+            "Local GPU Imagegen controls authority, reproducibility, review, and recovery",
+        ):
+            self.assertIn(required, normalized)
+
+    def test_alternatives_matches_three_decision_first_use_contract(self) -> None:
+        alternatives = ALTERNATIVES.read_text(encoding="utf-8")
+        self.assertIn("three explicit first-use decisions", " ".join(alternatives.split()))
+        self.assertNotIn("two visible decisions", alternatives)
+
+    def test_launch_playbook_binds_100_star_goal_to_release_and_measurement(self) -> None:
+        playbook = LAUNCH_PLAYBOOK.read_text(encoding="utf-8")
+        for required in (
+            "100 net-new GitHub Stars",
+            "not a guarantee",
+            "exact verified wheel",
+            "four green CI jobs",
+            "PyPI",
+            "MCP Registry",
+            "GitHub Release",
+            "awesome-mcp-servers",
+            "T+30",
+            "separate approval",
+        ):
+            self.assertIn(required, playbook)
 
     def test_quickstart_uses_three_first_use_decisions_and_one_successful_round(self) -> None:
         quickstart = QUICKSTART.read_text(encoding="utf-8")
@@ -137,7 +173,7 @@ class PublicDocumentationTests(unittest.TestCase):
     def test_alternatives_are_dated_source_linked_and_non_hostile(self) -> None:
         alternatives = ALTERNATIVES.read_text(encoding="utf-8")
         for required in (
-            "Checked 2026-07-27",
+            "Checked 2026-07-29",
             "https://github.com/artokun/comfyui-mcp",
             "https://github.com/joenorton/comfyui-mcp-server",
             "https://github.com/filliptm/ComfyUI_FL-MCP",
@@ -630,16 +666,33 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertEqual(onboarding["server"]["version"], "0.8.0")
         self.assertEqual(onboarding["session_purpose"], "workflow_onboarding")
 
+    def test_current_codex_live_gate_is_bounded_without_becoming_public_evidence(self) -> None:
+        public = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                ROOT / "CHANGELOG.md",
+                RELEASE_CHECKLIST,
+                ROOT / "docs" / "client-compatibility.md",
+                GITHUB_LISTING,
+                ROOT / "docs" / "directory-listings.md",
+            )
+        )
+        for required in (
+            "current-v0.8 Codex managed-MCP live gate",
+            "one private, unreviewed SDXL image",
+            "local development validation",
+            "not a publishable release-set artifact",
+            "Claude Code hosted generation remains pending",
+        ):
+            self.assertIn(required, public)
+
     def test_preview_and_full_acceptance_gates_remain_distinct(self) -> None:
         for path in (RELEASE_CHECKLIST, EVIDENCE_README):
             with self.subTest(path=path):
                 text = path.read_text(encoding="utf-8")
                 self.assertIn("v0.8 preview gate", text)
                 self.assertIn("full-acceptance/v1.0 gate", text)
-                self.assertIn(
-                    "does not establish current-v0.8 GPU generation",
-                    text,
-                )
+                self.assertIn("not a publishable release-set artifact", text)
 
     def test_release_coherence_docs_share_v080_state(self) -> None:
         release_documents = (
@@ -752,7 +805,7 @@ class PublicDocumentationTests(unittest.TestCase):
         if named_clients_ready:
             self.assertIn("retained named-client sessions", client_docs)
         else:
-            self.assertIn("Named-client session evidence remains pending", client_docs)
+            self.assertIn("Claude Code hosted generation remains pending", client_docs)
 
         simulated = readme.index("docs/demo/preview-loop.gif")
         boundary = readme.index("deterministic simulated protocol demonstration")

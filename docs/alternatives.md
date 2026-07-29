@@ -1,6 +1,6 @@
 # Alternatives
 
-Checked 2026-07-27. Project scope and activity can change; inspect each source
+Checked 2026-07-29. Project scope and activity can change; inspect each source
 before choosing.
 
 ## Broad control plane
@@ -23,9 +23,9 @@ important than a strongly bounded onboarding and evidence path.
 
 Local GPU Imagegen is intended for a user who already has Codex, local
 ComfyUI, installed model components, and one supported API-format `txt2img`
-workflow. It emphasizes an unchanged graph, exact defaults, two visible
-decisions, deterministic route binding, and recoverable local evidence. It is
-not a general graph editor, model manager, custom-node installer, or
+workflow. It emphasizes an unchanged graph, exact defaults, three explicit
+first-use decisions, deterministic route binding, and recoverable local
+evidence. It is not a general graph editor, model manager, custom-node installer, or
 image-quality enhancer.
 
 Adjacent projects such as

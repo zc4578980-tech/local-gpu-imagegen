@@ -110,6 +110,10 @@ class RepositoryHygieneTests(unittest.TestCase):
 
     def test_registry_metadata_is_exact_and_uses_uvx_stdio(self) -> None:
         server = json.loads((ROOT / "server.json").read_text(encoding="utf-8"))
+        plugin = json.loads(
+            (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertEqual(
             server["$schema"],
             "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
@@ -117,6 +121,9 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertEqual(server["name"], "io.github.zc4578980-tech/local-gpu-imagegen")
         self.assertEqual(server["version"], "0.8.0")
         self.assertLessEqual(len(server["description"]), 100)
+        self.assertIn("MCP-first control plane", server["description"])
+        self.assertEqual(server["description"], plugin["description"])
+        self.assertIn(f'description = "{server["description"]}"', pyproject)
         self.assertEqual(
             server["repository"],
             {
@@ -152,7 +159,7 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertIn("local-gpu-imagegen==0.8.0", listings)
         self.assertIn("Status: prepared, not submitted", listings)
         self.assertIn(
-            "No current-v0.8 hosted-client generation release set is retained.",
+            "not a publishable current-v0.8 generation release set",
             listings,
         )
         self.assertIn("Complete 9+3 acceptance is not claimed.", listings)

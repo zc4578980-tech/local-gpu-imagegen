@@ -1,0 +1,75 @@
+# First-Month Launch Playbook
+
+The target is `100 net-new GitHub Stars` during the first 30 days after the
+formal GitHub Release. It is a measured adoption goal, not a guarantee and not
+a substitute for release correctness.
+
+## Local Readiness
+
+Before any remote action:
+
+- Freeze one exact commit after the model-free suite, compilation, document
+  checks, and repository hygiene pass.
+- Build one exact verified wheel and install it outside the source checkout.
+- Require `verify` to report version `0.8.0`, protocol `2024-11-05`, and exactly
+  seventeen tools; require `doctor` to fail closed when no backend is selected.
+- Keep the validated historical SDXL showcase ahead of the simulated protocol
+  animation. Do not promote the private, unreviewed current-v0.8 live-gate image
+  into public evidence.
+- Keep ComfyUI's role and the product boundary explicit: ComfyUI generates the
+  pixels; Local GPU Imagegen controls authority, reproducibility, review, and
+  recovery.
+
+## Publication Sequence
+
+Each remote mutation needs separate approval unless the user explicitly bundles
+named actions. Preserve this order so every public record points to the same
+verified state:
+
+1. Push the exact release commit and require four green CI jobs across Windows,
+   Ubuntu, Python 3.11, and Python 3.12.
+2. Publish the exact verified wheel to PyPI without rebuilding it.
+3. Publish the MCP Registry record and verify that it resolves the same PyPI
+   version and stdio command.
+4. Create the tag and GitHub Release with the reviewed social preview, truthful
+   limitations, install commands, and rollback commands.
+5. Apply repository topics and social-preview metadata.
+6. Submit the prepared `awesome-mcp-servers` and Glama entries only through
+   their separately approved actions.
+
+Stop if a digest, version, CI result, package URL, Registry record, or release
+copy differs from the frozen candidate. Do not silently rebuild, relabel local
+development evidence, or substitute another model or image.
+
+## Conversion Assets
+
+Use one consistent outcome-first message:
+
+> Run a supported ComfyUI workflow from Codex through cryptographic model
+> identity, explicit approvals, and durable local evidence, without silent
+> downloads or model switches.
+
+The launch set should contain the five-minute Quickstart, validated SDXL image,
+trust proof, protocol animation with its simulation label, concise comparison
+page, and one short demo video only after its source assets and claims are
+reviewed. Tool count is supporting evidence, not the headline.
+
+## Thirty-Day Cadence
+
+- `T+0`: record the append-only baseline within five minutes of the formal
+  GitHub Release when possible.
+- `Days 1-3`: publish the same evidence-backed message to approved MCP, Codex,
+  ComfyUI, and local-AI channels; answer first-run failures before adding scope.
+- `Days 4-10`: turn repeated install questions into Quickstart or troubleshooting
+  fixes and publish verified patch releases through the same gates.
+- `Days 11-21`: add user-owned workflow examples only with reproducible setup,
+  rights-safe assets, and explicit limitations.
+- `Days 22-29`: refresh the comparison page and prioritize conversion blockers
+  supported by issue or installation evidence.
+- `T+30`: record the repository Star total in the inclusive observation window,
+  validate the hash chain, and report `goal_met`, `goal_missed`, or
+  `measurement_incomplete` without interpolation.
+
+Missing the target triggers a positioning, onboarding, evidence, and channel
+review. It does not justify inflated claims, unsolicited promotion, Star
+exchanges, or weakening approval and identity controls.

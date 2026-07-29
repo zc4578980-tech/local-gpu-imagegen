@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "local-gpu-imagegen"
 version = "0.8.0"
-description = "Run supported ComfyUI workflows from Codex or Claude Code: explicit routes, no silent downloads."
+description = "MCP-first control plane for ComfyUI workflows with explicit approvals and no silent downloads."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

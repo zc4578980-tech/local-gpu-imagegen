@@ -16,6 +16,10 @@ PR body:
 Adds local-gpu-imagegen `0.8.0`, a Python stdio MCP server that connects Codex or Claude Code to an existing local image-generation stack through installed commands, supported ordinary ComfyUI API workflow onboarding, explicit model routes, bounded review, byte-bound finalization, and durable recovery. It does not bundle model weights or download or switch them silently. A historical Codex `0.7.0` generation demo and a Codex `0.8.0` zero-GPU onboarding session are retained separately; regional and two-stage composition remain experimental.
 ```
 
+A current-v0.8 Codex managed-MCP live gate generated one private, unreviewed
+SDXL image as local development validation. It is not a publishable release-set
+artifact; Claude Code hosted generation remains pending.
+
 ## Glama
 
 - Name: `local-gpu-imagegen`
@@ -24,6 +28,6 @@ Adds local-gpu-imagegen `0.8.0`, a Python stdio MCP server that connects Codex o
 - Transport: `stdio`
 - Install/run: `uvx local-gpu-imagegen serve`
 - Description: `Run supported local image workflows from Codex or Claude Code across existing ComfyUI, AUTOMATIC1111/Forge, and Diffusers installations with explicit routes and review.`
-- Limitations: `No model weights are bundled. No current-v0.8 hosted-client generation release set is retained. Complete 9+3 acceptance is not claimed. Composition routes remain experimental; measured latency, VRAM, production readiness, and image-quality improvement are not claimed.`
+- Limitations: `No model weights are bundled. One private, unreviewed Codex live-gate image is local development validation, not a publishable current-v0.8 generation release set. Claude Code hosted generation remains pending. Complete 9+3 acceptance is not claimed. Composition routes remain experimental; measured latency, VRAM, production readiness, and image-quality improvement are not claimed.`
 
 Status: prepared, not submitted

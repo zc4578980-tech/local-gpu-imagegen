@@ -6,7 +6,7 @@ Name: `local-gpu-imagegen`
 
 Description:
 
-> Connect Codex or Claude Code to existing local ComfyUI, AUTOMATIC1111/Forge, or Diffusers image backends without silent downloads or model switches.
+> MCP-first control plane for supported ComfyUI workflows with cryptographic model identity, explicit approvals, durable evidence, and no silent downloads.
 
 Topics:
 
@@ -22,9 +22,11 @@ This preview packages a seventeen-tool MCP server and installed Python CLI for C
 
 One retained installed Codex onboarding session exercised discovery, inspection, registration, exact checkpoint fingerprinting, component binding, and private trust without submitting a prompt or using the GPU. A separate retained Codex generation produced the ordinary-route SDXL image described below. The records are not one end-to-end imported-workflow generation and make no image-quality superiority claim.
 
+A current-v0.8 Codex managed-MCP live gate also completed the new exact-file verification, immutable workflow preparation, fresh route approval, and one-round generation path. It generated one private, unreviewed SDXL image. This is local development validation, not a publishable release-set artifact, reviewed candidate, finalized image, or image-quality evidence. Claude Code hosted generation remains pending.
+
 One installed Codex session produced a validated ordinary `sdxl-txt2img` SDXL/ComfyUI result retained as its original 1024x1024 finalized PNG with a sanitized MCP result, full-resolution review, exact hashes, and public rights. Its disclosed limitations are a red-purple palette rather than clear blue hour, no distinct directional beacon beam, one extra navigation beacon, and minor railing/cliff-ladder artifacts. Regional and two-stage composition remain experimental, are not part of the golden path, and provide no fallback; their retained negative evidence does not establish a visual-quality improvement.
 
-Publication still requires a retained Claude Code generation session, four green public CI jobs at the exact release commit, the exact PyPI artifact, the MCP Registry record, reviewed social-preview metadata, synchronized release copy, and later explicit authority for every remote-publication action. The post-release 30-day net-new Star goal begins at formal GitHub Release publication and is not a publication blocker or guarantee. Publication-dependent URLs remain pending. Zero-GPU real-client onboarding evidence is retained, but the release does not claim complete 9+3 acceptance, measured quality, latency, VRAM, concurrency, production readiness, or workflow-generated image evidence.
+Publication still requires a retained Claude Code generation session, a publishable current-v0.8 named-client generation artifact, four green public CI jobs at the exact release commit, the exact PyPI artifact, the MCP Registry record, reviewed social-preview metadata, synchronized release copy, and later explicit authority for every remote-publication action. The post-release 30-day net-new Star goal begins at formal GitHub Release publication and is not a publication blocker or guarantee. Publication-dependent URLs remain pending. Zero-GPU real-client onboarding evidence is retained, but the release does not claim complete 9+3 acceptance, measured quality, latency, VRAM, concurrency, production readiness, or workflow-generated image evidence.
 
 Install after PyPI publication:
 
