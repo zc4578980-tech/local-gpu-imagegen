@@ -771,7 +771,7 @@ and commit it. Otherwise make no empty commit.
 $python312 = uv python find 3.12 --no-python-downloads
 $commit = git rev-parse HEAD
 $env:SOURCE_DATE_EPOCH = git show -s --format=%ct $commit
-$base = Join-Path 'D:\CodexWorkspace\scratch' "local-gpu-imagegen-$($commit.Substring(0,7))-candidate"
+$base = Join-Path ([System.IO.Path]::GetTempPath()) "local-gpu-imagegen-$($commit.Substring(0,7))-candidate"
 if (Test-Path -LiteralPath $base) { throw "Refusing to overwrite $base" }
 New-Item -ItemType Directory -Path (Join-Path $base 'a'),(Join-Path $base 'b') | Out-Null
 uv build --wheel --offline --no-python-downloads --python $python312 --out-dir (Join-Path $base 'a')
