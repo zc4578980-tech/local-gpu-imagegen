@@ -164,3 +164,73 @@ OK
   `UserWarning`; the test passes and no production behavior is affected.
 - This remains static offline validation only. No wheel was built or consumed,
   and no MCP, GPU, network, client-state, or publication action was performed.
+
+---
+
+## Re-Review Fix Evidence (2026-07-29)
+
+### Changed Files
+
+- `scripts/release_candidate_checks.py`
+- `tests/test_release_candidate_checks.py`
+- `.superpowers/sdd/task-1-report.md`
+
+### RED Evidence
+
+Command:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks -v
+```
+
+Output summary before the fix:
+
+```text
+Ran 17 tests in 6.295s
+FAILED (failures=4, errors=1)
+```
+
+The failures proved raw untracked names were returned, duplicate/conflicting
+`Wheel-Version` headers were accepted, and an encrypted archive read
+`RuntimeError` escaped with its error text.
+
+### GREEN Evidence
+
+Commands:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks -v
+python -m py_compile scripts\release_candidate_checks.py tests\test_release_candidate_checks.py
+git diff --check
+```
+
+Output summary:
+
+```text
+Ran 17 tests in 6.310s
+OK
+```
+
+`py_compile` and `git diff --check` completed with exit code 0.
+
+### Commit
+
+- `c54b51b4e4f6174b0cc324845ea54efe6d5c1d0d fix: sanitize release check reports`
+
+### Self-Review
+
+- Checkout facts retain only the untracked item count and never return raw
+  untracked path names.
+- Supported archive read failures, including encrypted members and unsupported
+  compression, now return a sanitized `wheel_archive_invalid` block.
+- `WHEEL` validation requires exactly one `Wheel-Version: 1.0` and exactly one
+  `Tag: py3-none-any` field.
+- Focused tests cover private untracked paths, archive read errors without
+  error-text leakage, and duplicate/conflicting `Wheel-Version` fields.
+
+### Concerns
+
+- The duplicate-member fixture still emits Python `zipfile`'s expected local
+  `UserWarning`; it is contained to the test fixture.
+- This remains static offline validation only. No wheel was built or consumed,
+  and no MCP, GPU, network, client-state, or publication action was performed.
