@@ -126,10 +126,15 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("three explicit first-use decisions", " ".join(alternatives.split()))
         self.assertNotIn("two visible decisions", alternatives)
 
-    def test_launch_playbook_binds_100_star_goal_to_release_and_measurement(self) -> None:
+    def test_launch_playbook_binds_100_star_floor_to_release_and_measurement(self) -> None:
         playbook = LAUNCH_PLAYBOOK.read_text(encoding="utf-8")
         for required in (
             "100 net-new GitHub Stars",
+            "minimum acceptable first-month outcome",
+            "planning floor",
+            "below 100 blocks the formal launch",
+            "goal_missed",
+            "continue iteration",
             "not a guarantee",
             "exact verified wheel",
             "four green CI jobs",
@@ -190,17 +195,15 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertNotIn(" Stars", alternatives)
         self.assertNotIn("better than", alternatives.lower())
 
-    def test_star_goal_is_post_release_measurement_not_publication_gate(
+    def test_star_floor_blocks_weak_launch_forecast_and_requires_iteration(
         self,
     ) -> None:
         checklist = RELEASE_CHECKLIST.read_text(encoding="utf-8")
         listing = GITHUB_LISTING.read_text(encoding="utf-8")
         evidence = EVIDENCE_README.read_text(encoding="utf-8")
-        self.assertNotIn(
-            "forecast is at least `100 GitHub Stars`",
-            checklist,
-        )
-        self.assertNotIn("Publication remains blocked", listing)
+        self.assertIn("pessimistic forecast", checklist)
+        self.assertIn("below `100 net-new GitHub Stars`", checklist)
+        self.assertIn("blocks the formal launch", checklist)
         self.assertIn("Post-release adoption measurement", checklist)
         self.assertIn("100 net-new GitHub Stars", checklist)
         self.assertIn(
@@ -208,8 +211,10 @@ class PublicDocumentationTests(unittest.TestCase):
             checklist,
         )
         self.assertIn("does not retract the Release", checklist)
-        self.assertIn("post-release 30-day net-new Star goal", listing)
-        self.assertIn("not a publication blocker", listing)
+        self.assertIn("minimum acceptable first-month outcome", listing)
+        self.assertIn("planning floor", listing)
+        self.assertIn("below 100 blocks the formal launch", listing)
+        self.assertIn("not a guarantee", listing)
         for required in (
             "docs/evidence/adoption/<campaign_id>/campaign.json",
             "docs/evidence/adoption/<campaign_id>/events.jsonl",
@@ -219,6 +224,7 @@ class PublicDocumentationTests(unittest.TestCase):
             "goal_met",
             "goal_missed",
             "measurement_incomplete",
+            "continue iteration",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, evidence)

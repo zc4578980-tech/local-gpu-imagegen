@@ -36,13 +36,14 @@ The unchanged `python scripts/validate_acceptance_evidence.py --strict` command 
 - [ ] The official MCP Registry record resolves version `0.8.0` to the exact PyPI package and stdio command.
 - [ ] Tag `v0.8.0`, the preview release, package URL, Registry URL, and repository evidence URLs resolve to the exact verified release state.
 - [ ] Directory submissions remain unsubmitted until each receives separate authority.
+- [ ] A written pessimistic forecast based on named channels, documented conversion assumptions, and available response capacity is at or above the planning floor; a forecast below `100 net-new GitHub Stars` blocks the formal launch.
 
 ## Post-release adoption measurement
 
 - [ ] At formal GitHub Release publication time, initialize the append-only campaign baseline under `docs/evidence/adoption/<campaign_id>/` within five minutes when possible.
 - [ ] During the inclusive 24-hour T+30 collection window, append the repository-level Star total and validate the complete hash chain.
-- [ ] Measure the goal as T+30 total Stars minus baseline total Stars, targeting `100 net-new GitHub Stars` without interpolation or stargazer identities.
-- [ ] Record `goal_met`, `goal_missed`, or `measurement_incomplete`; a missed or incomplete adoption goal triggers review and iteration but does not retract the Release.
+- [ ] Measure the floor as T+30 total Stars minus baseline total Stars; `100 net-new GitHub Stars` is the minimum acceptable first-month outcome, not the target, and the operating target remains above it.
+- [ ] Record `goal_met`, `goal_missed`, or `measurement_incomplete` without interpolation or stargazer identities; an actual result below the floor is `goal_missed` and requires continued iteration, while a missed or incomplete result does not retract the Release.
 
 ## Still pending after preview
 

@@ -1,8 +1,9 @@
 # First-Month Launch Playbook
 
-The target is `100 net-new GitHub Stars` during the first 30 days after the
-formal GitHub Release. It is a measured adoption goal, not a guarantee and not
-a substitute for release correctness.
+`100 net-new GitHub Stars` is the minimum acceptable first-month outcome and
+the planning floor, not the target. The operating target is to exceed that
+floor. This threshold is not a guarantee and not a substitute for release
+correctness.
 
 ## Local Readiness
 
@@ -19,6 +20,10 @@ Before any remote action:
 - Keep ComfyUI's role and the product boundary explicit: ComfyUI generates the
   pixels; Local GPU Imagegen controls authority, reproducibility, review, and
   recovery.
+- Write a pessimistic first-month forecast from named launch channels,
+  documented conversion assumptions, and available response capacity. A
+  forecast below 100 blocks the formal launch; improve the product,
+  positioning, evidence, or distribution plan before recalculating it.
 
 ## Publication Sequence
 
@@ -70,6 +75,9 @@ reviewed. Tool count is supporting evidence, not the headline.
   validate the hash chain, and report `goal_met`, `goal_missed`, or
   `measurement_incomplete` without interpolation.
 
-Missing the target triggers a positioning, onboarding, evidence, and channel
-review. It does not justify inflated claims, unsolicited promotion, Star
-exchanges, or weakening approval and identity controls.
+An actual T+30 result below the 100-Star floor is `goal_missed`, not a partial
+success: continue iteration on positioning, onboarding, evidence, and channels
+until the floor is met. The existing `goal_met` status means that the floor was
+met, not that the higher operating target was achieved. A miss does not justify
+inflated claims, unsolicited promotion, Star exchanges, or weaker approval and
+identity controls.
