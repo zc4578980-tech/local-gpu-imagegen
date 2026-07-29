@@ -43,13 +43,29 @@ Run this supported ComfyUI API workflow from Codex: <path>.
 Use this prompt: <prompt>. Preserve every other workflow setting.
 ```
 
+First use has three first-use decisions. A new workflow on the same verified
+model requires two decisions; an already trusted unchanged workflow requires
+one execution decision. The MCP surface remains exactly 17 tools.
+
+### File verification decision
+
+Codex performs API-only discovery, calls `local_gpu_inspect_workflow`, then
+plans `local_gpu_discover_models` with `exact_file` / `verify` for one exact
+local model path. It displays the path, loader name, byte size, full-file read
+cost, expiry, and exact confirmation before reading the complete model file.
+Approve only that future exact-path read. It does not grant trust, register a
+workflow, approve a route, or submit a prompt.
+
+Later processes automatically revalidate only the workflow-referenced model.
+The same SHA-256 restores cryptographic inventory without a new confirmation;
+path, stat, or digest drift requires a new file-verification decision.
+
 ### Preparation decision
 
-Codex performs API-only discovery when needed, calls
-`local_gpu_inspect_workflow`, and inspects the exact component binding without
-writing state. It then displays workflow hashes, defaults, endpoint,
-components, requested overrides, limitations, and the two stored
-confirmations. Approve only after that complete proposal is visible.
+With current API and cryptographic filesystem identities, Codex inspects the
+exact component binding without writing state. It then displays workflow
+hashes, defaults, endpoint, components, requested overrides, limitations, and
+the two stored confirmations. Approve only after that complete proposal is visible.
 `local_gpu_register_workflow` writes one immutable copy, and private trust
 binds the same workflow, endpoint, and components. A trust failure leaves an
 inert registration and stops.

@@ -140,7 +140,7 @@ class SkillContractTests(unittest.TestCase):
         cls.text = SKILL_PATH.read_text(encoding="utf-8")
         cls.plugin = json.loads(PLUGIN_PATH.read_text(encoding="utf-8"))
 
-    def test_codex_first_runner_has_exactly_two_post_display_decisions(self) -> None:
+    def test_codex_first_runner_has_three_first_use_decisions_and_exact_revalidation(self) -> None:
         section = _section(
             self.text,
             "## Codex-First Workflow Runner",
@@ -149,13 +149,16 @@ class SkillContractTests(unittest.TestCase):
         _assert_ordered(section, (
             "`local_gpu_discover_models`",
             "`local_gpu_inspect_workflow`",
+            "File verification decision",
+            "`exact_file` / `verify`",
+            "stop and wait for a later user message",
             "`inspect_workflow_binding`",
-            "display one preparation proposal",
+            "Preparation decision",
             "stop and wait for a later user message",
             "`local_gpu_register_workflow`",
             "`approve_private`",
             "`local_gpu_recommend_models`",
-            "display one execution route",
+            "Execution decision",
             "stop and wait for a later user message",
             "`local_gpu_start_run`",
             "`local_gpu_get_run`",
@@ -163,7 +166,13 @@ class SkillContractTests(unittest.TestCase):
             "generated / unreviewed",
         ))
         for required in (
-            "exactly two user decisions",
+            "three first-use decisions",
+            "one exact local model path",
+            "complete contents",
+            "same SHA-256",
+            "new workflow on the same verified model requires two decisions",
+            "already trusted unchanged workflow requires only the execution decision",
+            "Never reuse a route token, prompt ID, or run ID",
             "same `capabilities` object",
             "`guidance_scale` to `recommended.guidance`",
             "`sampler_name` to `recommended.sampler`",
@@ -309,27 +318,22 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(boundary, section)
 
-    def test_fresh_process_public_route_recovery_requires_one_exact_file_fingerprint(self) -> None:
+    def test_fresh_process_route_recovery_uses_authorized_exact_file_revalidation(self) -> None:
         section = _section(self.text, "## Adaptive Brief", "## Confirmation Gate")
         _assert_ordered(section, (
             "fresh MCP process",
-            "`selected_folders/index`",
-            "one already confirmed model root",
-            "exact `explicit_includes`",
-            "local file I/O and hashing cost",
-            "exact scan confirmation",
-            "exactly one expected candidate",
-            "filename and byte size",
-            "`selected_folders/fingerprint`",
-            "only that candidate",
-            "filesystem identity token, full SHA-256, and byte size",
             "`api_only/index` for ComfyUI",
+            "`exact_file/verify`",
+            "one exact local model path",
+            "full-file read cost",
+            "same SHA-256",
+            "filesystem identity token, full SHA-256, and byte size",
             "`local_gpu_recommend_models`",
             "exact `public_evidence` route",
         ))
         for boundary in (
             "Never downgrade this recovery to `backend_binding` or `private` identity",
-            "Do not scan unrelated roots",
+            "new file-verification decision",
             "Do not recommend until both filesystem and API identities are present",
         ):
             with self.subTest(boundary=boundary):

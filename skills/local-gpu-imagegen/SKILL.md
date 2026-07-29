@@ -14,34 +14,51 @@ The plugin exposes exactly seventeen MCP tools: `local_gpu_imagegen_check`, `loc
 ## Codex-First Workflow Runner
 
 Use this golden path when the user supplies one existing supported ComfyUI API
-workflow and asks Codex to run it. The user sees exactly two user decisions:
-one preparation decision and one execution decision. Internal confirmation
-tokens are copied by the Agent only after the matching proposal has been
+workflow and asks Codex to run it. First use has three first-use decisions: a
+File verification decision, a Preparation decision, and an Execution decision.
+A new workflow on the same verified model requires two decisions; an already trusted unchanged workflow requires only the execution decision. Internal
+confirmation tokens are copied only after the matching proposal has been
 displayed and approved in a later user message.
 
-Before the preparation decision, call `local_gpu_discover_models` in
-`api_only` mode when inventory is absent, call
-`local_gpu_inspect_workflow`, then call `local_gpu_set_model_trust` with
-`action` set to `inspect_workflow_binding`, the raw `workflow_path`, the exact inferred
+Call `local_gpu_discover_models` in `api_only` mode when inventory is absent,
+then call `local_gpu_inspect_workflow` to obtain the exact loader name and
+workflow defaults. For the File verification decision, plan the discovery tool
+with `exact_file` / `verify` for one exact local model path. Display the root,
+path, loader name, byte size, complete contents read cost, expiry, and
+confirmation, then stop and wait for a later user message. This authorization
+does not grant model trust, register a workflow, approve a route, or submit a
+prompt. After approval, execute the unchanged plan and require the returned
+cryptographic filesystem identity.
+
+In every later MCP process, run API discovery and plan `exact_file` / `verify`
+only for the model referenced by the requested workflow. An unchanged active
+authorization may execute without a new confirmation, but still display the
+exact path, byte size, and full-file read cost. Only the same SHA-256 restores
+the cryptographic identity. Path, stat, or SHA drift stops and requires a new
+File verification decision; never broaden the scan or downgrade to
+`backend_binding`.
+
+After both identities exist, call `local_gpu_set_model_trust` with `action` set
+to `inspect_workflow_binding`, the raw `workflow_path`, the exact inferred
 binding and component identities, and one capability object. These calls are
 read-only. Build `capabilities.recommended` only from `workflow_defaults`: map
-`width` and `height` into `recommended.resolution`, `steps` unchanged,
-`guidance_scale` to `recommended.guidance`, `sampler_name` to `recommended.sampler`,
-and `scheduler` unchanged. Use the same `capabilities`
-object for later `approve_private`. Never substitute Profile or repository
-defaults.
+`width` and `height` into `recommended.resolution`, keep `steps` unchanged,
+map `guidance_scale` to `recommended.guidance`, `sampler_name` to `recommended.sampler`, and keep `scheduler` unchanged. Use the same
+`capabilities` object for later `approve_private`. Never substitute Profile or
+repository defaults.
 
 The nine exact defaults are `positive_prompt`, `negative_prompt`, `width`,
 `height`, `seed`, `steps`, `guidance_scale`, `sampler_name`, and `scheduler`.
-The Agent must display one preparation proposal containing the source and
-workflow hash prefixes, topology, owned output, endpoint, all component
-identities, all nine workflow defaults, requested prompt overrides,
+For the Preparation decision, display one preparation proposal containing the
+source and workflow hash prefixes, topology, owned output, endpoint, all
+component identities, all nine workflow defaults, requested prompt overrides,
 limitations, both exact confirmations, and the statement that no model, node,
-or runtime download will occur. Then stop and wait for a later user message. A
-natural-language approval permits `local_gpu_register_workflow` with the
+or runtime download will occur. Then stop and wait for a later user message.
+A natural-language approval permits `local_gpu_register_workflow` with the
 stored registration confirmation and then `local_gpu_set_model_trust` with
-`action` set to `approve_private`, the registered workflow ID, the same component
-identities, the same `capabilities` object, and the stored trust confirmation.
+`action` set to `approve_private`, the registered workflow ID, the same
+component identities, the same `capabilities` object, and the stored trust
+confirmation.
 
 Registration and trust approval are sequential. If registration succeeds and
 trust approval fails, report the immutable copy as an inert registration and
@@ -49,7 +66,7 @@ stop. Do not delete it, weaken identity, repeat approval, recommend a route, or
 start a run.
 
 After successful private trust, call `local_gpu_recommend_models` for the exact
-imported route. The Agent must display one execution route containing the
+imported route. For the Execution decision, display one execution route containing the
 endpoint, registered workflow, model identity, positive and negative prompts,
 width, height, seed, steps, guidance, sampler, scheduler, and every field that
 differs from `workflow_defaults`. State `max_rounds: 1`, `upscale_policy: off`,
@@ -67,6 +84,9 @@ workflow/model/parameter summary, durable `run_id`, and evidence location
 labeled `generated / unreviewed`. Review and finalization are optional
 follow-up work; they do not block the first result.
 
+Never reuse a route token, prompt ID, or run ID across a decision, drift, or
+fresh process.
+
 ## Adaptive Brief
 
 1. Extract known values first.
@@ -75,15 +95,12 @@ follow-up work; they do not block the first result.
 
 When a fresh MCP process must recover a previously confirmed cryptographic public candidate, follow this exact order:
 
-1. Plan `selected_folders/index` for one already confirmed model root and the exact `explicit_includes` path. Do not scan unrelated roots.
-2. Display the unchanged plan, scope, expiration, and `cost_warning`. State the estimated local file I/O and hashing cost: indexing reads bounded metadata, while the later fingerprint reads every byte of the selected file. Wait for the exact scan confirmation, then execute that unchanged index plan.
-3. Select exactly one expected candidate. Verify its filename and byte size against the previously confirmed checkpoint; stop on zero, multiple, or mismatched candidates.
-4. Plan `selected_folders/fingerprint` with `selected_candidates` containing only that candidate. Display its full-file read cost and the new exact confirmation, wait for that confirmation, then execute the unchanged fingerprint plan.
-5. Verify the returned filesystem identity token, full SHA-256, and byte size against the expected public candidate.
-6. Run `api_only/index` for ComfyUI so the current backend-visible loader binding is present in the same process.
-7. Call `local_gpu_recommend_models` and verify the exact `public_evidence` route matches the expected model, endpoint, cryptographic identity, workflow, bundle when applicable, and compiler before displaying it for confirmation.
+1. Run `api_only/index` for ComfyUI so the current backend-visible loader binding is present.
+2. Plan `exact_file/verify` for the loader name. Resolve one active authorization or display one exact local model path, byte size, full-file read cost, expiry, and confirmation for a new authorization.
+3. Execute only the unchanged plan. A reusable authorization needs no new confirmation, but it still reads the complete file. Require the same SHA-256 and verify the returned filesystem identity token, full SHA-256, and byte size.
+4. Call `local_gpu_recommend_models` and verify the exact `public_evidence` route matches the expected model, endpoint, cryptographic identity, workflow, bundle when applicable, and compiler before displaying it for confirmation.
 
-Never downgrade this recovery to `backend_binding` or `private` identity. Do not recommend until both filesystem and API identities are present. A mismatch requires a new bounded discovery decision, not a broader scan or a weaker route.
+Never downgrade this recovery to `backend_binding` or `private` identity. A path, stat, digest, or ambiguous authorization mismatch requires a new file-verification decision. Do not recommend until both filesystem and API identities are present.
 
 4. Call `local_gpu_list_profiles` with the intended `private` or `public_evidence` scope before proposing a run. Select a Profile, optional style, compatible backend, and an approved non-empty `model_choice` from its merged catalog. The model must be registered, enabled, and license-approved. If none exists, state a clear unavailable-model boundary and stop. Do not invent a model ID, enable a candidate, download a model, or call `local_gpu_start_run`.
 5. Ask only for missing high-impact boundaries:

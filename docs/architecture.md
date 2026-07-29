@@ -12,6 +12,7 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 | `mcp_server.py` | Protocol lifecycle, schemas, validation, dispatch, timeout, structured results | Diffusion pipeline logic |
 | `RuntimeServices` | Composes one discovery, trust, catalog, router, workflow, backend, and engine graph | User conversation policy |
 | `DiscoveryService` | Plans bounded inventory, indexes metadata, fingerprints selected files, and reports cancellation | Model loading, trust, or generation |
+| `FileVerificationRegistry` | Persists authorization to re-read one exact user-local model path, plus its last approved digest/stat and `active` / `drifted` / `revoked` status | Model trust, workflow registration, routing, generation, or broad scanning |
 | `TrustRegistry` | Stores exact private/public-candidate approvals and observations in user-local atomic state | Acceptance authority or repository metadata |
 | `ModelCatalog` / `CapabilityRouter` | Merge current inventory/trust/readiness and issue one deterministic frozen route plus at most two alternatives | Silent fallback or weakened hard requirements |
 | `WorkflowTemplateRegistry` | Validates, copies, hashes, and resolves reviewed ComfyUI graphs | Arbitrary custom-node execution |
@@ -35,8 +36,8 @@ Keep the MCP transport small and testable while allowing image backends to evolv
 2. `process_line` parses the request and preserves a parsed request ID across internal errors.
 3. `handle_request` handles initialization, ping, tool listing, or tool calls.
 4. Tool arguments are checked against the published input schema before a subprocess starts.
-5. `local_gpu_discover_models` freezes an `api_only`, `selected_folders`, `common_locations`, or `full_drive` plan. Broader scopes execute only after exact confirmation.
-6. Discovery `index` reads bounded metadata without loading weights; `fingerprint` hashes only selected indexed candidates.
+5. `local_gpu_discover_models` freezes an `api_only`, `selected_folders`, `common_locations`, `full_drive`, or `exact_file` plan. Broader scopes and first exact-file verification execute only after exact confirmation.
+6. Discovery `index` reads bounded metadata without loading weights; `fingerprint` hashes only selected indexed candidates; `exact_file` / `verify` rehashes one authorized workflow-referenced file and restores its identity only on the same SHA-256.
 7. `local_gpu_inspect_workflow` can read one explicit ComfyUI API JSON, infer an ordinary `txt2img` binding, and return diagnostic or registerable `source_sha256`, `workflow_sha256`, component identities, and confirmation data without writing state. `local_gpu_register_workflow` re-reads, revalidates, and stores only after the later digest-bound confirmation.
 8. Trust changes require a separate exact confirmation and write only user-local state. Registered workflow trust uses `registered_workflow_id` plus exact component identities; registration does not grant model trust. For the reviewed two-stage workflow, the caller supplies the layout and the server derives the control digest after workflow inspection; raw caller-supplied control digests are not accepted.
 9. `local_gpu_list_profiles` merges repository templates, current inventory, trust, workflow availability, and readiness for `private` or `public_evidence` scope.
@@ -55,6 +56,8 @@ The bounded imported-workflow path is:
 ```text
 read-only source preparation
 -> inferred binding + exact workflow_defaults
+-> exact-file display and later approval on first use
+-> full SHA-256 + cryptographic inventory restore
 -> preparation display and later approval
 -> immutable registration + private trust
 -> route recommended_settings from the same defaults
@@ -71,13 +74,26 @@ defaults stored in private trust before any explicit user override.
 
 ## Discovery, Trust, And Frozen Routes
 
-`api_only` contacts only explicitly configured WebUI/ComfyUI adapters. `selected_folders`, `common_locations`, and `full_drive` plans show roots, exclusions, endpoint transmission, expiration, and a scope hash before scanning. Filesystem traversal never follows symlinks, junctions, or reparse points; `.ckpt` files are opaque and never passed to pickle, Torch, model tooling, or adjacent code.
+`api_only` contacts only explicitly configured WebUI/ComfyUI adapters. `selected_folders`, `common_locations`, and `full_drive` plans show roots, exclusions, endpoint transmission, expiration, and a scope hash before scanning. `exact_file` / `verify` is a stat-only plan followed by one bounded complete-file SHA-256 read; it never scans neighboring files. Filesystem traversal never follows symlinks, junctions, or reparse points; `.ckpt` files are opaque and never passed to pickle, Torch, model tooling, or adjacent code. The MCP layer remains exactly 17 tools, and file verification does not improve image quality.
 
 ### Fresh-process public route recovery
 
-Discovery inventory is process-local, while trust records persist in user-local state. Recovering a cryptographic public candidate in a new process therefore starts with a `selected_folders` `index` plan for one previously confirmed root and the exact `explicit_includes` file. The client displays the unchanged scope, expiry, `cost_warning`, and exact confirmation before execution. The index must return exactly one candidate whose filename and byte size match the expected checkpoint.
+Discovery inventory is process-local, while trust records and
+`FileVerificationRegistry` authorizations persist in user-local state. Recover
+the current backend binding with an `api_only` ComfyUI `index`, then plan
+`exact_file` / `verify` for the workflow loader name. First use displays one
+exact local model path, byte size, full-file read cost, expiry, and exact
+confirmation. A later unchanged `active` authorization resolves only that path
+and may execute without another confirmation; it still reads the complete file.
 
-The client then creates a `selected_folders` `fingerprint` plan whose `selected_candidates` contains only that candidate. After displaying and receiving its new exact confirmation, execution must return the expected filesystem identity token, full SHA-256, and byte size. An `api_only` ComfyUI `index` in the same process restores the current backend-visible binding; only then may routing verify the exact `public_evidence` route. Do not downgrade to `backend_binding` or `private` identity. Do not scan unrelated roots to make a route appear.
+Execution restores the expected filesystem identity token, full SHA-256, and
+byte size only when path, stat, and the same SHA-256 match the authorization.
+Drift changes its state to `drifted`; explicit revocation changes it to
+`revoked`. `model_identity_drifted`, ambiguity, path drift, or corrupt state
+requires a new file-verification decision before trust or routing. Only after
+both identities are current may routing verify the exact `public_evidence`
+route. Do not downgrade to `backend_binding` or `private` identity or broaden
+the scan to make a route appear.
 
 `TrustRegistry` defaults to the OS user-state directory and can be moved with `LOCAL_GPU_IMAGEGEN_STATE_DIR`. `backend_binding` identifies only the model currently reported by one endpoint and remains `private`. For reviewed split workflows, a non-mutating inspection joins current ComfyUI loader identities to explicitly fingerprinted filesystem identities, then hashes the primary model, text encoder, VAE, and workflow identity into one canonical component bundle. The bundle digest is frozen in trust confirmation, catalog resolution, route tokens, manifests, and public evidence. Public candidacy additionally requires component-by-component source/license/redistribution metadata and still cannot bypass acceptance authority.
 

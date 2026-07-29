@@ -106,11 +106,13 @@ class PublicDocumentationTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, first_viewport.lower())
 
-    def test_quickstart_uses_two_decisions_and_one_successful_round(self) -> None:
+    def test_quickstart_uses_three_first_use_decisions_and_one_successful_round(self) -> None:
         quickstart = QUICKSTART.read_text(encoding="utf-8")
         _assert_ordered(quickstart, (
-            "Preparation decision",
+            "File verification decision",
             "local_gpu_inspect_workflow",
+            "`exact_file` / `verify`",
+            "Preparation decision",
             "local_gpu_register_workflow",
             "Execution decision",
             "local_gpu_recommend_models",
@@ -119,6 +121,10 @@ class PublicDocumentationTests(unittest.TestCase):
             "generated / unreviewed",
         ))
         for required in (
+            "three first-use decisions",
+            "two decisions",
+            "one execution decision",
+            "exactly 17 tools",
             "one successful round",
             "no retry",
             "no model switch",
@@ -479,22 +485,24 @@ class PublicDocumentationTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, public)
 
-    def test_docs_define_fresh_process_public_route_recovery_without_identity_downgrade(self) -> None:
+    def test_docs_define_exact_file_fresh_process_recovery_without_identity_downgrade(self) -> None:
         architecture = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
         troubleshooting = (ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8")
         for required in (
             "Fresh-process public route recovery",
-            "`selected_folders` `index`",
-            "exact `explicit_includes`",
-            "`cost_warning`",
-            "exactly one candidate",
-            "filename and byte size",
-            "`selected_candidates`",
+            "FileVerificationRegistry",
+            "`exact_file` / `verify`",
+            "one exact local model path",
+            "full-file read cost",
+            "same SHA-256",
             "full SHA-256",
             "`api_only` ComfyUI `index`",
             "exact `public_evidence` route",
+            "`active` / `drifted` / `revoked`",
+            "exactly 17 tools",
+            "does not improve image quality",
+            "new file-verification decision",
             "Do not downgrade to `backend_binding` or `private`",
-            "Do not scan unrelated roots",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, architecture + "\n" + troubleshooting)

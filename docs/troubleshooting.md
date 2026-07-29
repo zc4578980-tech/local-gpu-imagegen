@@ -46,20 +46,24 @@ Checks:
 
 `discovery_plan_expired` means the short-lived plan is no longer valid. `discovery_plan_changed` means mode, roots, exclusions, selected candidates, or endpoint facts differ from what was displayed. Request a new `plan` phase, show the complete scope again, and obtain the new exact confirmation. Never reuse an older confirmation.
 
-The four scan modes are `api_only`, `selected_folders`, `common_locations`, and `full_drive`. `index` is metadata-only; `fingerprint` hashes only explicitly selected indexed candidates. If a scan is canceled, the result is `incomplete: true` and its inventory remains untrusted. Resume with a new plan instead of treating partial results as trusted.
+The five discovery modes are `api_only`, `selected_folders`, `common_locations`, `full_drive`, and `exact_file`. `index` is metadata-only; `fingerprint` hashes only explicitly selected indexed candidates; `verify` hashes one exact authorized file; `revoke` changes only its authorization status. If a scan is canceled, the result is `incomplete: true` and its inventory remains untrusted. Resume with a new plan instead of treating partial results as trusted.
 
 ## A Fresh Process Cannot Recover A Public Route
 
-A fresh MCP process has no discovery inventory even though user-local trust still exists. Do not begin with recommendation or accept a private fallback. Rebuild the current evidence in this order:
+A fresh MCP process has no discovery inventory even though user-local trust and
+file-verification authorization persist. Do not begin with recommendation or
+accept a private fallback. Rebuild the current evidence in this order:
 
-1. Plan `selected_folders` `index` for one previously confirmed model root and the exact `explicit_includes` file.
-2. Display the unchanged scope, `cost_warning`, expiration, local metadata-read cost, and exact confirmation; execute only after that confirmation.
-3. Require exactly one candidate and verify its filename and byte size.
-4. Plan `selected_folders` `fingerprint` with `selected_candidates` containing only that candidate. Display that hashing reads the full file, obtain the new exact confirmation, and execute it.
-5. Verify the filesystem identity token, full SHA-256, and byte size against the expected checkpoint.
-6. Run an `api_only` ComfyUI `index` in the same process, then recommend and verify the exact `public_evidence` route.
+1. Run an `api_only` ComfyUI `index` to recover the workflow loader name and current endpoint binding.
+2. Plan `exact_file` / `verify`. First use displays one exact local model path, byte size, full-file read cost, expiry, and confirmation. An unchanged active authorization resolves the same path without a new confirmation.
+3. Execute one full SHA-256. The same SHA-256 restores the cryptographic filesystem identity in this process. Verify the filesystem identity token, full SHA-256, and byte size against the expected checkpoint.
+4. Continue workflow inspection, registration/private trust, and the exact `public_evidence` route only after both filesystem and API identities are current.
 
-Do not downgrade to `backend_binding` or `private` identity. Do not scan unrelated roots, reuse an expired plan, omit the full-file cost warning, or recommend before both filesystem and API identities are current.
+`model_identity_drifted`, ambiguous authorization, registry corruption, or
+path/stat drift stops before trust or routing and requires a new
+file-verification decision. Do not downgrade to `backend_binding` or `private`
+identity, broaden the scan, reuse an expired plan, omit the full-file cost
+warning, or recommend before both identities are current.
 
 ## LAN Or Public Endpoint Is Rejected
 

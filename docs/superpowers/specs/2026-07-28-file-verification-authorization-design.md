@@ -1,7 +1,7 @@
 # Fresh-Process File Verification Authorization Design
 
 **Date:** 2026-07-28  
-**Status:** Design approved in conversation; written-spec review pending  
+**Status:** Design and bounded budget amendment approved in conversation
 **Parent slice:** Codex-first workflow runner (`codex/codex-first-workflow-runner`)  
 **Current branch base:** `7ccda6c`
 
@@ -47,7 +47,7 @@ fresh-process failure before the preparation proposal, usually
 - No automatic trust, registration, route issuance, prompt submission, model
   switch, CPU fallback, or download.
 - No reuse of the spent route or run from the stopped 2026-07-28 gate.
-- The new slice has a hard ceiling of 150 net production lines. If the
+- The new slice has a hard ceiling of 350 net production lines. If the
   implementation exceeds it, stop for design review instead of weakening a
   verification boundary.
 
@@ -222,10 +222,10 @@ ComfyUI prompt ID, and one successful image maximum.
 
 The implementation target is two to three focused engineering days inside the
 overall three-to-five-day boundary. The new production slice must remain at or
-below 150 net lines across the new registry and integration changes. Stop for
+below 350 net lines across the new registry and integration changes. Stop for
 design review if it needs another MCP tool, a second verification store, a
-backend-bound downgrade, broader filesystem scanning, or more than 150 net
-production lines. No image-quality benchmark or Adaptive Quality work is part
+backend-bound downgrade, broader filesystem scanning, or more than 350 net
+ production lines. No image-quality benchmark or Adaptive Quality work is part
 of this slice.
 
 ## Open Limitations
