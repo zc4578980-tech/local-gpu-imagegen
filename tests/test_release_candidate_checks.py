@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import shutil
 import stat
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+import warnings
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
@@ -29,7 +31,7 @@ class ReleaseCandidateStaticTests(unittest.TestCase):
             os.chmod(path, stat.S_IWRITE)
             func(path)  # type: ignore[operator]
 
-        shutil.rmtree(self.temp, onexc=remove_readonly)
+        shutil.rmtree(self.temp, onerror=remove_readonly)
 
     def make_git_checkout(self) -> tuple[Path, str]:
         root = self.temp / f"checkout-{uuid.uuid4().hex}"
@@ -57,6 +59,11 @@ class ReleaseCandidateStaticTests(unittest.TestCase):
     @staticmethod
     def blocked_ids(results: list[dict[str, object]]) -> set[str]:
         return {str(item["id"]) for item in results if item["status"] == "blocked"}
+
+    def assert_result_contract(self, results: list[dict[str, object]]) -> None:
+        ids = [str(item["id"]) for item in results]
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(len(ids), len(set(ids)))
 
     def test_checkout_requires_exact_head_and_clean_tracked_state(self) -> None:
         root, commit = self.make_git_checkout()
@@ -132,6 +139,30 @@ class ReleaseCandidateStaticTests(unittest.TestCase):
         results, _ = checks.inspect_checkout(root, commit, runner=raises)
         self.assertEqual(self.codes(results), {"git_checkout_unavailable"})
 
+    def test_checkout_returns_sorted_unique_non_contradictory_checks(self) -> None:
+        root, commit = self.make_git_checkout()
+
+        def dirty(_: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            if args == ("rev-parse", "HEAD"):
+                return subprocess.CompletedProcess(["git", *args], 0, commit + "\n", "")
+            if args == ("diff", "--quiet") or args == ("diff", "--cached", "--quiet"):
+                return subprocess.CompletedProcess(["git", *args], 1, "", "")
+            if args == ("status", "--porcelain=v1"):
+                return subprocess.CompletedProcess(["git", *args], 0, "MM tracked.txt\n", "")
+            raise AssertionError(args)
+
+        results, _ = checks.inspect_checkout(root, commit, runner=dirty)
+        self.assert_result_contract(results)
+        self.assertEqual(
+            [item["status"] for item in results if item["id"] in {"index", "tracked_worktree"}],
+            ["blocked", "blocked"],
+        )
+
+    def test_test_teardown_uses_python_311_rmtree_api(self) -> None:
+        teardown_source = inspect.getsource(ReleaseCandidateStaticTests.tearDown)
+        self.assertNotIn("onexc", teardown_source)
+        self.assertIn("onerror", teardown_source)
+
 
 class ReleaseCandidateWheelTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -147,6 +178,11 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
     @staticmethod
     def blocked_ids(results: list[dict[str, object]]) -> set[str]:
         return {str(item["id"]) for item in results if item["status"] == "blocked"}
+
+    def assert_result_contract(self, results: list[dict[str, object]]) -> None:
+        ids = [str(item["id"]) for item in results]
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(len(ids), len(set(ids)))
 
     def make_release_root(self) -> Path:
         root = self.temp / f"release-{uuid.uuid4().hex}"
@@ -209,6 +245,20 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         self.assertEqual(self.blocked_ids(results), set())
         self.assertEqual(facts["version"], "0.8.0")
         self.assertEqual(facts["registry_identifier"], "local-gpu-imagegen")
+
+    def test_wheel_returns_sorted_unique_checks_with_explicit_dist_info(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root)
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assert_result_contract(results)
+        by_id = {str(item["id"]): item for item in results}
+        self.assertEqual(by_id["wheel_dist_info"]["status"], "passed")
+
+        with patch.object(checks, "_archive_bytes", side_effect=RuntimeError("late read failure")):
+            failed, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assert_result_contract(failed)
+        archive_checks = [item for item in failed if item["id"] == "wheel_archive"]
+        self.assertEqual(archive_checks, [checks.blocked_check("wheel_archive", "wheel_archive_invalid")])
 
     def test_wheel_rejects_traversal_link_weights_and_private_entries(self) -> None:
         for entry in (
@@ -315,6 +365,188 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
         self.assertIn("sensitive_wheel_content", self.codes(results))
 
+    def test_wheel_rejects_ambiguous_member_names_and_nonempty_directories(self) -> None:
+        root = self.make_release_root()
+        source_name = b"local_gpu_imagegen/nul.pyXignored"
+        nul_name = b"local_gpu_imagegen/nul.py\0ignored"
+        wheel = self.make_wheel(root, extra_entry=source_name.decode("ascii"))
+        wheel_bytes = wheel.read_bytes()
+        self.assertEqual(wheel_bytes.count(source_name), 2)
+        wheel.write_bytes(wheel_bytes.replace(source_name, nul_name))
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("unsafe_wheel_entry", self.codes(results))
+
+        root = self.make_release_root()
+        wheel = self.make_wheel(
+            root,
+            extra_entry="local_gpu_imagegen/nonempty/",
+            extra_content="payload",
+        )
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("unsafe_wheel_entry", self.codes(results))
+
+        root = self.make_release_root()
+        wheel = self.make_wheel(root, extra_entry="LOCAL_GPU_IMAGEGEN/__init__.py")
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("unsafe_wheel_entry", self.codes(results))
+
+    def test_wheel_rejects_parser_defects_in_metadata_and_wheel_headers(self) -> None:
+        malformed_metadata = (
+            "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.0\n"
+            "Requires-Python: >=3.11\nBad Header: value\n\n"
+        )
+        malformed_wheel = "Wheel-Version: 1.0\nTag: py3-none-any\nBad Header: value\n\n"
+        for wheel_args in (
+            {"metadata": malformed_metadata},
+            {"wheel_headers": malformed_wheel},
+        ):
+            with self.subTest(wheel_args=wheel_args):
+                root = self.make_release_root()
+                wheel = self.make_wheel(root, **wheel_args)
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("wheel_metadata_invalid", self.codes(results))
+
+    def test_registry_descriptor_rejects_duplicate_keys_at_every_object_level(self) -> None:
+        replacements = (
+            ('"version": "0.8.0",', '"version": "0.8.0",\n  "version": "0.8.0",'),
+            ('"runtimeHint": "uvx",', '"runtimeHint": "uvx",\n      "runtimeHint": "uvx",'),
+            ('"type": "stdio"', '"type": "stdio",\n        "type": "stdio"'),
+        )
+        for old, duplicate in replacements:
+            with self.subTest(key=old):
+                root = self.make_release_root()
+                descriptor = (root / "server.json").read_text(encoding="utf-8")
+                (root / "server.json").write_text(
+                    descriptor.replace(old, duplicate, 1),
+                    encoding="utf-8",
+                )
+                wheel = self.make_wheel(root)
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("registry_descriptor_drift", self.codes(results))
+
+    def test_wheel_rejects_broader_private_paths_and_credential_markers(self) -> None:
+        sensitive_values = (
+            "D:\\Users\\private\\model.safetensors",
+            "E:/Users/private/model.safetensors",
+            "/Users/private/model.safetensors",
+            "X-API-Key: secret-value",
+            "client_secret = secret-value",
+            "Password: secret-value",
+        )
+        for content in sensitive_values:
+            with self.subTest(content=content):
+                root = self.make_release_root()
+                wheel = self.make_wheel(
+                    root,
+                    extra_entry="local_gpu_imagegen/private.txt",
+                    extra_content=content,
+                )
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("sensitive_wheel_content", self.codes(results))
+
+    def test_wheel_hash_and_zip_parse_the_same_single_opened_snapshot(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root)
+        digest = self.sha(wheel)
+        original_open = Path.open
+        wheel_open_count = 0
+
+        class ReplacePathOnClose:
+            def __init__(self, source: object) -> None:
+                self.source = source
+
+            def __enter__(self) -> object:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                self.source.close()  # type: ignore[attr-defined]
+                with original_open(wheel, "wb") as replacement:
+                    replacement.write(b"replacement is not a zip")
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self.source, name)
+
+        def tracked_open(path: Path, *args: object, **kwargs: object) -> object:
+            nonlocal wheel_open_count
+            opened = original_open(path, *args, **kwargs)
+            if path == wheel and (not args or args[0] == "rb"):
+                wheel_open_count += 1
+                return ReplacePathOnClose(opened)
+            return opened
+
+        with (
+            patch.object(Path, "open", tracked_open),
+            patch.object(checks.zipfile, "ZipFile", wraps=zipfile.ZipFile) as zip_file,
+        ):
+            results, facts = checks.inspect_wheel(root, wheel, digest)
+
+        self.assertEqual(self.blocked_ids(results), set())
+        self.assertEqual(facts["sha256"], digest)
+        self.assertEqual(wheel_open_count, 1)
+        self.assertNotEqual(zip_file.call_args.args[0], wheel)
+
+    def test_wheel_rejects_opened_nonregular_reparse_or_changed_objects(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root)
+        digest = self.sha(wheel)
+        real_stat = os.stat(wheel)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+        cases = (
+            (stat.S_IFDIR, 0, real_stat.st_size, "wheel_not_regular"),
+            (stat.S_IFREG, reparse_flag, real_stat.st_size, "wheel_not_regular"),
+        )
+        for mode, attributes, size, expected_code in cases:
+            with self.subTest(expected_code=expected_code, attributes=attributes):
+                opened_stat = type(
+                    "OpenedStat",
+                    (),
+                    {"st_mode": mode, "st_file_attributes": attributes, "st_size": size},
+                )()
+                with patch.object(checks.os, "fstat", return_value=opened_stat):
+                    results, _ = checks.inspect_wheel(root, wheel, digest)
+                self.assertIn(expected_code, self.codes(results))
+
+        initial_stat = type(
+            "OpenedStat",
+            (),
+            {"st_mode": stat.S_IFREG, "st_file_attributes": 0, "st_size": real_stat.st_size},
+        )()
+        for final_size in (real_stat.st_size - 1, real_stat.st_size + 1):
+            with self.subTest(final_size=final_size):
+                changed_stat = type(
+                    "OpenedStat",
+                    (),
+                    {"st_mode": stat.S_IFREG, "st_file_attributes": 0, "st_size": final_size},
+                )()
+                with patch.object(checks.os, "fstat", side_effect=(initial_stat, changed_stat)):
+                    results, _ = checks.inspect_wheel(root, wheel, digest)
+                self.assertIn("wheel_changed_during_read", self.codes(results))
+
+    def test_wheel_rejects_a_stream_read_over_the_outer_budget(self) -> None:
+        root = self.make_release_root()
+        wheel = root / checks.EXPECTED_WHEEL
+        with wheel.open("wb") as target:
+            target.truncate(checks.MAX_WHEEL_BYTES + 1)
+        reported_stat = type(
+            "OpenedStat",
+            (),
+            {
+                "st_mode": stat.S_IFREG,
+                "st_file_attributes": 0,
+                "st_size": checks.MAX_WHEEL_BYTES,
+            },
+        )()
+
+        with (
+            patch.object(checks.os, "fstat", return_value=reported_stat),
+            patch.object(checks.zipfile, "ZipFile") as zip_file,
+        ):
+            results, _ = checks.inspect_wheel(root, wheel, "0" * 64)
+
+        self.assertIn("wheel_file_too_large", self.codes(results))
+        zip_file.assert_not_called()
+
     def test_wheel_rejects_archive_size_limits(self) -> None:
         root = self.make_release_root()
         wheel = self.make_wheel(root)
@@ -338,13 +570,11 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             target.truncate(checks.MAX_WHEEL_BYTES + 1)
 
         with (
-            patch.object(checks, "_stream_sha256") as stream_sha256,
             patch.object(checks.zipfile, "ZipFile") as zip_file,
         ):
             results, _ = checks.inspect_wheel(root, wheel, "0" * 64)
 
         self.assertIn("wheel_file_too_large", self.codes(results))
-        stream_sha256.assert_not_called()
         zip_file.assert_not_called()
 
     def test_wheel_rejects_total_size_overflow_without_reading_entries(self) -> None:
@@ -362,11 +592,13 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         root = self.make_release_root()
         wheel = self.make_wheel(root)
         with zipfile.ZipFile(wheel, "a") as archive:
-            archive.writestr(
-                "local_gpu_imagegen-0.8.0.dist-info/METADATA",
-                "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.0\n"
-                "Requires-Python: >=3.11\n\n",
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                archive.writestr(
+                    "local_gpu_imagegen-0.8.0.dist-info/METADATA",
+                    "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.0\n"
+                    "Requires-Python: >=3.11\n\n",
+                )
         results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
         self.assertIn("wheel_dist_info_invalid", self.codes(results))
 
@@ -413,8 +645,9 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
     def test_wheel_reports_hash_read_failure_without_exception(self) -> None:
         root = self.make_release_root()
         wheel = self.make_wheel(root)
-        with patch.object(checks, "_stream_sha256", side_effect=OSError("unavailable")):
-            results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        digest = self.sha(wheel)
+        with patch.object(Path, "open", side_effect=OSError("unavailable")):
+            results, _ = checks.inspect_wheel(root, wheel, digest)
         self.assertEqual(self.codes(results), {"wheel_unavailable"})
 
     def test_wheel_reports_archive_read_failure_without_error_text(self) -> None:
