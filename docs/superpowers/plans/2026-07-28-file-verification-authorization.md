@@ -10,11 +10,11 @@
 
 ## Global Constraints
 
-- Start from `main@3fb45163ec61189c2d2c89a7c183612a55cb6058` only through worktree `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\.worktrees\codex-first-workflow-runner` on branch `codex/codex-first-workflow-runner`; do not touch root `main`'s unrelated untracked `.codex/`.
+- Start from `main@3fb45163ec61189c2d2c89a7c183612a55cb6058` only through the project-local `.worktrees/codex-first-workflow-runner` worktree on branch `codex/codex-first-workflow-runner`; do not touch root `main`'s unrelated untracked `.codex/`.
 - Preserve cryptographic filesystem identity; never downgrade this path to `backend_binding` or private backend-only authority.
 - Keep exactly 17 MCP tools. Add no tool, model, workflow, backend, downloader, GPU behavior, retry, fallback, or image-quality claim.
 - The only production owners in this slice are `scripts/local_gpu_imagegen/file_verification.py`, `scripts/local_gpu_imagegen/discovery.py`, `scripts/local_gpu_imagegen/services.py`, and `scripts/mcp_server.py`.
-- The new slice has a hard ceiling of 350 net production lines across those four files, approved after Task 3 composition review. The current implementation is 345 net lines, leaving 5 lines of review margin. Stop for design review before weakening validation or adding another owner if the ceiling is exceeded.
+- The new slice has a hard ceiling of 350 net production lines across those four files, approved after Task 3 composition review. The reviewed implementation is 349 net lines, leaving 1 line of margin. Stop for design review before weakening validation or adding another owner if the ceiling is exceeded.
 - Exact-file planning performs stat and path-safety checks only. Full SHA-256 happens only during exact-file verification execution.
 - Never hash authorized files at process startup. Revalidate only the exact file referenced by the workflow currently requested.
 - Accept exactly one local root and one explicit file when an active authorization cannot be uniquely resolved. Reject UNC/network paths, escapes, links, junctions, reparse points, directories, ambiguity, and model-name mismatch.
@@ -37,7 +37,7 @@
 - Modify `tests/test_mcp_server.py`: strict schema/dispatch/confirmation behavior and exactly-17 assertion.
 - Modify `tests/test_skill_contract.py`, `tests/test_public_docs.py`: exact three-decision first-use and reduced later-use contracts.
 - Modify `skills/local-gpu-imagegen/SKILL.md`, `docs/quickstart.md`, `docs/troubleshooting.md`, `docs/architecture.md`: user-visible sequence, cost, drift, recovery, and non-claims.
-- Modify root continuity files only after verification: `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\PROJECT_NODES.md` and `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\NEXT_SESSION.md`.
+- Modify root continuity files only after verification: `<project-root>/PROJECT_NODES.md` and `<project-root>/NEXT_SESSION.md`.
 
 ---
 
@@ -998,8 +998,8 @@ Expected: PASS; no public document claims generated-image, image-quality, produc
 ### Task 5: Model-Free Verification, Review, Continuity, And Live-Gate Handoff
 
 **Files:**
-- Modify after verification: `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\PROJECT_NODES.md`
-- Modify after verification: `D:\CodexWorkspace\projects\plugins\local-gpu-imagegen\NEXT_SESSION.md`
+- Modify after verification: `<project-root>/PROJECT_NODES.md`
+- Modify after verification: `<project-root>/NEXT_SESSION.md`
 - No production or test code changes in this task unless a failing gate is first reproduced with a RED test.
 
 **Interfaces:**
@@ -1038,7 +1038,7 @@ git diff --name-only 484285c..HEAD
 git diff --numstat 484285c..HEAD -- scripts/local_gpu_imagegen/file_verification.py scripts/local_gpu_imagegen/discovery.py scripts/local_gpu_imagegen/services.py scripts/mcp_server.py
 ```
 
-Expected: frozen workflow bytes PASS; no new production owner exists; the four-owner slice is exactly 345 net lines and at most 350. Existing branch production ownership from `3fb4516` remains separately accounted from this slice.
+Expected: frozen workflow bytes PASS; no new production owner exists; the four-owner slice is exactly 349 net lines and at most 350. Existing branch production ownership from `3fb4516` remains separately accounted from this slice.
 
 - [ ] **Step 4: Review failure atomicity and branch history**
 

@@ -13,6 +13,7 @@ import sys
 
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import mcp_server  # noqa: E402
 from local_gpu_imagegen.services import RuntimeServices, build_services  # noqa: E402
 
 
@@ -118,7 +119,7 @@ class RuntimeServicesTests(unittest.TestCase):
         self.assertIs(services.discovery.file_verifications, services.file_verifications)
         self.assertEqual(services.file_verifications.path, root / "state" / "file-verifications.json")
 
-    def test_fresh_process_restores_exact_file_before_workflow_inspection(self) -> None:
+    def test_fresh_process_restores_exact_file_before_workflow_trust_inspection(self) -> None:
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as directory:
             root = Path(directory)
             model_root = root / "models"
@@ -164,7 +165,60 @@ class RuntimeServicesTests(unittest.TestCase):
                 self.assertEqual(fingerprint.call_count, 1)
                 proposal = second.onboarding.inspect(workflow)
 
+                filesystem = next(
+                    item for item in second.discovery.inventory()
+                    if item["backend"] == "filesystem"
+                )
+                identity = mcp_server.identity_token(filesystem)
+                trust_arguments = {
+                    "action": "inspect_workflow_binding",
+                    "identity_token": identity,
+                    "capabilities": {"operations": ["txt2img"]},
+                    "workflow_path": str(workflow),
+                    "workflow_binding": proposal["binding"],
+                    "component_identity_tokens": [identity],
+                }
+                with patch.object(mcp_server, "get_runtime_services", return_value=second):
+                    trust_inspection = mcp_server.handle_tool_call({
+                        "name": "local_gpu_set_model_trust",
+                        "arguments": trust_arguments,
+                    })
+
+                control = build_services(
+                    ROOT, root / "outputs-3", root / "control-state",
+                    lambda: {"available_backends": ["comfyui"]}, lambda request: {},
+                )
+                control_plan = control.discovery.plan({
+                    "mode": "api_only", "stage": "index",
+                })
+                control.discovery.execute(
+                    str(control_plan["plan_id"]), str(control_plan["confirmation"])
+                )
+                api_identity = mcp_server.identity_token(control.discovery.inventory()[0])
+                with patch.object(mcp_server, "get_runtime_services", return_value=control):
+                    api_only_inspection = mcp_server.handle_tool_call({
+                        "name": "local_gpu_set_model_trust",
+                        "arguments": {
+                            **trust_arguments,
+                            "identity_token": api_identity,
+                            "component_identity_tokens": [api_identity],
+                        },
+                    })
+
             self.assertTrue(proposal["registrable"])
+            self.assertFalse(trust_inspection["isError"])
+            self.assertTrue(
+                trust_inspection["structuredContent"]["confirmations"]["approve_private"].startswith(
+                    f"approve_private:{identity}:bundle:"
+                )
+            )
+            self.assertTrue(api_only_inspection["isError"])
+            self.assertIn(
+                api_only_inspection["structuredContent"]["error"]["code"],
+                {"component_primary_identity_required", "invalid_component_bundle"},
+            )
+            self.assertEqual(second.trust.list_records(), [])
+            self.assertEqual(control.trust.list_records(), [])
             self.assertEqual({item["backend"] for item in second.discovery.inventory()}, {"comfyui", "filesystem"})
             self.assertEqual(adapter.generate_calls, 0)
 

@@ -160,6 +160,22 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(len(result["candidates"]), 1)
         self.assertFalse(result["candidates"][0]["trusted"])
 
+    def test_discovery_modes_reject_cross_family_stages_before_work(self) -> None:
+        model = self.root / "model.safetensors"
+        model.write_bytes(b"unread")
+        cases = (
+            {"mode": "exact_file", "stage": "index"},
+            {"mode": "api_only", "stage": "revoke"},
+            {"mode": "selected_folders", "stage": "verify", "roots": [str(self.root)]},
+        )
+        for request in cases:
+            with self.subTest(request=request), self.assertRaisesRegex(
+                ValidationError, "invalid_discovery_stage"
+            ):
+                self.service.plan(request)
+        self.assertEqual(self.adapter.discovery_calls, 0)
+        self.assertEqual(self.service.inventory(), [])
+
     def test_exact_file_first_plan_is_stat_only_and_confirmation_bound(self) -> None:
         model = self.root / "model.safetensors"
         model.write_bytes(safetensors_bytes({}, b"weights"))
@@ -247,6 +263,38 @@ class DiscoveryTests(unittest.TestCase):
             result = self.service.execute(str(plan["plan_id"]), str(plan["confirmation"]))
         self.assertEqual(result["authorization"]["status"], "revoked")
         self.assertEqual(result["candidates"], [])
+
+    def test_revocation_invalidates_an_older_automatic_reverify_plan(self) -> None:
+        model = self.root / "model.safetensors"
+        model.write_bytes(b"weights")
+        verified = self.exact_plan()
+        self.service.execute(str(verified["plan_id"]), str(verified["confirmation"]))
+        authorization = self.file_verifications.resolve(backend_model_id="model.safetensors")
+        stale = self.service.plan({
+            "mode": "exact_file", "stage": "verify",
+            "authorization_id": authorization["authorization_id"],
+        })
+        revoke = self.service.plan({
+            "mode": "exact_file", "stage": "revoke",
+            "authorization_id": authorization["authorization_id"],
+        })
+        self.service.execute(str(revoke["plan_id"]), str(revoke["confirmation"]))
+
+        with patch(
+            "local_gpu_imagegen.discovery.fingerprint_selected_file",
+            wraps=__import__(
+                "local_gpu_imagegen.discovery", fromlist=["fingerprint_selected_file"]
+            ).fingerprint_selected_file,
+        ) as fingerprint:
+            with self.assertRaisesRegex(ConflictError, "file_verification_not_found"):
+                self.service.execute(str(stale["plan_id"]), None)
+        fingerprint.assert_not_called()
+        self.assertEqual(
+            self.file_verifications.resolve(
+                authorization_id=authorization["authorization_id"], active_only=False
+            )["status"],
+            "revoked",
+        )
 
     def test_exact_file_rejects_unsafe_or_ambiguous_plans_without_state_mutation(self) -> None:
         model = self.root / "model.safetensors"

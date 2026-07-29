@@ -1,8 +1,8 @@
 # Fresh-Process File Verification Authorization Design
 
-**Date:** 2026-07-28  
+**Date:** 2026-07-28
 **Status:** Design and bounded budget amendment approved in conversation
-**Parent slice:** Codex-first workflow runner (`codex/codex-first-workflow-runner`)  
+**Parent slice:** Codex-first workflow runner (`codex/codex-first-workflow-runner`)
 **Current branch base:** `7ccda6c`
 
 ## Problem And Root Cause

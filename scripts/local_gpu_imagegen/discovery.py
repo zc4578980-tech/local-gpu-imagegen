@@ -183,6 +183,8 @@ class DiscoveryService:
                 "invalid_discovery_stage",
                 "Discovery stage is unsupported.",
             )
+        if (mode == "exact_file") != (stage in {"verify", "revoke"}):
+            raise ValidationError("invalid_discovery_stage", "Discovery stage is not valid for this mode.")
         if mode == "exact_file":
             return self._normalize_exact_file(request)
 
@@ -407,13 +409,15 @@ class DiscoveryService:
         }
     def _execute_exact_file(self, plan: dict[str, object]) -> tuple[list[dict[str, object]], bool]:
         indexed = plan["_frozen_candidates"][0]
+        authorization = self.file_verifications.resolve(authorization_id=plan.get("authorization_id")) if plan.get("authorization_id") else None
+        if plan.get("authorization_id") and authorization is None:
+            raise ConflictError("file_verification_not_found", "File verification authorization is no longer active.")
         try:
             fingerprint = fingerprint_selected_file(Path(str(indexed["local_path"])), indexed)
         except ConflictError:
             if plan.get("authorization_id"):
                 self.file_verifications.set_status(str(plan["authorization_id"]), "drifted")
             raise
-        authorization = self.file_verifications.resolve(authorization_id=plan.get("authorization_id")) if plan.get("authorization_id") else None
         if authorization is not None and fingerprint["sha256"] != authorization["sha256"]:
             self.file_verifications.set_status(str(authorization["authorization_id"]), "drifted")
             raise ConflictError("model_identity_drifted", "Authorized model bytes changed after the last approved verification.")
