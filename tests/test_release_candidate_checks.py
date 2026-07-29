@@ -223,6 +223,14 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                 results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
                 self.assertIn("unsafe_wheel_entry", self.codes(results))
 
+    def test_wheel_rejects_case_insensitive_private_directories(self) -> None:
+        for entry in ("Models/private.safetensors", "package/OUTPUTS/run.json"):
+            with self.subTest(entry=entry):
+                root = self.make_release_root()
+                wheel = self.make_wheel(root, extra_entry=entry)
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("unsafe_wheel_entry", self.codes(results))
+
     def test_wheel_rejects_filename_hash_and_dist_info_failures(self) -> None:
         root = self.make_release_root()
         wheel = self.make_wheel(root)
@@ -266,6 +274,27 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
         self.assertIn("registry_descriptor_drift", self.codes(results))
 
+    def test_wheel_rejects_duplicate_or_conflicting_metadata_identity_headers(self) -> None:
+        identity_headers = {
+            "Name": ("local-gpu-imagegen", "other-project"),
+            "Version": ("0.8.0", "9.9.9"),
+            "Requires-Python": (">=3.11", ">=3.12"),
+        }
+        base = (
+            "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.0\n"
+            "Requires-Python: >=3.11\n"
+        )
+        for header, (expected, conflicting) in identity_headers.items():
+            for duplicate in (expected, conflicting):
+                with self.subTest(header=header, duplicate=duplicate):
+                    root = self.make_release_root()
+                    wheel = self.make_wheel(
+                        root,
+                        metadata=f"{base}{header}: {duplicate}\n\n",
+                    )
+                    results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                    self.assertIn("wheel_metadata_invalid", self.codes(results))
+
     def test_wheel_rejects_unsafe_zip_forms_and_sensitive_content(self) -> None:
         root = self.make_release_root()
         wheel = self.make_wheel(root, extra_entry="local_gpu_imagegen\\bad.py")
@@ -302,14 +331,32 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
         self.assertIn("wheel_archive_too_large", self.codes(results))
 
+    def test_wheel_rejects_oversized_file_before_hash_or_zip_open(self) -> None:
+        root = self.make_release_root()
+        wheel = root / checks.EXPECTED_WHEEL
+        with wheel.open("wb") as target:
+            target.truncate(checks.MAX_WHEEL_BYTES + 1)
+
+        with (
+            patch.object(checks, "_stream_sha256") as stream_sha256,
+            patch.object(checks.zipfile, "ZipFile") as zip_file,
+        ):
+            results, _ = checks.inspect_wheel(root, wheel, "0" * 64)
+
+        self.assertIn("wheel_file_too_large", self.codes(results))
+        stream_sha256.assert_not_called()
+        zip_file.assert_not_called()
+
     def test_wheel_rejects_total_size_overflow_without_reading_entries(self) -> None:
         root = self.make_release_root()
         wheel = self.make_wheel(root)
         with zipfile.ZipFile(wheel, "a") as archive:
             for number in range(9):
                 archive.writestr(f"local_gpu_imagegen/{number}.bin", b"x" * 1_900_000)
-        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        with patch.object(checks, "_archive_bytes", wraps=checks._archive_bytes) as archive_bytes:
+            results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
         self.assertIn("wheel_archive_too_large", self.codes(results))
+        archive_bytes.assert_not_called()
 
     def test_wheel_rejects_duplicate_members_and_malformed_wheel_headers(self) -> None:
         root = self.make_release_root()
@@ -348,6 +395,20 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                 wheel = self.make_wheel(root, extra_entry=entry)
                 results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
                 self.assertIn("unsafe_wheel_entry", self.codes(results))
+
+    def test_wheel_does_not_read_content_after_unsafe_or_invalid_layout(self) -> None:
+        cases = (
+            ({"extra_entry": "../escape.py"}, "unsafe_wheel_entry"),
+            ({"include_metadata": False}, "wheel_dist_info_invalid"),
+        )
+        for wheel_args, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                root = self.make_release_root()
+                wheel = self.make_wheel(root, **wheel_args)
+                with patch.object(checks, "_archive_bytes", wraps=checks._archive_bytes) as archive_bytes:
+                    results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn(expected_code, self.codes(results))
+                archive_bytes.assert_not_called()
 
     def test_wheel_reports_hash_read_failure_without_exception(self) -> None:
         root = self.make_release_root()

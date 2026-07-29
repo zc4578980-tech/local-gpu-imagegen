@@ -26,6 +26,8 @@ EXPECTED_DIST_INFO = "local_gpu_imagegen-0.8.0.dist-info"
 MAX_ENTRIES = 256
 MAX_ENTRY_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
+# Allows ZIP overhead above the 16 MiB content limit while bounding file I/O.
+MAX_WHEEL_BYTES = 32 * 1024 * 1024
 
 GitRunner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -147,7 +149,7 @@ def _is_safe_entry(info: zipfile.ZipInfo) -> bool:
     path = PurePosixPath(name)
     if path.is_absolute() or ".." in path.parts:
         return False
-    if any(part in {"models", "outputs"} for part in path.parts):
+    if any(part.casefold() in {"models", "outputs"} for part in path.parts):
         return False
     mode = info.external_attr >> 16
     file_type = stat.S_IFMT(mode)
@@ -232,6 +234,8 @@ def inspect_wheel(
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
     if not stat.S_ISREG(wheel_stat.st_mode) or bool(attributes & reparse_flag):
         return [blocked_check("wheel_file", "wheel_not_regular")], {}
+    if wheel_stat.st_size > MAX_WHEEL_BYTES:
+        return [blocked_check("wheel_file", "wheel_file_too_large")], {}
 
     try:
         actual_sha256 = _stream_sha256(wheel)
@@ -265,7 +269,8 @@ def inspect_wheel(
                 results.append(passed_check("wheel_archive", entries=len(entries), bytes=total_size))
                 archive_too_large = False
 
-            if any(not _is_safe_entry(info) for info in entries):
+            entries_safe = all(_is_safe_entry(info) for info in entries)
+            if not entries_safe:
                 results.append(blocked_check("wheel_entries", "unsafe_wheel_entry"))
             else:
                 results.append(passed_check("wheel_entries"))
@@ -274,9 +279,10 @@ def inspect_wheel(
             duplicates = {name for name, count in Counter(info.filename for info in entries).items() if count > 1}
             dist_roots = {name.split("/", 1)[0] for name in names if ".dist-info/" in name}
             required = {f"{EXPECTED_DIST_INFO}/{item}" for item in ("METADATA", "WHEEL", "RECORD")}
-            if duplicates or dist_roots != {EXPECTED_DIST_INFO} or not required <= names:
+            dist_info_valid = not duplicates and dist_roots == {EXPECTED_DIST_INFO} and required <= names
+            if not dist_info_valid:
                 results.append(blocked_check("wheel_dist_info", "wheel_dist_info_invalid"))
-            elif not archive_too_large:
+            elif not archive_too_large and entries_safe:
                 metadata = BytesParser(policy=default).parsebytes(
                     _archive_bytes(archive, f"{EXPECTED_DIST_INFO}/METADATA")
                 )
@@ -284,9 +290,9 @@ def inspect_wheel(
                     _archive_bytes(archive, f"{EXPECTED_DIST_INFO}/WHEEL")
                 )
                 if (
-                    metadata.get("Name") != "local-gpu-imagegen"
-                    or metadata.get("Version") != EXPECTED_VERSION
-                    or metadata.get("Requires-Python") != EXPECTED_REQUIRES_PYTHON
+                    metadata.get_all("Name") != ["local-gpu-imagegen"]
+                    or metadata.get_all("Version") != [EXPECTED_VERSION]
+                    or metadata.get_all("Requires-Python") != [EXPECTED_REQUIRES_PYTHON]
                     or metadata.get_all("Requires-Dist")
                     or wheel_metadata.get_all("Wheel-Version") != ["1.0"]
                     or wheel_metadata.get_all("Tag") != ["py3-none-any"]
@@ -295,7 +301,7 @@ def inspect_wheel(
                 else:
                     results.append(passed_check("wheel_metadata", version=EXPECTED_VERSION))
 
-            if archive_too_large:
+            if archive_too_large or not entries_safe or not dist_info_valid:
                 pass
             elif any(_contains_sensitive_content(_archive_bytes(archive, info.filename)) for info in entries if not info.is_dir()):
                 results.append(blocked_check("wheel_content", "sensitive_wheel_content"))
