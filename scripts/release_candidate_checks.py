@@ -10,6 +10,7 @@ import stat
 import subprocess
 import tomllib
 import zipfile
+from collections import Counter
 from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path, PurePosixPath
@@ -48,6 +49,17 @@ def _git_failed(result: subprocess.CompletedProcess[str]) -> bool:
     return result.returncode != 0 and result.returncode != 1 or bool(result.stderr.strip())
 
 
+def _run_git(
+    runner: GitRunner,
+    root: Path,
+    *args: str,
+) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return runner(root, *args)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _untracked_name(status_line: str) -> str:
     name = status_line[3:].strip().replace("\\", "/")
     return name.lstrip("/")
@@ -63,8 +75,8 @@ def inspect_checkout(
     if not SHA1_RE.fullmatch(expected_commit):
         return [blocked_check("candidate_commit", "candidate_commit_invalid")], {}
 
-    head = runner(root, "rev-parse", "HEAD")
-    if head.returncode != 0 or head.stderr.strip():
+    head = _run_git(runner, root, "rev-parse", "HEAD")
+    if head is None or head.returncode != 0 or head.stderr.strip():
         return [blocked_check("git_checkout", "git_checkout_unavailable")], {}
     commit = head.stdout.strip()
     if not SHA1_RE.fullmatch(commit):
@@ -77,28 +89,38 @@ def inspect_checkout(
     else:
         results.append(passed_check("candidate_commit", commit=commit))
 
-    worktree = runner(root, "diff", "--quiet")
-    if _git_failed(worktree):
+    worktree = _run_git(runner, root, "diff", "--quiet")
+    if worktree is None or _git_failed(worktree):
         results.append(blocked_check("git_checkout", "git_checkout_unavailable"))
     elif worktree.returncode == 1:
         results.append(blocked_check("tracked_worktree", "tracked_worktree_dirty"))
     else:
         results.append(passed_check("tracked_worktree"))
 
-    index = runner(root, "diff", "--cached", "--quiet")
-    if _git_failed(index):
+    index = _run_git(runner, root, "diff", "--cached", "--quiet")
+    if index is None or _git_failed(index):
         results.append(blocked_check("git_checkout", "git_checkout_unavailable"))
     elif index.returncode == 1:
         results.append(blocked_check("index", "index_dirty"))
     else:
         results.append(passed_check("index"))
 
-    status = runner(root, "status", "--porcelain=v1")
-    if status.returncode != 0 or status.stderr.strip():
+    status = _run_git(runner, root, "status", "--porcelain=v1")
+    if status is None or status.returncode != 0 or status.stderr.strip():
         results.append(blocked_check("git_checkout", "git_checkout_unavailable"))
         return results, facts
 
-    untracked = [_untracked_name(line) for line in status.stdout.splitlines() if line.startswith("?? ")]
+    untracked: list[str] = []
+    for line in status.stdout.splitlines():
+        if line.startswith("?? "):
+            untracked.append(_untracked_name(line))
+        elif len(line) < 3 or line[2] != " ":
+            results.append(blocked_check("git_checkout", "git_checkout_status_invalid"))
+        else:
+            if line[0] != " ":
+                results.append(blocked_check("index", "index_dirty"))
+            if line[1] != " ":
+                results.append(blocked_check("tracked_worktree", "tracked_worktree_dirty"))
     facts["untracked_count"] = len(untracked)
     facts["untracked_files"] = untracked[:20]
     results.append(passed_check("untracked_files", count=len(untracked)))
@@ -122,6 +144,11 @@ def _is_safe_entry(info: zipfile.ZipInfo) -> bool:
         or name.startswith("/")
         or re.match(r"^[A-Za-z]:", name)
     ):
+        return False
+    source_parts = original_name.split("/")
+    if any(part in {".", ".."} for part in source_parts):
+        return False
+    if any(not part for part in source_parts[:-1]) or (not info.is_dir() and not source_parts[-1]):
         return False
     path = PurePosixPath(name)
     if path.is_absolute() or ".." in path.parts:
@@ -212,7 +239,10 @@ def inspect_wheel(
     if not stat.S_ISREG(wheel_stat.st_mode) or bool(attributes & reparse_flag):
         return [blocked_check("wheel_file", "wheel_not_regular")], {}
 
-    actual_sha256 = _stream_sha256(wheel)
+    try:
+        actual_sha256 = _stream_sha256(wheel)
+    except OSError:
+        return [blocked_check("wheel_file", "wheel_unavailable")], {}
     results: list[dict[str, object]] = []
     facts: dict[str, object] = {"sha256": actual_sha256}
     if wheel.name != EXPECTED_WHEEL:
@@ -236,8 +266,10 @@ def inspect_wheel(
                 or any(info.file_size > MAX_ENTRY_BYTES for info in entries)
             ):
                 results.append(blocked_check("wheel_archive", "wheel_archive_too_large"))
+                archive_too_large = True
             else:
                 results.append(passed_check("wheel_archive", entries=len(entries), bytes=total_size))
+                archive_too_large = False
 
             if any(not _is_safe_entry(info) for info in entries):
                 results.append(blocked_check("wheel_entries", "unsafe_wheel_entry"))
@@ -245,28 +277,33 @@ def inspect_wheel(
                 results.append(passed_check("wheel_entries"))
 
             names = {info.filename for info in entries}
+            duplicates = {name for name, count in Counter(info.filename for info in entries).items() if count > 1}
             dist_roots = {name.split("/", 1)[0] for name in names if ".dist-info/" in name}
             required = {f"{EXPECTED_DIST_INFO}/{item}" for item in ("METADATA", "WHEEL", "RECORD")}
-            if dist_roots != {EXPECTED_DIST_INFO} or not required <= names:
+            if duplicates or dist_roots != {EXPECTED_DIST_INFO} or not required <= names:
                 results.append(blocked_check("wheel_dist_info", "wheel_dist_info_invalid"))
-            else:
+            elif not archive_too_large:
                 metadata = BytesParser(policy=default).parsebytes(
                     _archive_bytes(archive, f"{EXPECTED_DIST_INFO}/METADATA")
                 )
-                wheel_text = _archive_bytes(archive, f"{EXPECTED_DIST_INFO}/WHEEL").decode("utf-8")
+                wheel_metadata = BytesParser(policy=default).parsebytes(
+                    _archive_bytes(archive, f"{EXPECTED_DIST_INFO}/WHEEL")
+                )
                 if (
                     metadata.get("Name") != "local-gpu-imagegen"
                     or metadata.get("Version") != EXPECTED_VERSION
                     or metadata.get("Requires-Python") != EXPECTED_REQUIRES_PYTHON
                     or metadata.get_all("Requires-Dist")
-                    or "Wheel-Version: 1.0" not in wheel_text
-                    or "Tag: py3-none-any" not in wheel_text
+                    or wheel_metadata.get("Wheel-Version") != "1.0"
+                    or wheel_metadata.get_all("Tag") != ["py3-none-any"]
                 ):
                     results.append(blocked_check("wheel_metadata", "wheel_metadata_invalid"))
                 else:
                     results.append(passed_check("wheel_metadata", version=EXPECTED_VERSION))
 
-            if any(_contains_sensitive_content(_archive_bytes(archive, info.filename)) for info in entries if not info.is_dir() and info.file_size <= MAX_ENTRY_BYTES):
+            if archive_too_large:
+                pass
+            elif any(_contains_sensitive_content(_archive_bytes(archive, info.filename)) for info in entries if not info.is_dir()):
                 results.append(blocked_check("wheel_content", "sensitive_wheel_content"))
             else:
                 results.append(passed_check("wheel_content"))

@@ -11,6 +11,7 @@ import unittest
 import uuid
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,6 +103,25 @@ class ReleaseCandidateStaticTests(unittest.TestCase):
         results, _ = checks.inspect_checkout(root, commit, runner=unavailable)
         self.assertIn("git_checkout_unavailable", self.codes(results))
 
+    def test_checkout_blocks_porcelain_tracked_state_and_runner_exception(self) -> None:
+        root, commit = self.make_git_checkout()
+
+        def porcelain_dirty(_: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            if args == ("rev-parse", "HEAD"):
+                return subprocess.CompletedProcess(["git", *args], 0, commit + "\n", "")
+            if args == ("status", "--porcelain=v1"):
+                return subprocess.CompletedProcess(["git", *args], 0, " M tracked.txt\n", "")
+            return subprocess.CompletedProcess(["git", *args], 0, "", "")
+
+        results, _ = checks.inspect_checkout(root, commit, runner=porcelain_dirty)
+        self.assertIn("tracked_worktree_dirty", self.codes(results))
+
+        def raises(_: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            raise FileNotFoundError("git unavailable")
+
+        results, _ = checks.inspect_checkout(root, commit, runner=raises)
+        self.assertEqual(self.codes(results), {"git_checkout_unavailable"})
+
 
 class ReleaseCandidateWheelTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -135,6 +155,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         extra_dist_info: bool = False,
         symlink: bool = False,
         extra_content: str = "fixture",
+        wheel_headers: str = "Wheel-Version: 1.0\nTag: py3-none-any\n",
     ) -> Path:
         wheel = root / "local_gpu_imagegen-0.8.0-py3-none-any.whl"
         metadata = metadata or (
@@ -147,7 +168,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                 archive.writestr("local_gpu_imagegen-0.8.0.dist-info/METADATA", metadata)
             archive.writestr(
                 "local_gpu_imagegen-0.8.0.dist-info/WHEEL",
-                "Wheel-Version: 1.0\nTag: py3-none-any\n",
+                wheel_headers,
             )
             archive.writestr("local_gpu_imagegen-0.8.0.dist-info/RECORD", "")
             if extra_dist_info:
@@ -270,3 +291,47 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             archive.writestr("local_gpu_imagegen/large.py", b"x" * (2 * 1024 * 1024 + 1))
         results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
         self.assertIn("wheel_archive_too_large", self.codes(results))
+
+    def test_wheel_rejects_total_size_overflow_without_reading_entries(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root)
+        with zipfile.ZipFile(wheel, "a") as archive:
+            for number in range(9):
+                archive.writestr(f"local_gpu_imagegen/{number}.bin", b"x" * 1_900_000)
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("wheel_archive_too_large", self.codes(results))
+
+    def test_wheel_rejects_duplicate_members_and_malformed_wheel_headers(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root)
+        with zipfile.ZipFile(wheel, "a") as archive:
+            archive.writestr(
+                "local_gpu_imagegen-0.8.0.dist-info/METADATA",
+                "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.0\n"
+                "Requires-Python: >=3.11\n\n",
+            )
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("wheel_dist_info_invalid", self.codes(results))
+
+        root = self.make_release_root()
+        wheel = self.make_wheel(
+            root,
+            wheel_headers="Wheel-Version: 1.0\nTag: py3-none-any-extra\n",
+        )
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("wheel_metadata_invalid", self.codes(results))
+
+    def test_wheel_rejects_non_normalized_member_spelling(self) -> None:
+        for entry in ("local_gpu_imagegen//file.py", "local_gpu_imagegen/./file.py"):
+            with self.subTest(entry=entry):
+                root = self.make_release_root()
+                wheel = self.make_wheel(root, extra_entry=entry)
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("unsafe_wheel_entry", self.codes(results))
+
+    def test_wheel_reports_hash_read_failure_without_exception(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root)
+        with patch.object(checks, "_stream_sha256", side_effect=OSError("unavailable")):
+            results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertEqual(self.codes(results), {"wheel_unavailable"})
