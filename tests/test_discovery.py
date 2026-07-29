@@ -248,6 +248,61 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result["authorization"]["status"], "revoked")
         self.assertEqual(result["candidates"], [])
 
+    def test_exact_file_rejects_unsafe_or_ambiguous_plans_without_state_mutation(self) -> None:
+        model = self.root / "model.safetensors"
+        model.write_bytes(b"weights")
+        second = self.root / "second.safetensors"
+        second.write_bytes(b"second")
+        outside = self.root.parent / "outside.safetensors"
+        outside.write_bytes(b"outside")
+        registry_path = self.file_verifications.path
+        cases = (
+            ({"roots": [], "explicit_includes": []}, "invalid_discovery_plan"),
+            ({"roots": [str(self.root), str(self.root.parent)], "explicit_includes": [str(model)]}, "invalid_discovery_plan"),
+            ({"roots": [str(self.root)], "explicit_includes": [str(model), str(second)]}, "invalid_discovery_plan"),
+            ({"roots": [str(self.root)], "explicit_includes": [str(outside)]}, "unsafe_model_path"),
+            ({"roots": [str(self.root)], "explicit_includes": [str(self.root)]}, "unsafe_model_path"),
+            ({"roots": [str(self.root)], "explicit_includes": [str(self.root / "missing.bin")]}, "unsafe_model_path"),
+            ({"roots": [str(self.root)], "explicit_includes": [str(model)], "expected_backend_model_id": ""}, "invalid_discovery_plan"),
+            ({"authorization_id": "verification:" + "f" * 24}, "file_verification_not_found"),
+        )
+        original = registry_path.read_bytes() if registry_path.exists() else None
+        for changes, code in cases:
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(ValidationError, code):
+                    self.exact_plan(**changes)
+                self.assertEqual(self.service.inventory(), [])
+                self.assertEqual(
+                    registry_path.read_bytes() if registry_path.exists() else None,
+                    original,
+                )
+
+    def test_exact_file_first_execution_requires_confirmation(self) -> None:
+        model = self.root / "model.safetensors"
+        model.write_bytes(b"weights")
+        plan = self.exact_plan()
+        with self.assertRaisesRegex(ValidationError, "discovery_confirmation_mismatch"):
+            self.service.execute(str(plan["plan_id"]), None)
+        self.assertEqual(self.service.inventory(), [])
+
+    def test_exact_file_mid_read_drift_marks_authorization_and_keeps_inventory_empty(self) -> None:
+        model = self.root / "model.safetensors"
+        model.write_bytes(b"before")
+        plan = self.exact_plan()
+
+        def mutate_during_hash(path: Path) -> str:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            path.write_bytes(b"changed during hash")
+            return digest
+
+        with patch(
+            "local_gpu_imagegen.model_identity.sha256_file",
+            side_effect=mutate_during_hash,
+        ), self.assertRaisesRegex(ConflictError, "model_identity_drifted"):
+            self.service.execute(str(plan["plan_id"]), str(plan["confirmation"]))
+        self.assertEqual(self.service.inventory(), [])
+        self.assertIsNone(self.file_verifications.resolve(backend_model_id="model.safetensors"))
+
     def test_stage_one_reads_safe_metadata_without_hashing_weights(self) -> None:
         model = self.root / "anime.safetensors"
         model.write_bytes(safetensors_bytes({"modelspec.title": "Anime Model"}))

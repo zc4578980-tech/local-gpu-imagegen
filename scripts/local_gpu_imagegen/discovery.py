@@ -337,6 +337,8 @@ class DiscoveryService:
             raise ValidationError("invalid_discovery_plan", "Exact-file discovery does not accept backends or selected candidates.")
         authorization_id = request.get("authorization_id")
         expected = request.get("expected_backend_model_id")
+        if stage != "revoke" and expected is not None and (not isinstance(expected, str) or not expected.strip()):
+            raise ValidationError("invalid_discovery_plan", "Exact-file verification requires a non-empty workflow loader model name.")
         authorization = self.file_verifications.resolve(
             backend_model_id=expected if isinstance(expected, str) else None,
             authorization_id=authorization_id if isinstance(authorization_id, str) else None,
