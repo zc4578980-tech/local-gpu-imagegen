@@ -234,3 +234,105 @@ OK
   `UserWarning`; it is contained to the test fixture.
 - This remains static offline validation only. No wheel was built or consumed,
   and no MCP, GPU, network, client-state, or publication action was performed.
+
+---
+
+## Third Review Fix Evidence (2026-07-29)
+
+### Changed Files
+
+- `scripts/release_candidate_checks.py`
+- `tests/test_release_candidate_checks.py`
+- `.superpowers/sdd/task-1-report.md`
+
+### RED And Focused GREEN Evidence
+
+Wheel file byte ceiling:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_rejects_oversized_file_before_hash_or_zip_open -v
+```
+
+RED: `Ran 1 test in 0.013s`, `FAILED (errors=1)` because
+`MAX_WHEEL_BYTES` did not exist. GREEN: `Ran 1 test in 0.074s`, `OK`.
+
+Duplicate/conflicting METADATA identity headers:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_rejects_duplicate_or_conflicting_metadata_identity_headers -v
+```
+
+RED: `Ran 1 test in 0.071s`, `FAILED (failures=6)`. GREEN:
+`Ran 1 test in 0.076s`, `OK`.
+
+Case-insensitive private directories:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_rejects_case_insensitive_private_directories -v
+```
+
+RED: `Ran 1 test in 0.030s`, `FAILED (failures=2)`. GREEN:
+`Ran 1 test in 0.026s`, `OK`.
+
+Unsafe/invalid layout read short-circuit:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_does_not_read_content_after_unsafe_or_invalid_layout -v
+```
+
+RED: `Ran 1 test in 0.028s`, `FAILED (failures=2)` with 7 and 3 observed
+archive reads. GREEN: `Ran 1 test in 0.025s`, `OK` with zero reads.
+
+Total-size overflow read assertion:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks.ReleaseCandidateWheelTests.test_wheel_rejects_total_size_overflow_without_reading_entries -v
+```
+
+The strengthened `assert_not_called()` coverage was GREEN immediately because
+the prior size-limit fix already short-circuited content reads: `Ran 1 test in
+0.054s`, `OK`. No production change was needed for this coverage-only finding.
+
+### Final GREEN Evidence
+
+Commands:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks -v
+python -m py_compile scripts\release_candidate_checks.py tests\test_release_candidate_checks.py
+git diff --check
+```
+
+Output summary after final test organization review:
+
+```text
+Ran 21 tests in 5.640s
+OK
+```
+
+`py_compile` and `git diff --check` completed with exit code 0.
+
+### Commit
+
+- `bb4ba3b4ada70db6f9a21baf17fed7b722ab56ce fix: bound static wheel inspection`
+
+### Self-Review
+
+- A 32 MiB wheel-file ceiling is checked from `lstat` before hashing or opening
+  the ZIP. This conservatively permits overhead above the existing 16 MiB
+  uncompressed-content ceiling while bounding file and central-directory I/O.
+- `Name`, `Version`, and `Requires-Python` each require exactly one expected
+  METADATA value; duplicate and conflicting values fail closed.
+- Forbidden `models` and `outputs` path components use Unicode case folding for
+  Windows-compatible case-insensitive comparison.
+- Oversized, unsafe, or ambiguous archives do not call `_archive_bytes` for
+  metadata or content scans.
+- No MCP files, package metadata, GPU/backend state, client state, network, or
+  publication surfaces were touched.
+
+### Concerns
+
+- The duplicate-member fixture emits Python `zipfile`'s expected local
+  `UserWarning`; the test remains passing and isolated.
+- The total-size no-read assertion was characterization coverage rather than a
+  RED defect because the behavior was already correct before that assertion.
