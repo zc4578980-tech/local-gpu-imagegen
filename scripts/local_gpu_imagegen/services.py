@@ -10,6 +10,7 @@ from .backends.comfyui import ComfyUIAdapter
 from .backends.webui import WebUIAdapter
 from .discovery import DiscoveryService
 from .engine import AssetRunEngine
+from .file_verification import FileVerificationRegistry
 from .model_catalog import ModelCatalog
 from .model_router import CapabilityRouter
 from .profile_registry import ProfileRegistry
@@ -27,6 +28,7 @@ CapabilityProvider = Callable[[], dict[str, object]]
 @dataclass(slots=True)
 class RuntimeServices:
     discovery: DiscoveryService
+    file_verifications: FileVerificationRegistry
     trust: TrustRegistry
     catalog: ModelCatalog
     router: CapabilityRouter
@@ -59,8 +61,9 @@ def build_services(
     root = Path(root)
     workflows = WorkflowTemplateRegistry(root / "workflows" / "comfyui", state_dir)
     backends = BackendRegistry(adapters_from_environment(), {"diffusers": diffusers_runner})
+    file_verifications = FileVerificationRegistry(state_dir)
     trust = TrustRegistry(state_dir)
-    discovery = DiscoveryService(backends)
+    discovery = DiscoveryService(backends, file_verifications)
     onboarding = WorkflowOnboarding(workflows, discovery.inventory)
     catalog = ModelCatalog(
         root / "profiles" / "models",
@@ -87,6 +90,7 @@ def build_services(
     )
     return RuntimeServices(
         discovery=discovery,
+        file_verifications=file_verifications,
         trust=trust,
         catalog=catalog,
         router=router,

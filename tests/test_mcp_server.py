@@ -146,6 +146,7 @@ class McpServerUnitTests(unittest.TestCase):
             "local_gpu_discover_models": {
                 "phase", "mode", "stage", "backends", "roots", "explicit_includes", "plan_id",
                 "confirmation", "network_confirmation", "selected_candidates",
+                "expected_backend_model_id", "authorization_id",
             },
             "local_gpu_set_model_trust": {
                 "action", "identity_token", "confirmation", "capabilities", "public_metadata",
@@ -196,6 +197,7 @@ class McpServerUnitTests(unittest.TestCase):
                     "local_gpu_discover_models": {
                         "mode", "stage", "backends", "roots", "explicit_includes", "plan_id",
                         "confirmation", "network_confirmation", "selected_candidates",
+                        "expected_backend_model_id", "authorization_id",
                     },
                     "local_gpu_set_model_trust": {
                         "confirmation", "capabilities", "public_metadata", "workflow_template_id",
@@ -285,6 +287,29 @@ class McpServerUnitTests(unittest.TestCase):
             register["properties"]["proposal_digest"]["pattern"],
             "^[0-9a-f]{64}$",
         )
+
+    def test_exact_file_discovery_extends_schema_without_an_eighteenth_tool(self) -> None:
+        tools = mcp_server.tool_schema()
+        self.assertEqual(len(tools), 17)
+        discovery = next(item for item in tools if item["name"] == "local_gpu_discover_models")
+        properties = discovery["inputSchema"]["properties"]
+        self.assertIn("exact_file", properties["mode"]["enum"])
+        self.assertEqual(set(properties["stage"]["enum"]), {"index", "fingerprint", "verify", "revoke"})
+        self.assertEqual(properties["expected_backend_model_id"], {"type": "string", "minLength": 1})
+        self.assertEqual(properties["authorization_id"]["pattern"], r"^verification:[0-9a-f]{24}$")
+
+    def test_exact_file_dispatch_forwards_identity_fields_and_optional_confirmation(self) -> None:
+        services = Mock()
+        services.discovery.execute.return_value = {"candidates": [], "trusted": False}
+        arguments = {
+            "phase": "execute", "plan_id": "plan-1",
+            "expected_backend_model_id": "model.safetensors",
+            "authorization_id": "verification:" + "a" * 24,
+        }
+        with patch.object(mcp_server, "get_runtime_services", return_value=services):
+            result = mcp_server.handle_tool_call({"name": "local_gpu_discover_models", "arguments": arguments})
+        self.assertFalse(result["isError"])
+        services.discovery.execute.assert_called_once_with("plan-1", None, network_confirmation=None)
 
     def test_start_run_accepts_exact_optional_two_stage_conditioning(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}

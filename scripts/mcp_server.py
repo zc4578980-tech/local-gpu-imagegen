@@ -508,8 +508,8 @@ def tool_schema() -> list[dict[str, Any]]:
             "description": "Plan or execute bounded local model discovery without loading model weights.",
             "inputSchema": _object_schema({
                 "phase": {"type": "string", "enum": ["plan", "execute"]},
-                "mode": {"type": "string", "enum": ["api_only", "selected_folders", "common_locations", "full_drive"]},
-                "stage": {"type": "string", "enum": ["index", "fingerprint"]},
+                "mode": {"type": "string", "enum": ["api_only", "selected_folders", "common_locations", "full_drive", "exact_file"]},
+                "stage": {"type": "string", "enum": ["index", "fingerprint", "verify", "revoke"]},
                 "backends": {"type": "array", "items": {"type": "string", "enum": ["webui", "comfyui"]}},
                 "roots": {"type": "array", "items": {"type": "string"}},
                 "explicit_includes": {"type": "array", "items": {"type": "string"}},
@@ -517,6 +517,8 @@ def tool_schema() -> list[dict[str, Any]]:
                 "confirmation": {"type": "string", "minLength": 1},
                 "network_confirmation": {"type": "string", "minLength": 1},
                 "selected_candidates": {"type": "array", "items": {"type": "string"}},
+                "expected_backend_model_id": {"type": "string", "minLength": 1},
+                "authorization_id": {"type": "string", "pattern": "^verification:[0-9a-f]{24}$"},
             }, ["phase"]),
             "outputSchema": _output_schema({
                 "plan_id": {"type": "string"},
@@ -527,6 +529,12 @@ def tool_schema() -> list[dict[str, Any]]:
                 "incomplete": {"type": "boolean"},
                 "candidates": json_array,
                 "trusted": {"type": "boolean"},
+                "confirmation_required": {"type": "boolean"},
+                "expected_backend_model_id": {"type": "string"},
+                "authorization_id": {"type": ["string", "null"]},
+                "byte_size": {"type": "integer", "minimum": 0},
+                "modified_ns": {"type": "integer", "minimum": 0},
+                "authorization": json_object,
             }, []),
         },
         {
@@ -1080,12 +1088,12 @@ def validate_tool_arguments(tool: dict[str, Any], arguments: dict[str, Any]) -> 
                     "Discovery planning cannot include execution confirmation fields.",
                     {"fields": forbidden},
                 )
-        elif phase == "execute" and not {"plan_id", "confirmation"} <= set(arguments):
+        elif phase == "execute" and "plan_id" not in arguments:
             return tool_error(
                 "missing_argument",
                 "validation",
-                "Discovery execution requires plan_id and confirmation.",
-                {"fields": ["plan_id", "confirmation"]},
+                "Discovery execution requires plan_id.",
+                {"field": "plan_id"},
             )
 
     if tool["name"] == "local_gpu_set_model_trust":
@@ -1319,14 +1327,15 @@ def _discovery_call(services: Any, arguments: dict[str, Any]) -> dict[str, objec
         request = {
             field: arguments[field]
             for field in (
-                "mode", "stage", "backends", "roots", "explicit_includes", "selected_candidates"
+                "mode", "stage", "backends", "roots", "explicit_includes", "selected_candidates",
+                "expected_backend_model_id", "authorization_id",
             )
             if field in arguments
         }
         return services.discovery.plan(request)
     return services.discovery.execute(
         arguments["plan_id"],
-        arguments["confirmation"],
+        arguments.get("confirmation"),
         network_confirmation=arguments.get("network_confirmation"),
     )
 
