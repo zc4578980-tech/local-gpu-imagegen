@@ -665,6 +665,9 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             '{"properties":{"token":{"type":"string","anyOf":'
             '[{"default":"secret-value"}]}}}',
             '{"token":{"wrapper":[{"value":"secret-value"}]}}',
+            '{"token":{"const":"secret-value"}}',
+            '{"properties":{"token":{"type":"string","anyOf":'
+            '[{"const":"secret-value"}]}}}',
         )
         for content in sensitive_values:
             with self.subTest(content=content):
