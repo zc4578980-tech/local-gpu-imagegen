@@ -988,6 +988,40 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
             self.assertTrue(kwargs["text"])
             self.assertFalse(kwargs["check"])
 
+    def test_installed_check_materializes_only_the_supplied_immutable_payload(self) -> None:
+        payload = b"immutable candidate bytes"
+
+        class PayloadRunner(RecordingRunner):
+            def __init__(
+                self, responses: list[subprocess.CompletedProcess[str]],
+            ) -> None:
+                super().__init__(responses)
+                self.installed_bytes: bytes | None = None
+                self.installed_path: Path | None = None
+
+            def __call__(
+                self, command: list[str], **kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                if "install" in command:
+                    self.installed_path = Path(command[-1])
+                    self.installed_bytes = self.installed_path.read_bytes()
+                return super().__call__(command, **kwargs)
+
+        runner = PayloadRunner(self.valid_completed_processes())
+        results, _ = checks.run_installed_checks(
+            self.wheel,
+            self.python,
+            wheel_payload=payload,
+            runner=runner,
+        )
+
+        self.assertFalse(self.codes(results), results)
+        self.assertEqual(runner.installed_bytes, payload)
+        self.assertIsNotNone(runner.installed_path)
+        self.assertNotEqual(runner.installed_path, self.wheel)
+        assert runner.installed_path is not None
+        self.assertFalse(runner.installed_path.exists())
+
     def test_environment_scrubs_hostile_proxy_variables_and_forces_no_proxy(self) -> None:
         hostile = {
             "HTTP_PROXY": "http://proxy.invalid:8080",
@@ -1222,7 +1256,7 @@ class ReleaseCandidateReportTests(unittest.TestCase):
                 wheel=self.wheel,
                 expected_commit="0" * 40,
                 expected_wheel_sha256=self.sha(self.wheel),
-                python=Path(sys.executable),
+                python=Path(sys.executable).resolve(),
             )
         self.assertEqual(report["status"], "blocked")
         installed.assert_not_called()
@@ -1321,7 +1355,7 @@ class ReleaseCandidateReportTests(unittest.TestCase):
                 wheel=self.wheel,
                 expected_commit="a" * 40,
                 expected_wheel_sha256="b" * 64,
-                python=Path(sys.executable),
+                python=Path(sys.executable).resolve(),
             )
         self.assertEqual(report["status"], "passed")
 
@@ -1340,7 +1374,7 @@ class ReleaseCandidateReportTests(unittest.TestCase):
         self.assertEqual(report["status"], "blocked")
         installed.assert_not_called()
 
-    def test_candidate_stages_one_private_wheel_snapshot_for_both_check_phases(self) -> None:
+    def test_candidate_keeps_immutable_wheel_bytes_across_both_check_phases(self) -> None:
         original = self.wheel.read_bytes()
         original_digest = self.sha(self.wheel)
         staged_paths: list[Path] = []
@@ -1365,14 +1399,17 @@ class ReleaseCandidateReportTests(unittest.TestCase):
                 staged.resolve().relative_to(self.root.resolve())
             staged_paths.append(staged)
             self.wheel.write_bytes(b"swapped after static inspection")
+            staged.unlink()
+            staged.write_bytes(b"attacker replacement bytes")
             return [checks.passed_check("wheel")], {"sha256": expected_sha256}
 
         def install_staged(
-            staged: Path, python: Path,
+            staged: Path, python: Path, *, wheel_payload: bytes | None = None,
         ) -> tuple[list[dict[str, object]], dict[str, object]]:
-            self.assertEqual(python, Path(sys.executable))
+            self.assertEqual(python, Path(sys.executable).resolve())
             self.assertEqual(staged_paths, [staged])
-            self.assertEqual(staged.read_bytes(), original)
+            self.assertEqual(staged.read_bytes(), b"attacker replacement bytes")
+            self.assertEqual(wheel_payload, original)
             return [checks.passed_check("installed")], {}
 
         with (
@@ -1390,7 +1427,7 @@ class ReleaseCandidateReportTests(unittest.TestCase):
                 wheel=self.wheel,
                 expected_commit="a" * 40,
                 expected_wheel_sha256=original_digest,
-                python=Path(sys.executable),
+                python=Path(sys.executable).resolve(),
             )
 
         self.assertEqual(report["status"], "passed")
@@ -1413,13 +1450,15 @@ class ReleaseCandidateReportTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     checks.canonical_report({"value": value})
 
-    def test_atomic_report_failure_preserves_existing_file(self) -> None:
+    def test_atomic_report_refuses_to_overwrite_existing_file(self) -> None:
         destination = self.root / "report.json"
         destination.write_bytes(b"original\n")
-        with patch("release_candidate_checks.os.replace", side_effect=OSError("failed")):
-            with self.assertRaises(OSError):
-                checks.atomic_write_report(destination, b"replacement\n")
+
+        with self.assertRaises(FileExistsError):
+            checks.atomic_write_report(destination, b"replacement\n")
+
         self.assertEqual(destination.read_bytes(), b"original\n")
+        self.assertFalse(list(self.root.glob(".release-candidate-*.pending")))
 
     def test_atomic_report_rejects_unsafe_destination_and_parent_without_paths(self) -> None:
         destination = self.root / "directory-destination"
@@ -1430,133 +1469,85 @@ class ReleaseCandidateReportTests(unittest.TestCase):
                     checks.atomic_write_report(unsafe, b"report\n")
                 self.assertNotIn(str(self.root), str(raised.exception))
 
-    def test_atomic_report_replaces_regular_destination_in_its_parent(self) -> None:
+    def test_atomic_report_installs_exact_complete_bytes_once(self) -> None:
         destination = self.root / "report.json"
         checks.atomic_write_report(destination, b"report\n")
         self.assertEqual(destination.read_bytes(), b"report\n")
         self.assertFalse(list(self.root.glob(".release-candidate-*.pending")))
 
-    def test_atomic_report_rejects_pending_substitution_and_does_not_clean_it(self) -> None:
+    def test_atomic_report_racing_destination_creation_is_not_overwritten(self) -> None:
         destination = self.root / "report.json"
-        destination.write_bytes(b"original\n")
-        real_lstat = os.lstat
+        real_commit = checks._commit_report_install_if_absent
 
-        def substituted_pending(path: object) -> os.stat_result | object:
-            current = Path(path)  # type: ignore[arg-type]
-            result = real_lstat(current)
-            if current.name.startswith(".release-candidate-"):
-                return self.changed_stat(result, st_ino=result.st_ino + 1)
-            return result
+        def race(source_fd: int, parent_fd: int, target: Path) -> None:
+            target.write_bytes(b"racing report\n")
+            real_commit(source_fd, parent_fd, target)
 
-        with (
-            patch.object(checks.os, "lstat", side_effect=substituted_pending),
-            patch.object(checks.os, "replace") as replace,
+        with patch.object(
+            checks, "_commit_report_install_if_absent", side_effect=race
         ):
-            with self.assertRaises(ValueError):
-                checks.atomic_write_report(destination, b"replacement\n")
+            with self.assertRaises(OSError):
+                checks.atomic_write_report(destination, b"canonical report\n")
 
-        replace.assert_not_called()
-        self.assertEqual(destination.read_bytes(), b"original\n")
-        self.assertEqual(len(list(self.root.glob(".release-candidate-*.pending"))), 1)
+        self.assertEqual(destination.read_bytes(), b"racing report\n")
+        self.assertFalse(list(self.root.glob(".release-candidate-*.pending")))
 
-    def test_atomic_report_cleanup_requires_fresh_owned_pending_identity(self) -> None:
+    @unittest.skipUnless(os.name == "nt", "Windows share-lock regression")
+    def test_atomic_report_locks_pending_content_through_commit(self) -> None:
         destination = self.root / "report.json"
-        destination.write_bytes(b"original\n")
-        real_lstat = os.lstat
-        pending_calls = 0
+        real_commit = checks._commit_report_install_if_absent
 
-        def substituted_pending(path: object) -> os.stat_result | object:
-            nonlocal pending_calls
-            current = Path(path)  # type: ignore[arg-type]
-            result = real_lstat(current)
-            if current.name.startswith(".release-candidate-"):
-                pending_calls += 1
-                if pending_calls > 1:
-                    return self.changed_stat(result, st_ino=result.st_ino + 1)
-            return result
+        def mutate_pending(source_fd: int, parent_fd: int, target: Path) -> None:
+            pending = next(self.root.glob(".release-candidate-*.pending"))
+            pending.write_bytes(b"attacker bytes\n")
+            real_commit(source_fd, parent_fd, target)
 
+        with patch.object(
+            checks, "_commit_report_install_if_absent", side_effect=mutate_pending
+        ):
+            with self.assertRaises(OSError):
+                checks.atomic_write_report(destination, b"canonical report\n")
+
+        self.assertFalse(destination.exists())
+        self.assertFalse(list(self.root.glob(".release-candidate-*.pending")))
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory-handle regression")
+    def test_atomic_report_locks_parent_identity_through_commit(self) -> None:
+        outer = self.root
+        parent = outer / "report-parent"
+        parent.mkdir()
+        destination = parent / "report.json"
+        displaced = outer / "displaced-parent"
+        real_commit = checks._commit_report_install_if_absent
+
+        def replace_parent(source_fd: int, parent_fd: int, target: Path) -> None:
+            os.replace(parent, displaced)
+            parent.mkdir()
+            real_commit(source_fd, parent_fd, target)
+
+        with patch.object(
+            checks, "_commit_report_install_if_absent", side_effect=replace_parent
+        ):
+            with self.assertRaises(OSError):
+                checks.atomic_write_report(destination, b"canonical report\n")
+
+        self.assertTrue(parent.is_dir())
+        self.assertFalse(destination.exists())
+        self.assertFalse(displaced.exists())
+
+    def test_atomic_report_failure_cleanup_never_uses_path_unlink(self) -> None:
+        destination = self.root / "report.json"
         with (
-            patch.object(checks.os, "lstat", side_effect=substituted_pending),
-            patch.object(checks.os, "replace", side_effect=OSError("failed")),
+            patch.object(
+                checks,
+                "_commit_report_install_if_absent",
+                side_effect=OSError("forced failure"),
+            ),
             patch.object(Path, "unlink", autospec=True) as unlink,
         ):
             with self.assertRaises(OSError):
-                checks.atomic_write_report(destination, b"replacement\n")
+                checks.atomic_write_report(destination, b"canonical report\n")
 
         unlink.assert_not_called()
-        self.assertEqual(destination.read_bytes(), b"original\n")
-        self.assertEqual(len(list(self.root.glob(".release-candidate-*.pending"))), 1)
-
-    def test_atomic_report_revalidates_parent_identity_and_reparse_state(self) -> None:
-        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-        for mutation in ("identity", "reparse"):
-            with self.subTest(mutation=mutation):
-                destination = self.root / f"parent-{mutation}.json"
-                destination.write_bytes(b"original\n")
-                real_lstat = os.lstat
-                parent_calls = 0
-
-                def changed_parent(path: object) -> os.stat_result | object:
-                    nonlocal parent_calls
-                    current = Path(path)  # type: ignore[arg-type]
-                    result = real_lstat(current)
-                    if current == self.root:
-                        parent_calls += 1
-                        if parent_calls > 1:
-                            if mutation == "identity":
-                                return self.changed_stat(result, st_ino=result.st_ino + 1)
-                            return self.changed_stat(
-                                result,
-                                st_file_attributes=(
-                                    getattr(result, "st_file_attributes", 0) | reparse_flag
-                                ),
-                            )
-                    return result
-
-                with (
-                    patch.object(checks.os, "lstat", side_effect=changed_parent),
-                    patch.object(checks.os, "replace") as replace,
-                ):
-                    with self.assertRaises(ValueError):
-                        checks.atomic_write_report(destination, b"replacement\n")
-
-                replace.assert_not_called()
-                self.assertEqual(destination.read_bytes(), b"original\n")
-
-    def test_atomic_report_revalidates_destination_identity_state_and_reparse(self) -> None:
-        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-        for mutation in ("identity", "state", "reparse"):
-            with self.subTest(mutation=mutation):
-                destination = self.root / f"destination-{mutation}.json"
-                destination.write_bytes(b"original\n")
-                real_lstat = os.lstat
-                destination_calls = 0
-
-                def changed_destination(path: object) -> os.stat_result | object:
-                    nonlocal destination_calls
-                    current = Path(path)  # type: ignore[arg-type]
-                    result = real_lstat(current)
-                    if current == destination:
-                        destination_calls += 1
-                        if destination_calls > 1:
-                            if mutation == "identity":
-                                return self.changed_stat(result, st_ino=result.st_ino + 1)
-                            if mutation == "state":
-                                return self.changed_stat(result, st_size=result.st_size + 1)
-                            return self.changed_stat(
-                                result,
-                                st_file_attributes=(
-                                    getattr(result, "st_file_attributes", 0) | reparse_flag
-                                ),
-                            )
-                    return result
-
-                with (
-                    patch.object(checks.os, "lstat", side_effect=changed_destination),
-                    patch.object(checks.os, "replace") as replace,
-                ):
-                    with self.assertRaises(ValueError):
-                        checks.atomic_write_report(destination, b"replacement\n")
-
-                replace.assert_not_called()
-                self.assertEqual(destination.read_bytes(), b"original\n")
+        self.assertFalse(destination.exists())
+        self.assertFalse(list(self.root.glob(".release-candidate-*.pending")))

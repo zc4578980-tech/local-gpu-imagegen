@@ -7,8 +7,10 @@ import io
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
+import sys
 import tempfile
 import tomllib
 import zipfile
@@ -214,8 +216,8 @@ def _snapshot_wheel(path: Path, path_stat: os.stat_result) -> tuple[io.BytesIO, 
 
 
 @contextmanager
-def _staged_wheel(path: Path, checkout_root: Path) -> Iterator[Path]:
-    """Keep one bounded source snapshot at a private checkout-external path."""
+def _staged_wheel(path: Path, checkout_root: Path) -> Iterator[tuple[Path, bytes]]:
+    """Keep one bounded source snapshot independent from all staged paths."""
     try:
         path_stat = os.lstat(path)
     except OSError as exc:
@@ -227,6 +229,7 @@ def _staged_wheel(path: Path, checkout_root: Path) -> Iterator[Path]:
 
     snapshot, _ = _snapshot_wheel(path, path_stat)
     try:
+        payload = snapshot.getvalue()
         with tempfile.TemporaryDirectory(prefix="local-gpu-imagegen-candidate-") as temporary:
             staging_root = Path(temporary).resolve(strict=True)
             try:
@@ -253,7 +256,7 @@ def _staged_wheel(path: Path, checkout_root: Path) -> Iterator[Path]:
                     os.fsync(target.fileno())
             except OSError as exc:
                 raise _WheelSnapshotError("wheel_staging_unavailable") from exc
-            yield staged
+            yield staged, payload
     finally:
         snapshot.close()
 
@@ -597,15 +600,23 @@ def _python_312_version(
 
 def run_installed_checks(
     wheel: Path, python: Path, *,
+    wheel_payload: bytes | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Verify an already-built wheel from a disposable checkout-external venv."""
-    if wheel.name != EXPECTED_WHEEL or not wheel.is_file():
+    if wheel.name != EXPECTED_WHEEL:
         return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
-    try:
-        resolved_wheel = wheel.resolve(strict=True)
-    except OSError:
+    if wheel_payload is None:
+        if not wheel.is_file():
+            return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
+        try:
+            resolved_wheel = wheel.resolve(strict=True)
+        except OSError:
+            return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
+    elif type(wheel_payload) is not bytes or len(wheel_payload) > MAX_WHEEL_BYTES:
         return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
+    else:
+        resolved_wheel = None
 
     results: list[dict[str, object]] = []
     facts: dict[str, object] = {}
@@ -668,9 +679,18 @@ def run_installed_checks(
         facts["venv_python_version"] = installed_version
         results.append(passed_check("installed_venv_python", version=installed_version))
         try:
+            install_wheel = resolved_wheel
+            if wheel_payload is not None:
+                install_wheel = temporary_root / EXPECTED_WHEEL
+                with install_wheel.open("xb") as target:
+                    target.write(wheel_payload)
+                    target.flush()
+                    os.fsync(target.fileno())
+            if install_wheel is None:
+                raise OSError("wheel unavailable")
             completed = runner(
                 [str(installed_python), "-m", "pip", "install", "--no-index", "--no-deps",
-                 "--no-cache-dir", "--disable-pip-version-check", str(resolved_wheel)],
+                 "--no-cache-dir", "--disable-pip-version-check", str(install_wheel)],
                 cwd=temporary_root, env=environment, capture_output=True, text=True,
                 timeout=60, check=False,
             )
@@ -796,119 +816,249 @@ def _safe_report_parent(
     return parent, parent_stat, destination_stat
 
 
-def _stat_state(path_stat: os.stat_result) -> tuple[object, ...]:
-    return (
-        path_stat.st_mode,
-        getattr(path_stat, "st_file_attributes", 0),
-        path_stat.st_size,
-        getattr(path_stat, "st_mtime_ns", None),
-        getattr(path_stat, "st_ctime_ns", None),
+def _write_all(descriptor: int, encoded: bytes) -> None:
+    written = 0
+    while written < len(encoded):
+        count = os.write(descriptor, encoded[written:])
+        if count <= 0:
+            raise OSError("report write failed")
+        written += count
+
+
+def _verify_descriptor_bytes(descriptor: int, encoded: bytes) -> None:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    observed = bytearray()
+    while len(observed) <= len(encoded):
+        block = os.read(descriptor, min(1024 * 1024, len(encoded) - len(observed) + 1))
+        if not block:
+            break
+        observed.extend(block)
+    if bytes(observed) != encoded:
+        raise OSError("report verification failed")
+
+
+def _windows_file_api() -> tuple[object, object, object]:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    set_information = kernel32.SetFileInformationByHandle
+    set_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    set_information.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    return create_file, set_information, close_handle
+
+
+def _windows_open_parent(parent: Path, expected: os.stat_result) -> int:
+    import ctypes
+    import msvcrt
+
+    create_file, _, close_handle = _windows_file_api()
+    handle = create_file(
+        str(parent),
+        0x0001 | 0x00100000,
+        0x0001 | 0x0002,
+        None,
+        3,
+        0x02000000,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(int(handle), os.O_RDONLY)
+    except BaseException:
+        close_handle(handle)
+        raise
+    try:
+        if not os.path.samestat(os.fstat(descriptor), expected):
+            raise ValueError("unsafe report parent")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _windows_open_pending(parent: Path) -> int:
+    import ctypes
+    import msvcrt
+
+    create_file, _, close_handle = _windows_file_api()
+    for _ in range(32):
+        pending = parent / f".release-candidate-{secrets.token_hex(16)}.pending"
+        handle = create_file(
+            str(pending),
+            0x80000000 | 0x40000000 | 0x00010000,
+            0x0001,
+            None,
+            1,
+            0x00000080,
+            None,
+        )
+        if handle != ctypes.c_void_p(-1).value:
+            try:
+                return msvcrt.open_osfhandle(int(handle), os.O_RDWR | os.O_BINARY)
+            except BaseException:
+                close_handle(handle)
+                raise
+        error = ctypes.get_last_error()
+        if error not in {80, 183}:
+            raise ctypes.WinError(error)
+    raise OSError("report pending creation failed")
+
+
+def _windows_dispose_pending(descriptor: int) -> None:
+    import ctypes
+    import msvcrt
+
+    class FileDispositionInfo(ctypes.Structure):
+        _fields_ = [("DeleteFile", ctypes.c_ubyte)]
+
+    _, set_information, _ = _windows_file_api()
+    disposition = FileDispositionInfo(1)
+    set_information(
+        msvcrt.get_osfhandle(descriptor),
+        4,
+        ctypes.byref(disposition),
+        ctypes.sizeof(disposition),
     )
 
 
-def _same_identity(current: os.stat_result, expected: os.stat_result) -> bool:
-    try:
-        return os.path.samestat(current, expected)
-    except (AttributeError, OSError, TypeError):
-        return False
+def _windows_commit_report(descriptor: int, destination: Path) -> None:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    destination_text = str(destination)
+
+    class FileRenameInfo(ctypes.Structure):
+        _fields_ = [
+            ("ReplaceIfExists", ctypes.c_ubyte),
+            ("RootDirectory", wintypes.HANDLE),
+            ("FileNameLength", wintypes.DWORD),
+            ("FileName", wintypes.WCHAR * (len(destination_text) + 1)),
+        ]
+
+    _, set_information, _ = _windows_file_api()
+    rename = FileRenameInfo()
+    rename.ReplaceIfExists = 0
+    rename.RootDirectory = None
+    rename.FileNameLength = len(destination_text.encode("utf-16-le"))
+    rename.FileName = destination_text
+    if not set_information(
+        msvcrt.get_osfhandle(descriptor),
+        3,
+        ctypes.byref(rename),
+        ctypes.sizeof(rename),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
-def _revalidate_report_paths(
-    *,
-    parent: Path,
-    parent_stat: os.stat_result,
-    destination: Path,
-    destination_stat: os.stat_result | None,
-    pending: Path,
-    pending_stat: os.stat_result,
+def _linux_open_pending(parent: Path) -> int:
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_TMPFILE", 0)
+    if not getattr(os, "O_TMPFILE", 0):
+        raise OSError("atomic report install unsupported")
+    return os.open(parent, flags, 0o600)
+
+
+def _linux_commit_report(descriptor: int, parent_descriptor: int, name: str) -> None:
+    import ctypes
+
+    library = ctypes.CDLL(None, use_errno=True)
+    linkat = library.linkat
+    linkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    linkat.restype = ctypes.c_int
+    if linkat(descriptor, b"", parent_descriptor, os.fsencode(name), 0x1000) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, "atomic report install failed")
+
+
+def _commit_report_install_if_absent(
+    descriptor: int, parent_descriptor: int, destination: Path
 ) -> None:
-    try:
-        current_parent = os.lstat(parent)
-    except OSError as error:
-        raise ValueError("unsafe report parent") from error
-    if (
-        not stat.S_ISDIR(current_parent.st_mode)
-        or _is_reparse_point(current_parent)
-        or not _same_identity(current_parent, parent_stat)
-    ):
-        raise ValueError("unsafe report parent")
-
-    try:
-        current_destination = os.lstat(destination)
-    except FileNotFoundError:
-        if destination_stat is not None:
-            raise ValueError("unsafe report destination") from None
-    except OSError as error:
-        raise ValueError("unsafe report destination") from error
+    if os.name == "nt":
+        _windows_commit_report(descriptor, destination)
+    elif sys.platform.startswith("linux"):
+        _linux_commit_report(descriptor, parent_descriptor, destination.name)
     else:
-        if (
-            destination_stat is None
-            or not stat.S_ISREG(current_destination.st_mode)
-            or _is_reparse_point(current_destination)
-            or not _same_identity(current_destination, destination_stat)
-            or _stat_state(current_destination) != _stat_state(destination_stat)
-        ):
-            raise ValueError("unsafe report destination")
-
-    try:
-        current_pending = os.lstat(pending)
-    except OSError as error:
-        raise ValueError("unsafe report pending file") from error
-    if (
-        not stat.S_ISREG(current_pending.st_mode)
-        or _is_reparse_point(current_pending)
-        or not _same_identity(current_pending, pending_stat)
-    ):
-        raise ValueError("unsafe report pending file")
-
-
-def _owned_pending_file(path: Path, expected: os.stat_result) -> bool:
-    try:
-        current = os.lstat(path)
-    except OSError:
-        return False
-    return (
-        stat.S_ISREG(current.st_mode)
-        and not _is_reparse_point(current)
-        and _same_identity(current, expected)
-    )
+        raise OSError("atomic report install unsupported")
 
 
 def atomic_write_report(destination: Path, encoded: bytes) -> None:
-    """Replace a report only after its complete bytes are durable on disk."""
+    """Atomically install one complete report without replacing an existing file."""
     destination = Path(destination)
     parent, parent_stat, destination_stat = _safe_report_parent(destination)
-    descriptor, pending_name = tempfile.mkstemp(
-        prefix=".release-candidate-", suffix=".pending", dir=parent
-    )
-    pending = Path(pending_name)
-    owned_stat: os.stat_result | None = None
+    if destination_stat is not None:
+        raise FileExistsError("report destination already exists")
     try:
-        owned_stat = os.fstat(descriptor)
-        with os.fdopen(descriptor, "wb") as target:
-            descriptor = -1
-            target.write(encoded)
-            target.flush()
-            os.fsync(target.fileno())
-            owned_stat = os.fstat(target.fileno())
-        _revalidate_report_paths(
-            parent=parent,
-            parent_stat=parent_stat,
-            destination=destination,
-            destination_stat=destination_stat,
-            pending=pending,
-            pending_stat=owned_stat,
+        resolved_parent = parent.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("unsafe report parent") from error
+    resolved_destination = resolved_parent / destination.name
+
+    if os.name == "nt":
+        parent_descriptor = _windows_open_parent(resolved_parent, parent_stat)
+        try:
+            descriptor = _windows_open_pending(resolved_parent)
+        except BaseException:
+            os.close(parent_descriptor)
+            raise
+    elif sys.platform.startswith("linux"):
+        parent_descriptor = os.open(
+            resolved_parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
         )
-        os.replace(pending, destination)
-    except BaseException:
-        if descriptor != -1:
-            os.close(descriptor)
-        if owned_stat is not None and _owned_pending_file(pending, owned_stat):
+        try:
+            if not os.path.samestat(os.fstat(parent_descriptor), parent_stat):
+                raise ValueError("unsafe report parent")
+            descriptor = _linux_open_pending(resolved_parent)
+        except BaseException:
+            os.close(parent_descriptor)
+            raise
+    else:
+        raise OSError("atomic report install unsupported")
+
+    committed = False
+    try:
+        _write_all(descriptor, encoded)
+        os.fsync(descriptor)
+        _verify_descriptor_bytes(descriptor, encoded)
+        if sys.platform.startswith("linux"):
+            os.fchmod(descriptor, 0o400)
+        _commit_report_install_if_absent(
+            descriptor, parent_descriptor, resolved_destination
+        )
+        committed = True
+    finally:
+        if not committed and os.name == "nt":
             try:
-                pending.unlink()
+                _windows_dispose_pending(descriptor)
             except OSError:
                 pass
-        raise
+        for open_descriptor in (descriptor, parent_descriptor):
+            try:
+                os.close(open_descriptor)
+            except OSError:
+                if not committed:
+                    raise
 
 
 def _inspect_release_python(python: Path) -> list[dict[str, object]]:
@@ -999,7 +1149,7 @@ def validate_candidate(
         )
 
     try:
-        with _staged_wheel(wheel, root) as staged_wheel:
+        with _staged_wheel(wheel, root) as (staged_wheel, wheel_payload):
             wheel_checks, wheel_facts = inspect_wheel(
                 root, staged_wheel, expected_wheel_sha256
             )
@@ -1008,7 +1158,9 @@ def validate_candidate(
             )
             if not _all_checks_passed(static_checks):
                 return _blocked_candidate_report(static_checks)
-            installed_checks, installed_facts = run_installed_checks(staged_wheel, python)
+            installed_checks, installed_facts = run_installed_checks(
+                staged_wheel, python, wheel_payload=wheel_payload
+            )
     except _WheelSnapshotError as error:
         return _blocked_candidate_report(
             checkout_checks

@@ -99,8 +99,7 @@ class ValidateReleaseCandidateCliTests(unittest.TestCase):
 
     def test_cli_preserves_existing_report_when_write_fails(self) -> None:
         self.report.write_bytes(b"original\n")
-        with patch.object(cli, "atomic_write_report", side_effect=OSError("failed")):
-            exit_code, stdout = self.run_main(self.passed_report(), report_path=self.report)
+        exit_code, stdout = self.run_main(self.passed_report(), report_path=self.report)
         self.assertEqual(exit_code, 1)
         self.assertEqual(self.report.read_bytes(), b"original\n")
         self.assertEqual(json.loads(stdout)["status"], "blocked")
