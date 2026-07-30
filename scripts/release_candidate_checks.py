@@ -62,15 +62,18 @@ MAX_TOTAL_BYTES = 16 * 1024 * 1024
 MAX_WHEEL_BYTES = 32 * 1024 * 1024
 PRIVATE_PATH_RE = re.compile(
     rb"(?i)(?<![a-z0-9])(?:"
-    rb"[a-z]:[\\/][^\\/\s\"']+|/(?:home|users)/[^/\s\"']+"
+    rb"[a-z]:[\\/][^\\/\s\"']+|/(?:home|users)/[^/\s\"']+|"
+    rb"/mnt/[a-z]/users/[^/\s\"']+|"
+    rb"\\\\[^\\/\s\"']+[\\/][^\\/\s\"']+[\\/][^\s\"']+"
     rb")"
 )
 CREDENTIAL_RE = re.compile(
-    rb"(?i)\b(?:authorization|proxy-authorization|x-api-key|api-key|"
+    rb"(?i)(?:\bbearer\s+[^\s\"']{1,512}|"
+    rb"\b(?:authorization|proxy-authorization|x-api-key|api-key|"
     rb"api[_-]?key|client[_-]?secret|secret[_-]?key|access[_-]?token|"
     rb"refresh[_-]?token|auth[_-]?token|password|passwd|token)"
     rb"[\"']?\s*[:=]\s*(?:[\"'][^\"'\r\n]{1,512}[\"']|"
-    rb"(?:bearer\s+)?[a-z0-9][a-z0-9._~+/=-]{3,})"
+    rb"[^\s\"'{\[]{1,512}))"
 )
 SENSITIVE_CREDENTIAL_KEYS = frozenset(
     {
@@ -316,7 +319,8 @@ def _is_safe_entry(info: zipfile.ZipInfo) -> bool:
     if any(part.casefold() == "outputs" for part in path.parts):
         return False
     if any(part.casefold() == "models" for part in path.parts) and not (
-        path.parent == PUBLIC_MODEL_DESCRIPTOR_PARENT
+        not path_is_directory
+        and path.parent == PUBLIC_MODEL_DESCRIPTOR_PARENT
         and path.suffix == ".json"
         and len(path.name) > len(".json")
     ):
@@ -369,6 +373,46 @@ def _credential_target_name(target: ast.expr) -> str | None:
     return None
 
 
+def _expression_contains_literal(node: ast.expr) -> bool:
+    return any(
+        isinstance(child, ast.Constant) and bool(_scalar_bytes(child.value))
+        for child in ast.walk(node)
+    )
+
+
+def _credential_binding_contains_literal(target: ast.expr, value: ast.expr) -> bool:
+    if isinstance(target, (ast.Tuple, ast.List)):
+        if isinstance(value, (ast.Tuple, ast.List)) and len(target.elts) == len(value.elts):
+            return any(
+                _credential_binding_contains_literal(child_target, child_value)
+                for child_target, child_value in zip(target.elts, value.elts)
+            )
+        return any(
+            _credential_target_name(child) is not None
+            and _normalized_credential_key(_credential_target_name(child) or "")
+            in SENSITIVE_CREDENTIAL_KEYS
+            for child in ast.walk(target)
+        ) and _expression_contains_literal(value)
+    name = _credential_target_name(target)
+    return bool(
+        name is not None
+        and _normalized_credential_key(name) in SENSITIVE_CREDENTIAL_KEYS
+        and _expression_contains_literal(value)
+    )
+
+
+def _arguments_contain_sensitive_defaults(arguments: ast.arguments) -> bool:
+    positional = [*arguments.posonlyargs, *arguments.args]
+    positional_defaults = zip(positional[-len(arguments.defaults):], arguments.defaults)
+    keyword_defaults = zip(arguments.kwonlyargs, arguments.kw_defaults)
+    return any(
+        default is not None
+        and _normalized_credential_key(argument.arg) in SENSITIVE_CREDENTIAL_KEYS
+        and _expression_contains_literal(default)
+        for argument, default in (*positional_defaults, *keyword_defaults)
+    )
+
+
 def _python_contains_sensitive_content(data: bytes) -> bool:
     try:
         tree = ast.parse(data.decode("utf-8"))
@@ -384,31 +428,37 @@ def _python_contains_sensitive_content(data: bytes) -> bool:
                     and isinstance(key.value, str)
                     and _normalized_credential_key(key.value)
                     in SENSITIVE_CREDENTIAL_KEYS
-                    and isinstance(value, ast.Constant)
-                    and bool(_scalar_bytes(value.value))
+                    and _expression_contains_literal(value)
                 ):
                     return True
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if (
+                    keyword.arg is not None
+                    and _normalized_credential_key(keyword.arg)
+                    in SENSITIVE_CREDENTIAL_KEYS
+                    and _expression_contains_literal(keyword.value)
+                ):
+                    return True
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if _arguments_contain_sensitive_defaults(node.args):
+                return True
         if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             value = node.value
-            if not isinstance(value, ast.Constant) or not bool(
-                _scalar_bytes(value.value)
+            if value is not None and any(
+                _credential_binding_contains_literal(target, value)
+                for target in targets
             ):
-                continue
-            for target in targets:
-                name = _credential_target_name(target)
-                if (
-                    name is not None
-                    and _normalized_credential_key(name)
-                    in SENSITIVE_CREDENTIAL_KEYS
-                ):
-                    return True
+                return True
     return False
 
 
 def _json_contains_sensitive_content(value: object) -> bool:
     if isinstance(value, dict):
         for key, child in value.items():
+            if _sensitive_scalar(key):
+                return True
             if (
                 isinstance(key, str)
                 and _normalized_credential_key(key) in SENSITIVE_CREDENTIAL_KEYS
@@ -430,8 +480,8 @@ def _contains_sensitive_content(data: bytes, name: str) -> bool:
         return _python_contains_sensitive_content(data)
     if suffix == ".json":
         try:
-            value = json.loads(data)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            value = json.loads(data, object_pairs_hook=_unique_json_object)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             return True
         return _json_contains_sensitive_content(value)
     return bool(PRIVATE_PATH_RE.search(data) or CREDENTIAL_RE.search(data))
