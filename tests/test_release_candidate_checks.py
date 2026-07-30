@@ -931,6 +931,9 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
         installed_python = temporary_root / "venv" / (
             "Scripts/python.exe" if os.name == "nt" else "bin/python"
         )
+        cli = temporary_root / "venv" / (
+            "Scripts/local-gpu-imagegen.exe" if os.name == "nt" else "bin/local-gpu-imagegen"
+        )
         self.assertEqual(
             venv_version[0],
             [str(installed_python), "-c", checks.PYTHON_VERSION_SCRIPT],
@@ -948,6 +951,25 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
                 "--disable-pip-version-check",
                 str(self.wheel.resolve()),
             ],
+        )
+        installed_checks = runner.calls[4:]
+        self.assertEqual(len(installed_checks), 5)
+        verify, doctor, setup_codex, setup_claude, compile_call = installed_checks
+        self.assertEqual(verify[0], [str(cli), "verify"])
+        self.assertEqual(doctor[0], [str(cli), "doctor"])
+        self.assertEqual(setup_codex[0], [str(cli), "setup", "codex"])
+        self.assertNotIn("--apply", setup_codex[0])
+        self.assertEqual(setup_claude[0], [str(cli), "setup", "claude-code"])
+        self.assertNotIn("--apply", setup_claude[0])
+        compile_script = (
+            "import compileall,json,local_gpu_imagegen; from pathlib import Path; "
+            "root=Path(local_gpu_imagegen.__file__).resolve().parent; sources=list(root.rglob('*.py')); "
+            "ok=compileall.compile_dir(str(root), quiet=1); "
+            "print(json.dumps({'compiled_sources': len(sources), 'ok': bool(ok)}))"
+        )
+        self.assertEqual(
+            compile_call[0],
+            [str(installed_python), "-c", compile_script],
         )
         for _, kwargs in runner.calls:
             environment = kwargs["env"]

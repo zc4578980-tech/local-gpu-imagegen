@@ -298,3 +298,26 @@ release_python
   worktree because the pre-fix checkout-child path created `fake-bin` before
   failing. Its verified checkout-local removal was rejected by the execution
   environment policy; it is not staged or part of this commit.
+
+## Re-Review 3 Fix Evidence
+
+### RED
+
+The review identified one remaining test gap: the nominal subprocess-boundary
+test checked kwargs for every call, but did not assert the exact argv arrays for
+the post-install `verify`, `doctor`, Codex setup, Claude Code setup, and compile
+calls. It therefore did not explicitly prove that either setup call omitted
+`--apply` and all extra arguments.
+
+### GREEN
+
+The focused installed-boundary test now asserts all five post-install command
+arrays exactly. The two setup assertions use the complete expected arrays
+`[cli, "setup", "codex"]` and `[cli, "setup", "claude-code"]`, which proves
+both no `--apply` and no extra arguments. Existing all-call cwd, environment,
+timeout, capture-output, text, and check assertions remain unchanged.
+
+The checkout-local residue from the previous review was inspected. It contains
+an empty `fake-bin` directory and no files. Cleanup was left to the parent as
+allowed by the review policy; no nonempty path was deleted and no policy bypass
+was attempted.
