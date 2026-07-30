@@ -524,7 +524,8 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             ),
             (
                 "local_gpu_imagegen/schema.json",
-                '{"properties":{"token":{"type":"string"}},'
+                '{"properties":{"token":{"type":"string",'
+                '"anyOf":[{"type":"string"}]}},'
                 '"homepage":"https://example.invalid/project"}',
             ),
         )
@@ -601,6 +602,11 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             'config[f"api_{\'key\'}"] = "secret-value"\n',
             'config = {f"api_{\'key\'}": "secret-value"}\n',
             'config = {"{}_{}".format("api", "key"): "secret-value"}\n',
+            'config = {"{0}_{1}".format("api", "key"): "secret-value"}\n',
+            'config = {"{a}_{b}".format(a="api", b="key"): "secret-value"}\n',
+            'config = {f"{\'api_\'}{\'key\':s}": "secret-value"}\n',
+            'config = {"%s_%s" % ("api", "key"): "secret-value"}\n',
+            'config = {"".join(("api_", "key")): "secret-value"}\n',
         )
         for content in sensitive_sources:
             with self.subTest(content=content):
@@ -656,6 +662,9 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             '{"token":{"default":"secret-value"}}',
             '{"properties":{"token":{"type":"string","default":"secret-value"}}}',
             '{"token":["secret-value"]}',
+            '{"properties":{"token":{"type":"string","anyOf":'
+            '[{"default":"secret-value"}]}}}',
+            '{"token":{"wrapper":[{"value":"secret-value"}]}}',
         )
         for content in sensitive_values:
             with self.subTest(content=content):
