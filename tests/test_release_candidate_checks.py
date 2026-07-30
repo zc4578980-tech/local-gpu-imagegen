@@ -15,6 +15,8 @@ import warnings
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -939,7 +941,7 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
             [str(installed_python), "-c", checks.PYTHON_VERSION_SCRIPT],
         )
         self.assertEqual(
-            install[0][:-1],
+            install[0],
             [
                 str(installed_python),
                 "-m",
@@ -949,10 +951,15 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
                 "--no-deps",
                 "--no-cache-dir",
                 "--disable-pip-version-check",
+                "--require-hashes",
+                "--requirement",
+                "-",
             ],
         )
-        self.assertEqual(Path(install[0][-1]).name, checks.EXPECTED_WHEEL)
-        self.assertNotEqual(Path(install[0][-1]), self.wheel.resolve())
+        requirement = str(install[1]["input"])
+        self.assertIn(" --hash=sha256:", requirement)
+        self.assertIn(checks.EXPECTED_WHEEL, requirement)
+        self.assertIn(hashlib.sha256(self.wheel.read_bytes()).hexdigest(), requirement)
         installed_checks = runner.calls[4:]
         self.assertEqual(len(installed_checks), 5)
         verify, doctor, setup_codex, setup_claude, compile_call = installed_checks
@@ -1005,13 +1012,28 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
                 self, command: list[str], **kwargs: object,
             ) -> subprocess.CompletedProcess[str]:
                 if "install" in command:
-                    self.installed_path = Path(command[-1])
+                    requirement = str(kwargs["input"]).strip()
+                    wheel_uri, expected_digest = requirement.split(
+                        " --hash=sha256:", 1
+                    )
+                    path_text = url2pathname(urlsplit(wheel_uri).path)
+                    if os.name == "nt" and path_text.startswith("\\"):
+                        path_text = path_text[1:]
+                    self.installed_path = Path(path_text)
+                    if sys.platform.startswith("linux"):
+                        os.chmod(self.installed_path.parent, 0o700)
                     try:
                         self.installed_path.unlink()
                         self.installed_path.write_bytes(b"attacker wheel bytes")
                     except OSError:
                         self.substitution_blocked = True
                     self.installed_bytes = self.installed_path.read_bytes()
+                    completed = super().__call__(command, **kwargs)
+                    if hashlib.sha256(self.installed_bytes).hexdigest() != expected_digest:
+                        return subprocess.CompletedProcess(
+                            command, 1, "", "wheel hash mismatch"
+                        )
+                    return completed
                 return super().__call__(command, **kwargs)
 
         runner = PayloadRunner(self.valid_completed_processes())
@@ -1022,13 +1044,43 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
             runner=runner,
         )
 
-        self.assertFalse(self.codes(results), results)
-        self.assertTrue(runner.substitution_blocked)
-        self.assertEqual(runner.installed_bytes, payload)
+        if os.name == "nt":
+            self.assertFalse(self.codes(results), results)
+            self.assertTrue(runner.substitution_blocked)
+            self.assertEqual(runner.installed_bytes, payload)
+        else:
+            self.assertIn("installed_pip_install_failed", self.codes(results))
+            self.assertFalse(runner.substitution_blocked)
+            self.assertEqual(runner.installed_bytes, b"attacker wheel bytes")
         self.assertIsNotNone(runner.installed_path)
         self.assertNotEqual(runner.installed_path, self.wheel)
         assert runner.installed_path is not None
         self.assertFalse(runner.installed_path.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle regression")
+    def test_install_wheel_cleanup_attempts_both_handle_closes(self) -> None:
+        close_attempts: list[int] = []
+
+        def close_with_first_failure(descriptor: int) -> None:
+            close_attempts.append(descriptor)
+            if descriptor == 202:
+                raise OSError("first close failed")
+
+        with (
+            patch.object(checks, "_windows_open_parent", return_value=101),
+            patch.object(checks, "_windows_open_locked_file", return_value=202),
+            patch.object(checks, "_write_all"),
+            patch.object(checks.os, "fsync"),
+            patch.object(checks, "_verify_descriptor_bytes"),
+            patch.object(checks.os, "close", side_effect=close_with_first_failure),
+        ):
+            with self.assertRaisesRegex(OSError, "installed wheel cleanup failed"):
+                with checks._materialized_install_wheel(
+                    self.temp, b"immutable bytes"
+                ):
+                    pass
+
+        self.assertEqual(close_attempts, [202, 101])
 
     def test_environment_scrubs_hostile_proxy_variables_and_forces_no_proxy(self) -> None:
         hostile = {
@@ -1593,6 +1645,32 @@ class ReleaseCandidateReportTests(unittest.TestCase):
             return real_open(parent_fd)
 
         with patch.object(checks, "_linux_open_pending", side_effect=move_parent):
+            with self.assertRaises(ValueError):
+                checks.atomic_write_report(destination, b"canonical report\n")
+
+        self.assertFalse(destination.exists())
+        self.assertFalse((displaced / "report.json").exists())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fd regression")
+    def test_atomic_report_linux_parent_move_at_commit_is_rolled_back(self) -> None:
+        parent = self.root / "report-parent-commit"
+        parent.mkdir()
+        destination = parent / "report.json"
+        displaced = self.root / "displaced-parent-commit"
+        real_commit = checks._commit_report_install_if_absent
+
+        def move_then_commit(
+            source_fd: int, parent_fd: int, target: Path,
+        ) -> None:
+            os.replace(parent, displaced)
+            parent.mkdir()
+            real_commit(source_fd, parent_fd, target)
+
+        with patch.object(
+            checks,
+            "_commit_report_install_if_absent",
+            side_effect=move_then_commit,
+        ):
             with self.assertRaises(ValueError):
                 checks.atomic_write_report(destination, b"canonical report\n")
 

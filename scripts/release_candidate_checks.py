@@ -648,13 +648,19 @@ def _materialized_install_wheel(
             os.chmod(wheel_root, 0o500)
         yield install_path, runner_options
     finally:
-        os.close(descriptor)
-        os.close(parent_descriptor)
+        cleanup_failed = False
+        for open_descriptor in (descriptor, parent_descriptor):
+            try:
+                os.close(open_descriptor)
+            except OSError:
+                cleanup_failed = True
         if sys.platform.startswith("linux"):
             try:
                 os.chmod(wheel_root, 0o700)
             except OSError:
-                pass
+                cleanup_failed = True
+        if cleanup_failed:
+            raise OSError("installed wheel cleanup failed")
 
 
 def run_installed_checks(
@@ -744,11 +750,16 @@ def run_installed_checks(
             with _materialized_install_wheel(
                 temporary_root, wheel_payload
             ) as (install_wheel, runner_options):
+                wheel_digest = hashlib.sha256(wheel_payload).hexdigest()
+                requirement = (
+                    f"{install_wheel.as_uri()} --hash=sha256:{wheel_digest}\n"
+                )
                 completed = runner(
                     [str(installed_python), "-m", "pip", "install", "--no-index", "--no-deps",
-                     "--no-cache-dir", "--disable-pip-version-check", str(install_wheel)],
+                     "--no-cache-dir", "--disable-pip-version-check", "--require-hashes",
+                     "--requirement", "-"],
                     cwd=temporary_root, env=environment, capture_output=True, text=True,
-                    timeout=60, check=False, **runner_options,
+                    timeout=60, check=False, input=requirement, **runner_options,
                 )
             if completed.returncode != 0 or "traceback" in (completed.stderr or "").casefold():
                 results.append(blocked_check("installed_pip", "installed_pip_install_failed"))
@@ -1102,6 +1113,22 @@ def _report_commit_is_visible(
         return False
 
 
+def _remove_linux_committed_report(
+    descriptor: int, parent_descriptor: int, name: str,
+) -> None:
+    try:
+        destination_stat = os.stat(
+            name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if not os.path.samestat(os.fstat(descriptor), destination_stat):
+            raise ReportCleanupError("report cleanup identity mismatch")
+        os.unlink(name, dir_fd=parent_descriptor)
+    except ReportCleanupError:
+        raise
+    except OSError as error:
+        raise ReportCleanupError("report cleanup failed") from error
+
+
 def atomic_write_report(destination: Path, encoded: bytes) -> None:
     """Atomically install one complete report without replacing an existing file."""
     destination = Path(destination)
@@ -1160,6 +1187,15 @@ def atomic_write_report(destination: Path, encoded: bytes) -> None:
                 raise
         else:
             committed = True
+        if committed and not _report_parent_is_bound(
+            resolved_parent, parent_descriptor, parent_stat
+        ):
+            if sys.platform.startswith("linux"):
+                _remove_linux_committed_report(
+                    descriptor, parent_descriptor, resolved_destination.name
+                )
+                committed = False
+            raise ValueError("unsafe report parent")
     finally:
         cleanup_error: ReportCleanupError | None = None
         if not committed and os.name == "nt":
