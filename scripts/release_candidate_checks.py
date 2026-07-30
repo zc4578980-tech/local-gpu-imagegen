@@ -9,7 +9,9 @@ import os
 import re
 import stat
 import subprocess
+import tempfile
 import tomllib
+import venv
 import zipfile
 from collections import Counter
 from email.parser import BytesParser
@@ -24,6 +26,26 @@ EXPECTED_WHEEL = "local_gpu_imagegen-0.8.0-py3-none-any.whl"
 EXPECTED_VERSION = "0.8.0"
 EXPECTED_REQUIRES_PYTHON = ">=3.11"
 EXPECTED_DIST_INFO = "local_gpu_imagegen-0.8.0.dist-info"
+EXPECTED_PROTOCOL = "2024-11-05"
+EXPECTED_TOOLS = (
+    "local_gpu_branch_run",
+    "local_gpu_cleanup_run",
+    "local_gpu_confirm_mask",
+    "local_gpu_discover_models",
+    "local_gpu_finalize_run",
+    "local_gpu_generate_image",
+    "local_gpu_generate_round",
+    "local_gpu_get_run",
+    "local_gpu_imagegen_check",
+    "local_gpu_inspect_workflow",
+    "local_gpu_list_profiles",
+    "local_gpu_prepare_mask",
+    "local_gpu_recommend_models",
+    "local_gpu_record_review",
+    "local_gpu_register_workflow",
+    "local_gpu_set_model_trust",
+    "local_gpu_start_run",
+)
 MAX_ENTRIES = 256
 MAX_ENTRY_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
@@ -416,4 +438,197 @@ def inspect_wheel(
         facts["registry_identifier"] = identifier
         results.append(passed_check("registry_descriptor", identifier=identifier))
     facts["version"] = EXPECTED_VERSION
+    return _finalize_checks(results), facts
+
+
+class _InstalledCheckError(Exception):
+    def __init__(self, kind: str) -> None:
+        super().__init__(kind)
+        self.kind = kind
+
+
+def _installed_environment(fake_bin: Path) -> dict[str, str]:
+    environment = dict(os.environ)
+    for name in ("PYTHONPATH", "PYTHONHOME", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"):
+        environment.pop(name, None)
+    environment.update({
+        "PIP_NO_INDEX": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "LOCAL_GPU_IMAGEGEN_WEBUI_URL": "http://127.0.0.1:1",
+        "LOCAL_GPU_IMAGEGEN_COMFYUI_URL": "http://127.0.0.1:1",
+        "PATH": str(fake_bin) + os.pathsep + environment.get("PATH", ""),
+    })
+    return environment
+
+
+def _write_fake_client(directory: Path, name: str, marker: Path) -> None:
+    if os.name == "nt":
+        script = directory / f"{name}.cmd"
+        script.write_text(
+            "@echo off\n"
+            "if \"%1\"==\"--version\" (echo local test client& exit /b 0)\n"
+            "if \"%1\"==\"mcp\" if \"%2\"==\"get\" exit /b 1\n"
+            f"if \"%1\"==\"mcp\" if \"%2\"==\"add\" (echo called>\"{marker}\"& exit /b 0)\n"
+            "exit /b 2\n",
+            encoding="utf-8",
+        )
+        return
+    script = directory / name
+    script.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--version\" ]; then echo 'local test client'; exit 0; fi\n"
+        "if [ \"$1\" = \"mcp\" ] && [ \"$2\" = \"get\" ]; then exit 1; fi\n"
+        f"if [ \"$1\" = \"mcp\" ] && [ \"$2\" = \"add\" ]; then echo called > '{marker}'; exit 0; fi\n"
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+
+
+def _run_json(
+    command: list[str], *, cwd: Path, env: dict[str, str], expected_exit: int,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> dict[str, object]:
+    try:
+        completed = runner(command, cwd=cwd, env=env, capture_output=True, text=True,
+                           timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        raise _InstalledCheckError("execution") from None
+    if completed.returncode != expected_exit:
+        raise _InstalledCheckError("exit")
+    stdout = completed.stdout or ""
+    if (not stdout.strip() or len(stdout) > 1024 * 1024
+            or "traceback" in (completed.stderr or "").casefold()):
+        raise _InstalledCheckError("output")
+    try:
+        result = json.loads(stdout)
+    except json.JSONDecodeError:
+        raise _InstalledCheckError("json") from None
+    if not isinstance(result, dict):
+        raise _InstalledCheckError("json")
+    return result
+
+
+def run_installed_checks(
+    wheel: Path, python: Path, *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Verify an already-built wheel from a disposable checkout-external venv."""
+    environment = _installed_environment(Path(tempfile.gettempdir()))
+    version_command = [str(python), "-c", "import json,sys; print(json.dumps(list(sys.version_info[:2])))"]
+    try:
+        version_result = runner(version_command, cwd=Path(tempfile.gettempdir()), env=environment,
+                                capture_output=True, text=True, timeout=60, check=False)
+        version = json.loads(version_result.stdout or "")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return [blocked_check("release_python", "release_python_312_required")], {}
+    if (
+        version_result.returncode != 0
+        or "traceback" in (version_result.stderr or "").casefold()
+        or version != [3, 12]
+    ):
+        return [blocked_check("release_python", "release_python_312_required")], {}
+    if wheel.name != EXPECTED_WHEEL or not wheel.is_file():
+        return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
+
+    results: list[dict[str, object]] = []
+    facts: dict[str, object] = {}
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        temporary_root = Path(temporary_directory)
+        environment_dir = temporary_root / "venv"
+        fake_bin = temporary_root / "fake-bin"
+        fake_bin.mkdir()
+        marker = fake_bin / "client-add-called"
+        _write_fake_client(fake_bin, "codex", marker)
+        _write_fake_client(fake_bin, "claude", marker)
+        environment = _installed_environment(fake_bin)
+        try:
+            venv.EnvBuilder(with_pip=True).create(environment_dir)
+        except (OSError, subprocess.SubprocessError):
+            return [blocked_check("installed_venv", "installed_venv_failed")], {}
+        installed_python = environment_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        cli = environment_dir / ("Scripts/local-gpu-imagegen.exe" if os.name == "nt" else "bin/local-gpu-imagegen")
+        try:
+            completed = runner(
+                [str(installed_python), "-m", "pip", "install", "--no-index", "--no-deps",
+                 "--no-cache-dir", "--disable-pip-version-check", str(wheel)],
+                cwd=temporary_root, env=environment, capture_output=True, text=True,
+                timeout=60, check=False,
+            )
+            if completed.returncode != 0 or "traceback" in (completed.stderr or "").casefold():
+                results.append(blocked_check("installed_pip", "installed_pip_install_failed"))
+                return _finalize_checks(results), facts
+        except (OSError, subprocess.SubprocessError):
+            results.append(blocked_check("installed_pip", "installed_pip_install_failed"))
+            return _finalize_checks(results), facts
+
+        checks_to_run = (
+            ("installed_contract", "installed_contract", [str(cli), "verify"], 0),
+            ("installed_doctor", "installed_doctor", [str(cli), "doctor"], 1),
+            ("installed_setup_codex", "installed_setup_contract", [str(cli), "setup", "codex"], 0),
+            ("installed_setup_claude", "installed_setup_contract", [str(cli), "setup", "claude-code"], 0),
+        )
+        reports: dict[str, dict[str, object]] = {}
+        for check_id, failure_code, command, expected_exit in checks_to_run:
+            try:
+                reports[check_id] = _run_json(command, cwd=temporary_root, env=environment,
+                                              expected_exit=expected_exit, runner=runner)
+            except _InstalledCheckError as error:
+                code = "installed_json_invalid" if error.kind == "json" else failure_code + "_mismatch"
+                results.append(blocked_check(check_id, code))
+
+        verify = reports.get("installed_contract")
+        if verify is not None:
+            server = verify.get("server")
+            if not isinstance(server, dict) or server.get("version") != EXPECTED_VERSION:
+                results.append(blocked_check("installed_version", "installed_version_mismatch"))
+            else:
+                facts["version"] = EXPECTED_VERSION
+                results.append(passed_check("installed_version", version=EXPECTED_VERSION))
+            if verify.get("protocolVersion") != EXPECTED_PROTOCOL:
+                results.append(blocked_check("installed_protocol", "installed_protocol_mismatch"))
+            else:
+                facts["protocol"] = EXPECTED_PROTOCOL
+                results.append(passed_check("installed_protocol", protocol=EXPECTED_PROTOCOL))
+            if verify.get("tools") != list(EXPECTED_TOOLS):
+                results.append(blocked_check("installed_tools", "installed_tool_contract_mismatch"))
+            else:
+                facts["tool_count"] = len(EXPECTED_TOOLS)
+                facts["tools"] = list(EXPECTED_TOOLS)
+                results.append(passed_check("installed_tools", count=len(EXPECTED_TOOLS)))
+
+        doctor = reports.get("installed_doctor")
+        if doctor is not None:
+            if doctor.get("ready") is not False:
+                results.append(blocked_check("installed_doctor", "installed_doctor_mismatch"))
+            else:
+                facts["doctor_exit"] = 1
+                facts["doctor_ready"] = False
+                results.append(passed_check("installed_doctor", exit=1, ready=False))
+        for check_id, fact_name in (("installed_setup_codex", "codex"), ("installed_setup_claude", "claude")):
+            setup = reports.get(check_id)
+            if setup is not None:
+                if setup.get("status") != "planned" or setup.get("applied") is not False or marker.exists():
+                    results.append(blocked_check(check_id, "installed_setup_contract_mismatch"))
+                else:
+                    facts[f"{fact_name}_dry_run"] = "planned"
+                    results.append(passed_check(check_id, status="planned"))
+
+        compile_script = (
+            "import compileall,json,local_gpu_imagegen; from pathlib import Path; "
+            "root=Path(local_gpu_imagegen.__file__).resolve().parent; sources=list(root.rglob('*.py')); "
+            "ok=compileall.compile_dir(str(root), quiet=1); "
+            "print(json.dumps({'compiled_sources': len(sources), 'ok': bool(ok)}))"
+        )
+        try:
+            compiled = _run_json([str(installed_python), "-c", compile_script], cwd=temporary_root,
+                                 env=environment, expected_exit=0, runner=runner)
+            count = compiled.get("compiled_sources")
+            if compiled.get("ok") is not True or not isinstance(count, int) or count <= 0:
+                raise _InstalledCheckError("contract")
+        except _InstalledCheckError:
+            results.append(blocked_check("installed_compile", "installed_compile_failed"))
+        else:
+            facts["compiled_source_count"] = count
+            results.append(passed_check("installed_compile", count=count))
     return _finalize_checks(results), facts

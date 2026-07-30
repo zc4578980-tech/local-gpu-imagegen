@@ -11,6 +11,8 @@ import venv
 import zipfile
 from pathlib import Path
 
+from scripts import release_candidate_checks
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -173,6 +175,22 @@ class PackagingTests(unittest.TestCase):
             ["local-gpu-imagegen", "serve"],
         )
         self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 12),
+        "release verifier requires Python 3.12",
+    )
+    def test_release_candidate_installed_checks_pass_for_real_wheel(self) -> None:
+        results, facts = release_candidate_checks.run_installed_checks(
+            self.wheel, Path(sys.executable)
+        )
+        self.assertFalse(
+            [item for item in results if item["status"] == "blocked"],
+            results,
+        )
+        self.assertEqual(facts["version"], "0.8.0")
+        self.assertEqual(facts["protocol"], "2024-11-05")
+        self.assertEqual(facts["tool_count"], 17)
 
 
 if __name__ == "__main__":
