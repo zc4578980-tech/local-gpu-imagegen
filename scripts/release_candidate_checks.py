@@ -377,12 +377,8 @@ def _credential_target_name(target: ast.expr) -> str | None:
         return target.id
     if isinstance(target, ast.Attribute):
         return target.attr
-    if (
-        isinstance(target, ast.Subscript)
-        and isinstance(target.slice, ast.Constant)
-        and isinstance(target.slice.value, str)
-    ):
-        return target.slice.value
+    if isinstance(target, ast.Subscript):
+        return _static_string(target.slice)
     return None
 
 
@@ -410,11 +406,8 @@ def _expression_contains_literal(
             )
         )
     if isinstance(node, ast.Subscript):
-        selector = (
-            _scalar_bytes(node.slice.value)
-            if isinstance(node.slice, ast.Constant)
-            else None
-        )
+        selector_value = _static_string(node.slice)
+        selector = _scalar_bytes(selector_value)
         unsafe_selector = selector is None or not SELECTOR_LITERAL_RE.fullmatch(
             selector
         )
@@ -433,7 +426,14 @@ def _expression_contains_literal(
         safe_keywords = SAFE_SELECTOR_KEYWORD_ARGUMENTS.get(
             call_name or "", frozenset()
         )
-        return any(
+        return (
+            isinstance(node.func, ast.Attribute)
+            and _expression_contains_literal(
+                node.func.value,
+                allow_selectors=allow_selectors,
+                allow_public_token_prefix=allow_public_token_prefix,
+            )
+        ) or any(
             _expression_contains_literal(
                 argument,
                 allow_selectors=index in safe_positions,
@@ -474,6 +474,45 @@ def _static_string(node: ast.expr) -> str | None:
             and len(left) + len(right) <= 512
         ):
             return left + right
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                part = value.value
+            elif (
+                isinstance(value, ast.FormattedValue)
+                and value.conversion in (-1, ord("s"))
+                and value.format_spec is None
+            ):
+                part = _static_string(value.value)
+                if part is None:
+                    return None
+            else:
+                return None
+            parts.append(part)
+            if sum(map(len, parts)) > 512:
+                return None
+        return "".join(parts)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "format"
+        and not node.keywords
+    ):
+        template = _static_string(node.func.value)
+        arguments = [_static_string(argument) for argument in node.args]
+        if template is None or any(argument is None for argument in arguments):
+            return None
+        pieces = template.split("{}")
+        if len(pieces) != len(arguments) + 1 or any(
+            "{" in piece or "}" in piece for piece in pieces
+        ):
+            return None
+        result = pieces[0] + "".join(
+            f"{argument}{piece}"
+            for argument, piece in zip(arguments, pieces[1:])
+        )
+        return result if len(result) <= 512 else None
     return None
 
 
@@ -567,6 +606,32 @@ def _python_contains_sensitive_content(data: bytes) -> bool:
     return False
 
 
+def _json_sensitive_binding_contains_value(value: object) -> bool:
+    if isinstance(value, list):
+        return any(item not in (None, "", [], {}) for item in value)
+    if not isinstance(value, dict):
+        return value not in (None, "")
+    for key, child in value.items():
+        normalized_key = (
+            _normalized_credential_key(key) if isinstance(key, str) else None
+        )
+        if normalized_key in {"default", "value"} and child not in (
+            None,
+            "",
+            [],
+            {},
+        ):
+            return True
+        if normalized_key in SENSITIVE_CREDENTIAL_KEYS:
+            if _json_sensitive_binding_contains_value(child):
+                return True
+        elif isinstance(child, dict) and _json_sensitive_binding_contains_value(
+            child
+        ):
+            return True
+    return False
+
+
 def _json_contains_sensitive_content(value: object) -> bool:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -575,8 +640,7 @@ def _json_contains_sensitive_content(value: object) -> bool:
             if (
                 isinstance(key, str)
                 and _normalized_credential_key(key) in SENSITIVE_CREDENTIAL_KEYS
-                and not isinstance(child, (dict, list))
-                and child not in (None, "")
+                and _json_sensitive_binding_contains_value(child)
             ):
                 return True
             if _json_contains_sensitive_content(child):
