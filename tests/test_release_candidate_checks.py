@@ -201,6 +201,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         extra_dist_info: bool = False,
         symlink: bool = False,
         extra_content: str = "fixture",
+        metadata_mode: int | None = None,
         wheel_headers: str = "Wheel-Version: 1.0\nTag: py3-none-any\n",
     ) -> Path:
         wheel = root / "local_gpu_imagegen-0.8.0-py3-none-any.whl"
@@ -211,7 +212,12 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr("local_gpu_imagegen/__init__.py", '__version__ = "0.8.0"\n')
             if include_metadata:
-                archive.writestr("local_gpu_imagegen-0.8.0.dist-info/METADATA", metadata)
+                if metadata_mode is None:
+                    archive.writestr("local_gpu_imagegen-0.8.0.dist-info/METADATA", metadata)
+                else:
+                    info = zipfile.ZipInfo("local_gpu_imagegen-0.8.0.dist-info/METADATA")
+                    info.external_attr = metadata_mode << 16
+                    archive.writestr(info, metadata)
             archive.writestr(
                 "local_gpu_imagegen-0.8.0.dist-info/WHEEL",
                 wheel_headers,
@@ -365,6 +371,21 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
         self.assertIn("sensitive_wheel_content", self.codes(results))
 
+    def test_wheel_cross_validates_directory_paths_and_unix_file_types(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root)
+        with zipfile.ZipFile(wheel, "a") as archive:
+            directory = zipfile.ZipInfo("local_gpu_imagegen/directory/")
+            directory.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(directory, "")
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("unsafe_wheel_entry", self.codes(results))
+
+        root = self.make_release_root()
+        wheel = self.make_wheel(root, metadata_mode=stat.S_IFDIR | 0o755)
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("unsafe_wheel_entry", self.codes(results))
+
     def test_wheel_rejects_ambiguous_member_names_and_nonempty_directories(self) -> None:
         root = self.make_release_root()
         source_name = b"local_gpu_imagegen/nul.pyXignored"
@@ -443,6 +464,23 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                 )
                 results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
                 self.assertIn("sensitive_wheel_content", self.codes(results))
+
+    def test_wheel_rejects_quoted_credential_keys_without_leaking_content(self) -> None:
+        for content in (
+            '{"client_secret":"value"}',
+            '{"password":"value"}',
+            '{"token":"value"}',
+        ):
+            with self.subTest(content=content):
+                root = self.make_release_root()
+                wheel = self.make_wheel(
+                    root,
+                    extra_entry="local_gpu_imagegen/private.txt",
+                    extra_content=content,
+                )
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("sensitive_wheel_content", self.codes(results))
+                self.assertNotIn(content, str(results))
 
     def test_wheel_rejects_generic_windows_absolute_paths(self) -> None:
         for content in (

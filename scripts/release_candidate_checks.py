@@ -35,6 +35,7 @@ CREDENTIAL_RE = re.compile(
     rb"\b(?:authorization|proxy-authorization|x-api-key|api-key)\s*:|"
     rb"\b(?:api[_-]?key|client[_-]?secret|secret[_-]?key|access[_-]?token|"
     rb"refresh[_-]?token|auth[_-]?token|password|passwd|token)\s*[:=]|"
+    rb"[\"'](?:client_secret|password|token)[\"']\s*:|"
     rb"\bbearer\s+[a-z0-9._~+/=-]+"
     rb")"
 )
@@ -191,6 +192,7 @@ def _snapshot_wheel(path: Path, path_stat: os.stat_result) -> tuple[io.BytesIO, 
 def _is_safe_entry(info: zipfile.ZipInfo) -> bool:
     name = info.filename
     original_name = info.orig_filename
+    path_is_directory = name.endswith("/")
     if (
         not name
         or "\0" in original_name
@@ -198,25 +200,27 @@ def _is_safe_entry(info: zipfile.ZipInfo) -> bool:
         or "\\" in original_name
         or name.startswith("/")
         or re.match(r"^[A-Za-z]:", name)
-        or (info.is_dir() and info.file_size != 0)
+        or (path_is_directory and info.file_size != 0)
     ):
         return False
     source_parts = original_name.split("/")
     if any(part in {".", ".."} for part in source_parts):
         return False
-    if any(not part for part in source_parts[:-1]) or (not info.is_dir() and not source_parts[-1]):
+    if any(not part for part in source_parts[:-1]) or (not path_is_directory and not source_parts[-1]):
         return False
     path = PurePosixPath(name)
     if path.is_absolute() or ".." in path.parts:
         return False
-    normalized_name = f"{path}/" if info.is_dir() else str(path)
+    normalized_name = f"{path}/" if path_is_directory else str(path)
     if normalized_name != name:
         return False
     if any(part.casefold() in {"models", "outputs"} for part in path.parts):
         return False
     mode = info.external_attr >> 16
     file_type = stat.S_IFMT(mode)
-    return file_type in (0, stat.S_IFREG, stat.S_IFDIR)
+    if path_is_directory:
+        return file_type in (0, stat.S_IFDIR)
+    return file_type in (0, stat.S_IFREG)
 
 
 def _archive_bytes(archive: zipfile.ZipFile, name: str) -> bytes:

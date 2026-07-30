@@ -543,3 +543,74 @@ Result: exit code 0; Git emitted only LF-to-CRLF working-copy warnings.
 ### Concerns
 
 - None beyond the existing static, synthetic validation boundary.
+
+---
+
+## Narrow Final Review Fix Evidence (2026-07-30)
+
+### RED Evidence
+
+Command after adding focused regression cases and before production changes:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks -v
+```
+
+```text
+Ran 36 tests in 4.645s
+FAILED (failures=4)
+```
+
+The failures proved that a trailing-slash ZIP directory marked `S_IFREG`, the
+required `.dist-info/METADATA` member marked `S_IFDIR`, and quoted
+`client_secret`, `password`, and `token` keys were all accepted.
+
+### GREEN Evidence
+
+Required full focused suite:
+
+```powershell
+python -m unittest tests.test_release_candidate_checks -v
+```
+
+```text
+Ran 36 tests in 4.651s
+OK
+```
+
+Required compilation check:
+
+```powershell
+python -m py_compile scripts\release_candidate_checks.py tests\test_release_candidate_checks.py
+```
+
+Result: exit code 0.
+
+Required whitespace check:
+
+```powershell
+git diff --check
+```
+
+Result: exit code 0; Git emitted only LF-to-CRLF working-copy warnings.
+
+### Changed Files
+
+- `scripts/release_candidate_checks.py`
+- `tests/test_release_candidate_checks.py`
+- `.superpowers/sdd/task-1-report.md`
+
+### Self-Review
+
+- ZIP path form and Unix file type are cross-validated: slash-suffixed
+  directories accept only mode 0 or `S_IFDIR` with no payload, while
+  non-directory members accept only mode 0 or `S_IFREG`.
+- Sensitive-content scanning now detects quoted `client_secret`, `password`,
+  and `token` keys without putting matched content into results, while
+  retaining the bounded header and assignment rules.
+- No download, GPU, client, candidate artifact, remote, publication, push, or
+  metadata operation was performed.
+
+### Concerns
+
+- None beyond the existing synthetic, static, offline validation boundary.
