@@ -713,7 +713,7 @@ def _json_sensitive_binding_contains_value(value: object) -> bool:
         normalized_key = (
             _normalized_credential_key(key) if isinstance(key, str) else None
         )
-        if normalized_key in {"default", "value"} and child not in (
+        if normalized_key in {"const", "default", "value"} and child not in (
             None,
             "",
             [],
