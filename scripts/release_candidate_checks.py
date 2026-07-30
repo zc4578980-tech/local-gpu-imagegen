@@ -11,7 +11,6 @@ import stat
 import subprocess
 import tempfile
 import tomllib
-import venv
 import zipfile
 from collections import Counter
 from email.parser import BytesParser
@@ -27,6 +26,8 @@ EXPECTED_VERSION = "0.8.0"
 EXPECTED_REQUIRES_PYTHON = ">=3.11"
 EXPECTED_DIST_INFO = "local_gpu_imagegen-0.8.0.dist-info"
 EXPECTED_PROTOCOL = "2024-11-05"
+PYTHON_VERSION_SCRIPT = "import json,sys; print(json.dumps(list(sys.version_info[:2])))"
+CREATE_VENV_SCRIPT = "import sys,venv; venv.EnvBuilder(with_pip=True).create(sys.argv[1])"
 EXPECTED_TOOLS = (
     "local_gpu_branch_run",
     "local_gpu_cleanup_run",
@@ -499,7 +500,7 @@ def _run_json(
     stdout = completed.stdout or ""
     if (not stdout.strip() or len(stdout) > 1024 * 1024
             or "traceback" in (completed.stderr or "").casefold()):
-        raise _InstalledCheckError("output")
+        raise _InstalledCheckError("json")
     try:
         result = json.loads(stdout)
     except json.JSONDecodeError:
@@ -509,26 +510,50 @@ def _run_json(
     return result
 
 
+def _python_312_version(
+    python: Path,
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+) -> list[int] | None:
+    try:
+        completed = runner(
+            [str(python), "-c", PYTHON_VERSION_SCRIPT],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    stdout = completed.stdout or ""
+    if (
+        completed.returncode != 0
+        or not stdout.strip()
+        or len(stdout) > 1024 * 1024
+        or "traceback" in (completed.stderr or "").casefold()
+    ):
+        return None
+    try:
+        version = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    return version if version == [3, 12] else None
+
+
 def run_installed_checks(
     wheel: Path, python: Path, *,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Verify an already-built wheel from a disposable checkout-external venv."""
-    environment = _installed_environment(Path(tempfile.gettempdir()))
-    version_command = [str(python), "-c", "import json,sys; print(json.dumps(list(sys.version_info[:2])))"]
-    try:
-        version_result = runner(version_command, cwd=Path(tempfile.gettempdir()), env=environment,
-                                capture_output=True, text=True, timeout=60, check=False)
-        version = json.loads(version_result.stdout or "")
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return [blocked_check("release_python", "release_python_312_required")], {}
-    if (
-        version_result.returncode != 0
-        or "traceback" in (version_result.stderr or "").casefold()
-        or version != [3, 12]
-    ):
-        return [blocked_check("release_python", "release_python_312_required")], {}
     if wheel.name != EXPECTED_WHEEL or not wheel.is_file():
+        return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
+    try:
+        resolved_wheel = wheel.resolve(strict=True)
+    except OSError:
         return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
 
     results: list[dict[str, object]] = []
@@ -542,16 +567,49 @@ def run_installed_checks(
         _write_fake_client(fake_bin, "codex", marker)
         _write_fake_client(fake_bin, "claude", marker)
         environment = _installed_environment(fake_bin)
+        version = _python_312_version(
+            python,
+            cwd=temporary_root,
+            env=environment,
+            runner=runner,
+        )
+        if version is None:
+            return [blocked_check("release_python", "release_python_312_required")], {}
+        facts["release_python_version"] = version
+        results.append(passed_check("release_python", version=version))
         try:
-            venv.EnvBuilder(with_pip=True).create(environment_dir)
+            created = runner(
+                [str(python), "-c", CREATE_VENV_SCRIPT, str(environment_dir)],
+                cwd=temporary_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
         except (OSError, subprocess.SubprocessError):
-            return [blocked_check("installed_venv", "installed_venv_failed")], {}
+            results.append(blocked_check("installed_venv", "installed_venv_failed"))
+            return _finalize_checks(results), facts
+        if created.returncode != 0 or "traceback" in (created.stderr or "").casefold():
+            results.append(blocked_check("installed_venv", "installed_venv_failed"))
+            return _finalize_checks(results), facts
         installed_python = environment_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         cli = environment_dir / ("Scripts/local-gpu-imagegen.exe" if os.name == "nt" else "bin/local-gpu-imagegen")
+        installed_version = _python_312_version(
+            installed_python,
+            cwd=temporary_root,
+            env=environment,
+            runner=runner,
+        )
+        if installed_version is None:
+            results.append(blocked_check("installed_venv_python", "release_python_312_required"))
+            return _finalize_checks(results), facts
+        facts["venv_python_version"] = installed_version
+        results.append(passed_check("installed_venv_python", version=installed_version))
         try:
             completed = runner(
                 [str(installed_python), "-m", "pip", "install", "--no-index", "--no-deps",
-                 "--no-cache-dir", "--disable-pip-version-check", str(wheel)],
+                 "--no-cache-dir", "--disable-pip-version-check", str(resolved_wheel)],
                 cwd=temporary_root, env=environment, capture_output=True, text=True,
                 timeout=60, check=False,
             )

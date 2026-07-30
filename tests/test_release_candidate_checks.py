@@ -11,11 +11,9 @@ import sys
 import tempfile
 import unittest
 import uuid
-import venv
 import warnings
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
 from unittest.mock import patch
 
 
@@ -853,12 +851,14 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
             "doctor": {"ready": False},
             "codex": {"status": "planned", "applied": False},
             "claude": {"status": "planned", "applied": False},
-            "compile": {"compiled_sources": 7},
+            "compile": {"compiled_sources": 7, "ok": True},
         }
 
     def completed_processes(self, responses: dict[str, object]) -> list[subprocess.CompletedProcess[str]]:
         return [
             subprocess.CompletedProcess(["python"], 0, json.dumps(responses["version"]), ""),
+            subprocess.CompletedProcess(["venv"], 0, "", ""),
+            subprocess.CompletedProcess(["venv-python"], 0, json.dumps(responses["version"]), ""),
             subprocess.CompletedProcess(["pip"], 0, "", ""),
             subprocess.CompletedProcess(["verify"], 0, json.dumps(responses["verify"]), ""),
             subprocess.CompletedProcess(["doctor"], 1, json.dumps(responses["doctor"]), ""),
@@ -871,31 +871,91 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
         return self.completed_processes(self.valid_responses())
 
     def run_with(self, runner: RecordingRunner) -> tuple[list[dict[str, object]], dict[str, object]]:
-        with patch.object(venv.EnvBuilder, "create") as create:
-            results, facts = checks.run_installed_checks(self.wheel, self.python, runner=runner)
-        create.assert_called_once()
-        return results, facts
+        return checks.run_installed_checks(self.wheel, self.python, runner=runner)
 
-    def test_install_uses_exact_offline_wheel_and_scrubbed_environment(self) -> None:
+    def test_valid_path_uses_supplied_python_to_create_and_verify_venv(self) -> None:
         runner = RecordingRunner(self.valid_completed_processes())
-        self.run_with(runner)
-        install = next(command for command, _ in runner.calls if "install" in command)
-        self.assertEqual(install[-1], str(self.wheel))
-        self.assertIn("--no-index", install)
-        self.assertIn("--no-deps", install)
-        install_call = next(call for call in runner.calls if "install" in call[0])
-        self.assertIn("--no-cache-dir", install_call[0])
-        self.assertIn("--disable-pip-version-check", install_call[0])
-        self.assertNotIn("PYTHONPATH", install_call[1]["env"])
-        self.assertNotIn("PYTHONHOME", install_call[1]["env"])
-        self.assertNotEqual(Path(str(install_call[1]["cwd"])), ROOT)
-        self.assertEqual(install_call[1]["timeout"], 60)
+        results, facts = self.run_with(runner)
+
+        self.assertFalse(self.codes(results), results)
+        ids = [str(item["id"]) for item in results]
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(
+            facts,
+            {
+                "release_python_version": [3, 12],
+                "venv_python_version": [3, 12],
+                "version": "0.8.0",
+                "protocol": "2024-11-05",
+                "tool_count": 17,
+                "tools": list(checks.EXPECTED_TOOLS),
+                "doctor_exit": 1,
+                "doctor_ready": False,
+                "codex_dry_run": "planned",
+                "claude_dry_run": "planned",
+                "compiled_source_count": 7,
+            },
+        )
+
+        version, create, venv_version, install = runner.calls[:4]
+        temporary_root = Path(str(create[0][3])).parent
+        self.assertEqual(
+            version[0],
+            [str(self.python), "-c", checks.PYTHON_VERSION_SCRIPT],
+        )
+        self.assertEqual(
+            create[0],
+            [
+                str(self.python),
+                "-c",
+                checks.CREATE_VENV_SCRIPT,
+                str(temporary_root / "venv"),
+            ],
+        )
+        installed_python = temporary_root / "venv" / (
+            "Scripts/python.exe" if os.name == "nt" else "bin/python"
+        )
+        self.assertEqual(
+            venv_version[0],
+            [str(installed_python), "-c", checks.PYTHON_VERSION_SCRIPT],
+        )
+        self.assertEqual(
+            install[0],
+            [
+                str(installed_python),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--no-deps",
+                "--no-cache-dir",
+                "--disable-pip-version-check",
+                str(self.wheel.resolve()),
+            ],
+        )
+        for _, kwargs in runner.calls:
+            environment = kwargs["env"]
+            assert isinstance(environment, dict)
+            for name in ("PYTHONPATH", "PYTHONHOME", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"):
+                self.assertNotIn(name, environment)
+            self.assertEqual(environment["PIP_NO_INDEX"], "1")
+            self.assertEqual(environment["PIP_DISABLE_PIP_VERSION_CHECK"], "1")
+            self.assertEqual(environment["LOCAL_GPU_IMAGEGEN_WEBUI_URL"], "http://127.0.0.1:1")
+            self.assertEqual(environment["LOCAL_GPU_IMAGEGEN_COMFYUI_URL"], "http://127.0.0.1:1")
+            self.assertTrue(str(environment["PATH"]).startswith(str(temporary_root / "fake-bin")))
+            self.assertEqual(kwargs["cwd"], temporary_root)
+            self.assertNotEqual(Path(str(kwargs["cwd"])), ROOT)
+            self.assertEqual(kwargs["timeout"], 60)
+            self.assertTrue(kwargs["capture_output"])
+            self.assertTrue(kwargs["text"])
+            self.assertFalse(kwargs["check"])
 
     def test_installed_contract_requires_exact_version_protocol_and_tools(self) -> None:
         cases = (
             ("version", "installed_version_mismatch", "0.8.1"),
             ("protocol", "installed_protocol_mismatch", "2025-01-01"),
-            ("tools", "installed_tool_contract_mismatch", list(checks.EXPECTED_TOOLS[:-1])),
+            ("tools", "installed_tool_contract_mismatch", list(reversed(checks.EXPECTED_TOOLS))),
         )
         for field, expected, value in cases:
             with self.subTest(field=field):
@@ -926,25 +986,53 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
                 responses = self.valid_responses()
                 if target == "verify":
                     completed = self.completed_processes(responses)
-                    completed[2] = subprocess.CompletedProcess(["verify"], returncode, "not-json", "")
+                    completed[4] = subprocess.CompletedProcess(["verify"], returncode, "not-json", "")
                 elif target == "pip":
                     completed = self.completed_processes(responses)
-                    completed[1] = subprocess.CompletedProcess(["pip"], returncode, "", "Traceback: private")
+                    completed[3] = subprocess.CompletedProcess(["pip"], returncode, "", "Traceback: private")
                 elif target == "doctor":
                     completed = self.completed_processes(responses)
-                    completed[3] = subprocess.CompletedProcess(["doctor"], returncode, json.dumps(responses["doctor"]), "")
+                    completed[5] = subprocess.CompletedProcess(["doctor"], returncode, json.dumps(responses["doctor"]), "")
                 elif target == "setup":
                     completed = self.completed_processes(responses)
-                    completed[4] = subprocess.CompletedProcess(
+                    completed[6] = subprocess.CompletedProcess(
                         ["setup", "codex"], returncode,
                         json.dumps({"status": "configured", "applied": True}), "",
                     )
                 else:
                     completed = self.completed_processes(responses)
-                    completed[6] = subprocess.CompletedProcess(["compileall"], returncode, "", "")
+                    completed[8] = subprocess.CompletedProcess(["compileall"], returncode, "", "")
                 results, _ = self.run_with(RecordingRunner(completed))
                 self.assertIn(expected, self.codes(results))
                 self.assertNotIn("private", str(results))
+
+    def test_json_boundary_rejects_empty_oversized_non_object_traceback_and_timeout(self) -> None:
+        cases: list[object] = ["", "x" * (1024 * 1024 + 1), "[]", '{"ok": true}']
+        for output in cases:
+            with self.subTest(output_type=type(output).__name__, size=len(output)):
+                completed = self.valid_completed_processes()
+                stderr = "Traceback: private" if output == '{"ok": true}' else ""
+                completed[4] = subprocess.CompletedProcess(["verify"], 0, output, stderr)
+                results, _ = self.run_with(RecordingRunner(completed))
+                self.assertIn("installed_json_invalid", self.codes(results))
+                self.assertNotIn("private", str(results))
+
+        recording = RecordingRunner(self.valid_completed_processes())
+
+        def timeout_on_verify(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            completed = recording(command, **kwargs)
+            if command[-1:] == ["verify"]:
+                raise subprocess.TimeoutExpired(command, 60)
+            return completed
+
+        results, _ = self.run_with(timeout_on_verify)  # type: ignore[arg-type]
+        self.assertIn("installed_contract_mismatch", self.codes(results))
+
+    def test_doctor_ready_true_is_blocked(self) -> None:
+        completed = self.valid_completed_processes()
+        completed[5] = subprocess.CompletedProcess(["doctor"], 1, '{"ready": true}', "")
+        results, _ = self.run_with(RecordingRunner(completed))
+        self.assertIn("installed_doctor_mismatch", self.codes(results))
 
     def test_setup_marker_creation_is_blocked(self) -> None:
         recording = RecordingRunner(self.valid_completed_processes())
@@ -969,10 +1057,16 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
                     def failing_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
                         raise response
                     runner = failing_runner  # type: ignore[assignment]
-                with patch.object(venv.EnvBuilder, "create") as create:
-                    results, _ = checks.run_installed_checks(self.wheel, self.python, runner=runner)
-                create.assert_not_called()
+                results, _ = checks.run_installed_checks(self.wheel, self.python, runner=runner)
                 self.assertIn("release_python_312_required", self.codes(results))
+
+    def test_created_venv_must_report_python_312_before_install(self) -> None:
+        completed = self.valid_completed_processes()
+        completed[2] = subprocess.CompletedProcess(["venv-python"], 0, "[3, 13]", "")
+        runner = RecordingRunner(completed)
+        results, _ = self.run_with(runner)
+        self.assertIn("release_python_312_required", self.codes(results))
+        self.assertEqual(len(runner.calls), 3)
 
     def test_cleanup_after_runner_exception_and_setup_marker_creation(self) -> None:
         created: list[Path] = []
@@ -991,15 +1085,12 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
                 self.delegate.cleanup()
 
         def exploding_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            if command[1:2] == ["-c"]:
+            if command[1:2] == ["-c"] and command[0] == str(self.python):
                 return subprocess.CompletedProcess(command, 0, "[3, 12]", "")
             raise subprocess.TimeoutExpired(command, 60)
 
-        with (
-            patch.object(checks.tempfile, "TemporaryDirectory", CapturingTemporaryDirectory),
-            patch.object(venv.EnvBuilder, "create"),
-        ):
+        with patch.object(checks.tempfile, "TemporaryDirectory", CapturingTemporaryDirectory):
             results, _ = checks.run_installed_checks(self.wheel, self.python, runner=exploding_runner)
-        self.assertIn("installed_pip_install_failed", self.codes(results))
+        self.assertIn("release_python_312_required", self.codes(results))
         self.assertTrue(created)
         self.assertFalse(created[0].exists())
