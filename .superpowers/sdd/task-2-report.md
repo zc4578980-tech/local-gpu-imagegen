@@ -207,3 +207,94 @@ git commit -m "fix: enforce supplied Python 3.12 venv"
 
 The resulting local commit hash is reported by Git and in the task completion
 summary.
+
+## Re-Review 2 Fix Evidence
+
+### RED
+
+```powershell
+python -m unittest tests.test_release_candidate_checks.ReleaseCandidateInstalledTests -v
+```
+
+Before the re-review fixes: `Ran 12 tests in 0.098s`,
+`FAILED (failures=3, errors=1)`. The failures showed inherited
+`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` values remained in every child
+environment, a checkout-child temporary root started a subprocess and created
+`fake-bin`, `compiled_sources: true` was accepted, and the nominal result set
+omitted `installed_contract`, `installed_pip`, and `installed_venv`.
+
+### GREEN
+
+```powershell
+python -m unittest tests.test_release_candidate_checks.ReleaseCandidateInstalledTests -v
+```
+
+Result: `Ran 12 tests in 0.110s`, `OK`.
+
+```powershell
+python -m unittest tests.test_release_candidate_checks -v
+```
+
+Result: `Ran 48 tests in 4.809s`, `OK`.
+
+```powershell
+python -m py_compile scripts\release_candidate_checks.py tests\test_release_candidate_checks.py tests\test_packaging.py
+git diff --check
+```
+
+Both completed successfully after the re-review fixes.
+
+### Direct Offline Python 3.12 Evidence
+
+An existing local Python 3.12 interpreter ran `run_installed_checks` against
+the existing `local_gpu_imagegen-0.8.0-py3-none-any.whl`. The command did not
+build or download an artifact, access a backend/GPU/network endpoint, or use a
+real client; the verifier-created disposable environment used only fake client
+commands.
+
+Result: exit `0`; `blocked_count` was `0`. Facts reported version `0.8.0`,
+protocol `2024-11-05`, ordered tool count `17`, offline doctor `1`/`false`,
+planned Codex and Claude dry-runs, source count `33`, and both supplied and
+created Python versions `[3, 12]`. The exact sorted result-ID set was:
+
+```text
+installed_compile
+installed_contract
+installed_doctor
+installed_pip
+installed_protocol
+installed_setup_claude
+installed_setup_codex
+installed_tools
+installed_venv
+installed_venv_python
+installed_version
+release_python
+```
+
+### Self-Review
+
+- `_installed_environment` removes every case-insensitive `*_PROXY` entry,
+  then forces both `NO_PROXY=*` and `no_proxy=*`; hostile mixed-case proxy
+  inputs are asserted for every subprocess boundary.
+- The created temporary path is resolved and rejected when it is the checkout
+  or any checkout descendant before creating `fake-bin`, a venv, fake clients,
+  or a subprocess. The focused test asserts no runner call occurs.
+- Valid execution now records passed `installed_venv`, `installed_pip`, and
+  `installed_contract` results. The nominal test requires the complete exact
+  sorted set, while failure paths use the same IDs with blocked status.
+- Compile validation now requires `type(compiled_sources) is int`, rejecting
+  JSON boolean values.
+- No MCP tools, package metadata, backend, GPU, model, network, real client,
+  remote, tag, publication, push, or rebuild behavior changed.
+
+### Concerns
+
+- `tests.test_packaging` was not run: its `setUpClass` builds a fresh wheel,
+  which conflicts with this task's explicit prohibition on rebuilding. The
+  complete helper suite and the direct offline Python 3.12 run against the
+  already-built wheel passed.
+- The initial RED run left one untracked `task-2-temp-*` directory under this
+  worktree because the pre-fix checkout-child path created `fake-bin` before
+  failing. Its verified checkout-local removal was rejected by the execution
+  environment policy; it is not staged or part of this commit.

@@ -452,11 +452,16 @@ def _installed_environment(fake_bin: Path) -> dict[str, str]:
     environment = dict(os.environ)
     for name in ("PYTHONPATH", "PYTHONHOME", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"):
         environment.pop(name, None)
+    for name in list(environment):
+        if name.casefold().endswith("_proxy"):
+            environment.pop(name, None)
     environment.update({
         "PIP_NO_INDEX": "1",
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         "LOCAL_GPU_IMAGEGEN_WEBUI_URL": "http://127.0.0.1:1",
         "LOCAL_GPU_IMAGEGEN_COMFYUI_URL": "http://127.0.0.1:1",
+        "NO_PROXY": "*",
+        "no_proxy": "*",
         "PATH": str(fake_bin) + os.pathsep + environment.get("PATH", ""),
     })
     return environment
@@ -559,7 +564,16 @@ def run_installed_checks(
     results: list[dict[str, object]] = []
     facts: dict[str, object] = {}
     with tempfile.TemporaryDirectory() as temporary_directory:
-        temporary_root = Path(temporary_directory)
+        try:
+            temporary_root = Path(temporary_directory).resolve(strict=True)
+            checkout_root = Path(__file__).resolve().parents[1]
+            temporary_root.relative_to(checkout_root)
+        except ValueError:
+            pass
+        except OSError:
+            return [blocked_check("installed_environment", "installed_checkout_external_required")], {}
+        else:
+            return [blocked_check("installed_environment", "installed_checkout_external_required")], {}
         environment_dir = temporary_root / "venv"
         fake_bin = temporary_root / "fake-bin"
         fake_bin.mkdir()
@@ -593,6 +607,7 @@ def run_installed_checks(
         if created.returncode != 0 or "traceback" in (created.stderr or "").casefold():
             results.append(blocked_check("installed_venv", "installed_venv_failed"))
             return _finalize_checks(results), facts
+        results.append(passed_check("installed_venv"))
         installed_python = environment_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         cli = environment_dir / ("Scripts/local-gpu-imagegen.exe" if os.name == "nt" else "bin/local-gpu-imagegen")
         installed_version = _python_312_version(
@@ -619,6 +634,7 @@ def run_installed_checks(
         except (OSError, subprocess.SubprocessError):
             results.append(blocked_check("installed_pip", "installed_pip_install_failed"))
             return _finalize_checks(results), facts
+        results.append(passed_check("installed_pip"))
 
         checks_to_run = (
             ("installed_contract", "installed_contract", [str(cli), "verify"], 0),
@@ -630,10 +646,13 @@ def run_installed_checks(
         for check_id, failure_code, command, expected_exit in checks_to_run:
             try:
                 reports[check_id] = _run_json(command, cwd=temporary_root, env=environment,
-                                              expected_exit=expected_exit, runner=runner)
+                                               expected_exit=expected_exit, runner=runner)
             except _InstalledCheckError as error:
                 code = "installed_json_invalid" if error.kind == "json" else failure_code + "_mismatch"
                 results.append(blocked_check(check_id, code))
+            else:
+                if check_id == "installed_contract":
+                    results.append(passed_check(check_id))
 
         verify = reports.get("installed_contract")
         if verify is not None:
@@ -682,7 +701,7 @@ def run_installed_checks(
             compiled = _run_json([str(installed_python), "-c", compile_script], cwd=temporary_root,
                                  env=environment, expected_exit=0, runner=runner)
             count = compiled.get("compiled_sources")
-            if compiled.get("ok") is not True or not isinstance(count, int) or count <= 0:
+            if compiled.get("ok") is not True or type(count) is not int or count <= 0:
                 raise _InstalledCheckError("contract")
         except _InstalledCheckError:
             results.append(blocked_check("installed_compile", "installed_compile_failed"))

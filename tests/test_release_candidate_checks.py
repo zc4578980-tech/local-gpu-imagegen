@@ -879,8 +879,23 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
 
         self.assertFalse(self.codes(results), results)
         ids = [str(item["id"]) for item in results]
-        self.assertEqual(ids, sorted(ids))
-        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(
+            ids,
+            [
+                "installed_compile",
+                "installed_contract",
+                "installed_doctor",
+                "installed_pip",
+                "installed_protocol",
+                "installed_setup_claude",
+                "installed_setup_codex",
+                "installed_tools",
+                "installed_venv",
+                "installed_venv_python",
+                "installed_version",
+                "release_python",
+            ],
+        )
         self.assertEqual(
             facts,
             {
@@ -950,6 +965,60 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
             self.assertTrue(kwargs["capture_output"])
             self.assertTrue(kwargs["text"])
             self.assertFalse(kwargs["check"])
+
+    def test_environment_scrubs_hostile_proxy_variables_and_forces_no_proxy(self) -> None:
+        hostile = {
+            "HTTP_PROXY": "http://proxy.invalid:8080",
+            "https_proxy": "http://proxy.invalid:8080",
+            "All_PrOxY": "socks5://proxy.invalid:1080",
+            "NO_PROXY": "localhost",
+            "no_proxy": "127.0.0.1",
+        }
+        with patch.dict(checks.os.environ, hostile, clear=False):
+            runner = RecordingRunner(self.valid_completed_processes())
+            self.run_with(runner)
+
+        for _, kwargs in runner.calls:
+            environment = kwargs["env"]
+            assert isinstance(environment, dict)
+            proxy_names = {
+                name for name in environment if name.casefold().endswith("_proxy")
+            }
+            self.assertEqual(proxy_names, {"NO_PROXY", "no_proxy"})
+            self.assertEqual(environment["NO_PROXY"], "*")
+            self.assertEqual(environment["no_proxy"], "*")
+
+    def test_checkout_child_temporary_root_fails_before_any_work(self) -> None:
+        temporary_root = ROOT / f"task-2-temp-{uuid.uuid4().hex}"
+        temporary_root.mkdir()
+
+        class CheckoutTemporaryDirectory:
+            def __enter__(self) -> str:
+                return str(temporary_root)
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        runner = RecordingRunner([])
+        try:
+            with patch.object(checks.tempfile, "TemporaryDirectory", CheckoutTemporaryDirectory):
+                results, facts = self.run_with(runner)
+        finally:
+            shutil.rmtree(temporary_root)
+
+        self.assertEqual(self.codes(results), {"installed_checkout_external_required"})
+        self.assertEqual(facts, {})
+        self.assertEqual(runner.calls, [])
+
+    def test_compile_rejects_boolean_source_count(self) -> None:
+        responses = self.valid_responses()
+        compile_result = responses["compile"]
+        assert isinstance(compile_result, dict)
+        compile_result["compiled_sources"] = True
+
+        results, _ = self.run_with(RecordingRunner(self.completed_processes(responses)))
+
+        self.assertIn("installed_compile_failed", self.codes(results))
 
     def test_installed_contract_requires_exact_version_protocol_and_tools(self) -> None:
         cases = (
