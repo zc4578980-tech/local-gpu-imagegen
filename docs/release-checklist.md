@@ -10,6 +10,7 @@ The unchanged `python scripts/validate_acceptance_evidence.py --strict` command 
 
 ## Local gate
 
+- [ ] The offline release-candidate verifier passes at the exact final commit, and its new `candidate-report.json` contains `"status": "passed"` for the frozen wheel SHA-256.
 - [x] The final model-free suite, Python compilation, strict UTF-8 JSON parse, repository hygiene, and public-document truthfulness gates pass at one exact commit.
 - [x] A fresh isolated Python 3.12 environment installs the final exact-commit wheel outside the checkout and verifies version `0.8.0`, protocol `2024-11-05`, and exactly seventeen tools; exact-commit Python 3.11 verification remains a CI gate.
 - [x] Installed `verify`, fail-closed `doctor`, local-wheel `uvx`, and read-only Codex and Claude Code setup paths succeed against the final exact-commit wheel without a source clone or direct configuration-file edit.

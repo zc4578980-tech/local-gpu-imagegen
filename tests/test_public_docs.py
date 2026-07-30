@@ -17,6 +17,7 @@ QUICKSTART = ROOT / "docs" / "quickstart.md"
 ALTERNATIVES = ROOT / "docs" / "alternatives.md"
 LAUNCH_PLAYBOOK = ROOT / "docs" / "launch-playbook.md"
 RELEASE_CHECKLIST = ROOT / "docs" / "release-checklist.md"
+PUBLICATION_RUNBOOK = ROOT / "docs" / "publication-runbook.md"
 GITHUB_LISTING = ROOT / "docs" / "github-listing.md"
 EVIDENCE_README = ROOT / "docs" / "evidence" / "README.md"
 QUALITY_CONTROL = ROOT / "docs" / "image-quality-control.md"
@@ -146,6 +147,40 @@ class PublicDocumentationTests(unittest.TestCase):
             "separate approval",
         ):
             self.assertIn(required, playbook)
+
+    def test_publication_runbook_binds_exact_offline_candidate_before_remote_actions(
+        self,
+    ) -> None:
+        runbook = PUBLICATION_RUNBOOK.read_text(encoding="utf-8")
+        for required in (
+            "validate_release_candidate.py",
+            "--expected-commit",
+            "--expected-wheel-sha256",
+            "--python",
+            '"status": "passed"',
+            "does not build",
+            "does not download",
+            "does not publish",
+            "separate approval",
+            "PyPI",
+            "MCP Registry",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, runbook)
+
+    def test_launch_playbook_requires_passed_publication_runbook_report(self) -> None:
+        playbook = LAUNCH_PLAYBOOK.read_text(encoding="utf-8")
+        self.assertIn("publication-runbook.md", playbook)
+        self.assertIn("candidate-report.json", playbook)
+        self.assertIn('"status": "passed"', playbook)
+
+    def test_release_checklist_keeps_exact_candidate_report_unchecked(self) -> None:
+        checklist = RELEASE_CHECKLIST.read_text(encoding="utf-8")
+        self.assertIn(
+            "- [ ] The offline release-candidate verifier passes at the exact final commit",
+            checklist,
+        )
+        self.assertIn("candidate-report.json", checklist)
 
     def test_quickstart_uses_three_first_use_decisions_and_one_successful_round(self) -> None:
         quickstart = QUICKSTART.read_text(encoding="utf-8")

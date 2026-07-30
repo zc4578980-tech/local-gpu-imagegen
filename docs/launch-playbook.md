@@ -12,6 +12,9 @@ Before any remote action:
 - Freeze one exact commit after the model-free suite, compilation, document
   checks, and repository hygiene pass.
 - Build one exact verified wheel and install it outside the source checkout.
+- Follow the [publication runbook](publication-runbook.md) and require its
+  `candidate-report.json` to contain `"status": "passed"` before any remote
+  action.
 - Require `verify` to report version `0.8.0`, protocol `2024-11-05`, and exactly
   seventeen tools; require `doctor` to fail closed when no backend is selected.
 - Keep the validated historical SDXL showcase ahead of the simulated protocol
