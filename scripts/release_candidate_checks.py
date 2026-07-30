@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path, PurePosixPath
+from string import Formatter
 from typing import Callable, Iterator
 
 
@@ -462,6 +463,22 @@ def _expression_contains_literal(
     return False
 
 
+def _static_string_sequence(node: ast.expr) -> list[str] | None:
+    if not isinstance(node, (ast.Tuple, ast.List)):
+        return None
+    values: list[str] = []
+    total_length = 0
+    for element in node.elts:
+        value = _static_string(element)
+        if value is None:
+            return None
+        values.append(value)
+        total_length += len(value)
+        if total_length > 512:
+            return None
+    return values
+
+
 def _static_string(node: ast.expr) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value if len(node.value) <= 512 else None
@@ -474,44 +491,120 @@ def _static_string(node: ast.expr) -> str | None:
             and len(left) + len(right) <= 512
         ):
             return left + right
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        template = _static_string(node.left)
+        if (
+            template is None
+            or re.fullmatch(r"(?:[^%]|%%|%s)*", template) is None
+        ):
+            return None
+        sequence = _static_string_sequence(node.right)
+        scalar = _static_string(node.right) if sequence is None else None
+        if sequence is None and scalar is None:
+            return None
+        try:
+            operand = tuple(sequence) if sequence is not None else scalar
+            result = template % operand
+        except (TypeError, ValueError):
+            return None
+        return result if len(result) <= 512 else None
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
+        total_length = 0
         for value in node.values:
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
                 part = value.value
             elif (
                 isinstance(value, ast.FormattedValue)
                 and value.conversion in (-1, ord("s"))
-                and value.format_spec is None
             ):
                 part = _static_string(value.value)
                 if part is None:
                     return None
+                format_spec = (
+                    _static_string(value.format_spec)
+                    if value.format_spec is not None
+                    else ""
+                )
+                if format_spec not in ("", "s"):
+                    return None
             else:
                 return None
             parts.append(part)
-            if sum(map(len, parts)) > 512:
+            total_length += len(part)
+            if total_length > 512:
                 return None
         return "".join(parts)
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "format"
-        and not node.keywords
     ):
         template = _static_string(node.func.value)
-        arguments = [_static_string(argument) for argument in node.args]
-        if template is None or any(argument is None for argument in arguments):
-            return None
-        pieces = template.split("{}")
-        if len(pieces) != len(arguments) + 1 or any(
-            "{" in piece or "}" in piece for piece in pieces
+        positional = [_static_string(argument) for argument in node.args]
+        keywords = {
+            keyword.arg: _static_string(keyword.value)
+            for keyword in node.keywords
+            if keyword.arg is not None
+        }
+        if (
+            template is None
+            or any(argument is None for argument in positional)
+            or len(keywords) != len(node.keywords)
+            or any(argument is None for argument in keywords.values())
         ):
             return None
-        result = pieces[0] + "".join(
-            f"{argument}{piece}"
-            for argument, piece in zip(arguments, pieces[1:])
-        )
+        parts: list[str] = []
+        total_length = 0
+        automatic_index = 0
+        try:
+            fields = Formatter().parse(template)
+            for literal, field_name, format_spec, conversion in fields:
+                parts.append(literal)
+                total_length += len(literal)
+                if total_length > 512:
+                    return None
+                if field_name is None:
+                    continue
+                if format_spec not in ("", "s") or conversion not in (None, "s"):
+                    return None
+                if field_name == "":
+                    index = automatic_index
+                    automatic_index += 1
+                    argument = (
+                        positional[index] if index < len(positional) else None
+                    )
+                elif field_name.isdecimal():
+                    index = int(field_name)
+                    argument = (
+                        positional[index] if index < len(positional) else None
+                    )
+                elif field_name.isidentifier():
+                    argument = keywords.get(field_name)
+                else:
+                    return None
+                if argument is None:
+                    return None
+                parts.append(argument)
+                total_length += len(argument)
+                if total_length > 512:
+                    return None
+        except ValueError:
+            return None
+        result = "".join(parts)
+        return result if len(result) <= 512 else None
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "join"
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        separator = _static_string(node.func.value)
+        values = _static_string_sequence(node.args[0])
+        if separator is None or values is None:
+            return None
+        result = separator.join(values)
         return result if len(result) <= 512 else None
     return None
 
@@ -608,7 +701,12 @@ def _python_contains_sensitive_content(data: bytes) -> bool:
 
 def _json_sensitive_binding_contains_value(value: object) -> bool:
     if isinstance(value, list):
-        return any(item not in (None, "", [], {}) for item in value)
+        return any(
+            _json_sensitive_binding_contains_value(item)
+            if isinstance(item, (dict, list))
+            else item not in (None, "")
+            for item in value
+        )
     if not isinstance(value, dict):
         return value not in (None, "")
     for key, child in value.items():
@@ -625,10 +723,9 @@ def _json_sensitive_binding_contains_value(value: object) -> bool:
         if normalized_key in SENSITIVE_CREDENTIAL_KEYS:
             if _json_sensitive_binding_contains_value(child):
                 return True
-        elif isinstance(child, dict) and _json_sensitive_binding_contains_value(
-            child
-        ):
-            return True
+        elif isinstance(child, (dict, list)):
+            if _json_sensitive_binding_contains_value(child):
+                return True
     return False
 
 
