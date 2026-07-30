@@ -941,7 +941,7 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
             [str(installed_python), "-c", checks.PYTHON_VERSION_SCRIPT],
         )
         self.assertEqual(
-            install[0],
+            install[0][:-1],
             [
                 str(installed_python),
                 "-m",
@@ -952,14 +952,16 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
                 "--no-cache-dir",
                 "--disable-pip-version-check",
                 "--require-hashes",
-                "--requirement",
-                "-",
             ],
         )
-        requirement = str(install[1]["input"])
-        self.assertIn(" --hash=sha256:", requirement)
-        self.assertIn(checks.EXPECTED_WHEEL, requirement)
-        self.assertIn(hashlib.sha256(self.wheel.read_bytes()).hexdigest(), requirement)
+        wheel_reference = install[0][-1]
+        self.assertTrue(wheel_reference.startswith("file:"))
+        self.assertIn(checks.EXPECTED_WHEEL, wheel_reference)
+        self.assertEqual(
+            urlsplit(wheel_reference).fragment,
+            f"sha256={hashlib.sha256(self.wheel.read_bytes()).hexdigest()}",
+        )
+        self.assertNotIn("input", install[1])
         installed_checks = runner.calls[4:]
         self.assertEqual(len(installed_checks), 5)
         verify, doctor, setup_codex, setup_claude, compile_call = installed_checks
@@ -1012,11 +1014,12 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
                 self, command: list[str], **kwargs: object,
             ) -> subprocess.CompletedProcess[str]:
                 if "install" in command:
-                    requirement = str(kwargs["input"]).strip()
-                    wheel_uri, expected_digest = requirement.split(
-                        " --hash=sha256:", 1
+                    wheel_reference = command[-1]
+                    parsed_reference = urlsplit(wheel_reference)
+                    expected_digest = parsed_reference.fragment.removeprefix(
+                        "sha256="
                     )
-                    path_text = url2pathname(urlsplit(wheel_uri).path)
+                    path_text = url2pathname(parsed_reference.path)
                     if os.name == "nt" and path_text.startswith("\\"):
                         path_text = path_text[1:]
                     self.installed_path = Path(path_text)
@@ -1056,6 +1059,75 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
         self.assertNotEqual(runner.installed_path, self.wheel)
         assert runner.installed_path is not None
         self.assertFalse(runner.installed_path.exists())
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 12),
+        "real pip hash regression requires Python 3.12",
+    )
+    def test_real_pip_accepts_matching_wheel_digest_and_rejects_mismatch(self) -> None:
+        pip_version = subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if pip_version.returncode != 0:
+            self.skipTest("real pip hash regression requires bundled pip")
+
+        wheel = self.temp / checks.EXPECTED_WHEEL
+        metadata = (
+            "Metadata-Version: 2.4\n"
+            "Name: local-gpu-imagegen\n"
+            "Version: 0.8.0\n"
+            "Requires-Python: >=3.11\n\n"
+        )
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr(
+                "local_gpu_imagegen/__init__.py", '__version__ = "0.8.0"\n'
+            )
+            archive.writestr(
+                "local_gpu_imagegen-0.8.0.dist-info/METADATA", metadata
+            )
+            archive.writestr(
+                "local_gpu_imagegen-0.8.0.dist-info/WHEEL",
+                "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\n"
+                "Tag: py3-none-any\n",
+            )
+            archive.writestr("local_gpu_imagegen-0.8.0.dist-info/RECORD", "")
+
+        digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        base_command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-index",
+            "--no-deps",
+            "--no-cache-dir",
+            "--disable-pip-version-check",
+            "--require-hashes",
+        ]
+        accepted = subprocess.run(
+            [*base_command, "--target", str(self.temp / "accepted"),
+             f"{wheel.as_uri()}#sha256={digest}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        rejected = subprocess.run(
+            [*base_command, "--target", str(self.temp / "rejected"),
+             f"{wheel.as_uri()}#sha256={'0' * 64}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("hash", rejected.stderr.casefold())
 
     @unittest.skipUnless(os.name == "nt", "Windows handle regression")
     def test_install_wheel_cleanup_attempts_both_handle_closes(self) -> None:
@@ -1630,6 +1702,21 @@ class ReleaseCandidateReportTests(unittest.TestCase):
             checks.atomic_write_report(destination, b"canonical report\n")
 
         self.assertEqual(destination.read_bytes(), b"canonical report\n")
+
+    def test_atomic_report_rolls_back_after_post_commit_parent_check_failure(
+        self,
+    ) -> None:
+        destination = self.root / "report.json"
+
+        with patch.object(
+            checks,
+            "_report_parent_is_bound",
+            side_effect=(True, False),
+        ):
+            with self.assertRaises(ValueError):
+                checks.atomic_write_report(destination, b"canonical report\n")
+
+        self.assertFalse(destination.exists())
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fd regression")
     def test_atomic_report_linux_parent_move_blocks_before_commit(self) -> None:

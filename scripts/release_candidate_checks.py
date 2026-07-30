@@ -751,15 +751,15 @@ def run_installed_checks(
                 temporary_root, wheel_payload
             ) as (install_wheel, runner_options):
                 wheel_digest = hashlib.sha256(wheel_payload).hexdigest()
-                requirement = (
-                    f"{install_wheel.as_uri()} --hash=sha256:{wheel_digest}\n"
+                wheel_reference = (
+                    f"{install_wheel.as_uri()}#sha256={wheel_digest}"
                 )
                 completed = runner(
                     [str(installed_python), "-m", "pip", "install", "--no-index", "--no-deps",
                      "--no-cache-dir", "--disable-pip-version-check", "--require-hashes",
-                     "--requirement", "-"],
+                     wheel_reference],
                     cwd=temporary_root, env=environment, capture_output=True, text=True,
-                    timeout=60, check=False, input=requirement, **runner_options,
+                    timeout=60, check=False, **runner_options,
                 )
             if completed.returncode != 0 or "traceback" in (completed.stderr or "").casefold():
                 results.append(blocked_check("installed_pip", "installed_pip_install_failed"))
@@ -1164,6 +1164,8 @@ def atomic_write_report(destination: Path, encoded: bytes) -> None:
         raise OSError("atomic report install unsupported")
 
     committed = False
+    windows_disposed = False
+    cleanup_error: ReportCleanupError | None = None
     try:
         _write_all(descriptor, encoded)
         os.fsync(descriptor)
@@ -1190,15 +1192,26 @@ def atomic_write_report(destination: Path, encoded: bytes) -> None:
         if committed and not _report_parent_is_bound(
             resolved_parent, parent_descriptor, parent_stat
         ):
-            if sys.platform.startswith("linux"):
+            if os.name == "nt":
+                try:
+                    _windows_dispose_pending(descriptor)
+                    windows_disposed = True
+                except OSError:
+                    cleanup_error = ReportCleanupError(
+                        "report committed cleanup failed"
+                    )
+                else:
+                    committed = False
+            elif sys.platform.startswith("linux"):
                 _remove_linux_committed_report(
                     descriptor, parent_descriptor, resolved_destination.name
                 )
                 committed = False
+            if cleanup_error is not None:
+                raise cleanup_error
             raise ValueError("unsafe report parent")
     finally:
-        cleanup_error: ReportCleanupError | None = None
-        if not committed and os.name == "nt":
+        if not committed and os.name == "nt" and not windows_disposed:
             try:
                 _windows_dispose_pending(descriptor)
             except OSError:

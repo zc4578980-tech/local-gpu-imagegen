@@ -126,6 +126,20 @@ class ValidateReleaseCandidateCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(stdout, self.report.read_bytes())
 
+    def test_cli_removes_report_after_post_commit_parent_check_failure(self) -> None:
+        with patch.object(
+            checks,
+            "_report_parent_is_bound",
+            side_effect=(True, False),
+        ):
+            exit_code, stdout = self.run_main(
+                self.passed_report(), report_path=self.report
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(self.report.exists())
+        self.assertEqual(json.loads(stdout)["status"], "blocked")
+
     def test_cli_reports_bounded_cleanup_failure_code(self) -> None:
         with patch.object(
             cli,
