@@ -577,6 +577,42 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                 results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
                 self.assertIn("sensitive_wheel_content", self.codes(results))
 
+    def test_wheel_rejects_literals_in_credential_method_receivers(self) -> None:
+        sensitive_sources = (
+            'api_key = "secretvalue".strip()\n',
+            'Client(api_key="secretvalue".strip())\n',
+            'def f(api_key="secretvalue".strip()):\n    pass\n',
+            'token = "route:hardcoded-secret".strip()\n',
+        )
+        for content in sensitive_sources:
+            with self.subTest(content=content):
+                root = self.make_release_root()
+                wheel = self.make_wheel(
+                    root,
+                    extra_entry="local_gpu_imagegen/private.py",
+                    extra_content=content,
+                )
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("sensitive_wheel_content", self.codes(results))
+
+    def test_wheel_rejects_computed_python_credential_keys(self) -> None:
+        sensitive_sources = (
+            'config["api_" + "key"] = "secret-value"\n',
+            'config[f"api_{\'key\'}"] = "secret-value"\n',
+            'config = {f"api_{\'key\'}": "secret-value"}\n',
+            'config = {"{}_{}".format("api", "key"): "secret-value"}\n',
+        )
+        for content in sensitive_sources:
+            with self.subTest(content=content):
+                root = self.make_release_root()
+                wheel = self.make_wheel(
+                    root,
+                    extra_entry="local_gpu_imagegen/private.py",
+                    extra_content=content,
+                )
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("sensitive_wheel_content", self.codes(results))
+
     def test_wheel_rejects_short_or_symbolic_credentials_and_private_paths(
         self,
     ) -> None:
@@ -603,6 +639,23 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             '{"token":"secret-value","token":""}',
             '{"C:\\\\Users\\\\private\\\\model.safetensors":true}',
             '{"Authorization: Bearer secret-value":true}',
+        )
+        for content in sensitive_values:
+            with self.subTest(content=content):
+                root = self.make_release_root()
+                wheel = self.make_wheel(
+                    root,
+                    extra_entry="local_gpu_imagegen/private.json",
+                    extra_content=content,
+                )
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("sensitive_wheel_content", self.codes(results))
+
+    def test_wheel_rejects_nested_json_credential_values(self) -> None:
+        sensitive_values = (
+            '{"token":{"default":"secret-value"}}',
+            '{"properties":{"token":{"type":"string","default":"secret-value"}}}',
+            '{"token":["secret-value"]}',
         )
         for content in sensitive_values:
             with self.subTest(content=content):
