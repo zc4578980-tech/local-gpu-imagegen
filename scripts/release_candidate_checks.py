@@ -75,6 +75,8 @@ CREDENTIAL_RE = re.compile(
     rb"[\"']?\s*[:=]\s*(?:[\"'][^\"'\r\n]{1,512}[\"']|"
     rb"[^\s\"'{\[]{1,512}))"
 )
+PUBLIC_TOKEN_PREFIXES = frozenset({b"route:"})
+SELECTOR_LITERAL_RE = re.compile(rb"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 SENSITIVE_CREDENTIAL_KEYS = frozenset(
     {
         "authorization",
@@ -373,11 +375,65 @@ def _credential_target_name(target: ast.expr) -> str | None:
     return None
 
 
-def _expression_contains_literal(node: ast.expr) -> bool:
-    return any(
-        isinstance(child, ast.Constant) and bool(_scalar_bytes(child.value))
-        for child in ast.walk(node)
-    )
+def _expression_contains_literal(
+    node: ast.expr,
+    *,
+    allow_selectors: bool = False,
+    allow_public_token_prefix: bool = False,
+) -> bool:
+    if isinstance(node, ast.Constant):
+        encoded = _scalar_bytes(node.value)
+        return bool(
+            encoded
+            and not (allow_selectors and SELECTOR_LITERAL_RE.fullmatch(encoded))
+            and not (
+                allow_public_token_prefix and encoded in PUBLIC_TOKEN_PREFIXES
+            )
+        )
+    if isinstance(node, ast.Subscript):
+        selector = (
+            _scalar_bytes(node.slice.value)
+            if isinstance(node.slice, ast.Constant)
+            else None
+        )
+        unsafe_selector = selector is None or not SELECTOR_LITERAL_RE.fullmatch(
+            selector
+        )
+        return _expression_contains_literal(
+            node.value,
+            allow_selectors=allow_selectors,
+            allow_public_token_prefix=allow_public_token_prefix,
+        ) or (
+            unsafe_selector and _expression_contains_literal(node.slice)
+        )
+    if isinstance(node, ast.Call):
+        return any(
+            _expression_contains_literal(
+                argument,
+                allow_selectors=True,
+                allow_public_token_prefix=allow_public_token_prefix,
+            )
+            for argument in node.args
+        ) or any(
+            _expression_contains_literal(
+                keyword.value,
+                allow_selectors=True,
+                allow_public_token_prefix=allow_public_token_prefix,
+            )
+            for keyword in node.keywords
+        )
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.Constant):
+            encoded = _scalar_bytes(child.value)
+            if allow_public_token_prefix and encoded in PUBLIC_TOKEN_PREFIXES:
+                continue
+        if _expression_contains_literal(
+            child,
+            allow_selectors=allow_selectors,
+            allow_public_token_prefix=allow_public_token_prefix,
+        ):
+            return True
+    return False
 
 
 def _credential_binding_contains_literal(target: ast.expr, value: ast.expr) -> bool:
@@ -394,10 +450,13 @@ def _credential_binding_contains_literal(target: ast.expr, value: ast.expr) -> b
             for child in ast.walk(target)
         ) and _expression_contains_literal(value)
     name = _credential_target_name(target)
+    normalized_name = _normalized_credential_key(name) if name is not None else None
     return bool(
-        name is not None
-        and _normalized_credential_key(name) in SENSITIVE_CREDENTIAL_KEYS
-        and _expression_contains_literal(value)
+        normalized_name in SENSITIVE_CREDENTIAL_KEYS
+        and _expression_contains_literal(
+            value,
+            allow_public_token_prefix=normalized_name == "token",
+        )
     )
 
 

@@ -511,6 +511,13 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             (
                 "local_gpu_imagegen/public.py",
                 "token = derive_token()\n"
+                'token = trust.get("identity_token")\n'
+                'token = "route:" + _canonical_hash(boundary)\n'
+                'token = record["identity_token"]\n'
+                'api_key = os.getenv("API_KEY")\n'
+                "authorization = registry.set_status("
+                'str(plan["authorization_id"]), "revoked")\n'
+                'authorization = registry.resolve(active_only=stage != "revoke")\n'
                 "markers = ('api_key', 'apikey')\n"
                 "private_path_markers = ('/home/', '/users/')\n"
                 "homepage = 'https://example.invalid/project'\n",
@@ -548,6 +555,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             'Client(api_key="secret-value")\n',
             'api_key, other = ("secret-value", "x")\n',
             'api_key = "secret-" + suffix\n',
+            'api_key = build_secret("secret-value")\n',
         )
         for content in sensitive_sources:
             with self.subTest(content=content):
