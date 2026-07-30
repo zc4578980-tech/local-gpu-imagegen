@@ -1185,3 +1185,173 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
         self.assertIn("release_python_312_required", self.codes(results))
         self.assertTrue(created)
         self.assertFalse(created[0].exists())
+
+
+class ReleaseCandidateReportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        self.wheel = self.root / checks.EXPECTED_WHEEL
+        self.wheel.write_bytes(b"wheel fixture")
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    @staticmethod
+    def sha(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def test_candidate_runs_static_checks_before_installed_checks(self) -> None:
+        with patch.object(checks, "run_installed_checks") as installed:
+            report = checks.validate_candidate(
+                root=self.root,
+                wheel=self.wheel,
+                expected_commit="0" * 40,
+                expected_wheel_sha256=self.sha(self.wheel),
+                python=Path(sys.executable),
+            )
+        self.assertEqual(report["status"], "blocked")
+        installed.assert_not_called()
+
+    def test_malformed_hashes_and_missing_python_block_before_installed_checks(self) -> None:
+        with patch.object(checks, "run_installed_checks") as installed:
+            report = checks.validate_candidate(
+                root=self.root,
+                wheel=self.wheel,
+                expected_commit="invalid",
+                expected_wheel_sha256="invalid",
+                python=Path(sys.executable),
+            )
+        self.assertEqual(report["status"], "blocked")
+        installed.assert_not_called()
+
+        nonfile_python = self.root / "python-directory"
+        nonfile_python.mkdir()
+        with (
+            patch.object(
+                checks,
+                "inspect_checkout",
+                return_value=([checks.passed_check("checkout")], {}),
+            ),
+            patch.object(
+                checks,
+                "inspect_wheel",
+                return_value=([checks.passed_check("wheel")], {}),
+            ),
+            patch.object(checks, "run_installed_checks") as installed,
+        ):
+            report = checks.validate_candidate(
+                root=self.root,
+                wheel=self.wheel,
+                expected_commit="a" * 40,
+                expected_wheel_sha256="b" * 64,
+                python=nonfile_python,
+            )
+        self.assertEqual(report["status"], "blocked")
+        installed.assert_not_called()
+
+        with (
+            patch.object(
+                checks,
+                "inspect_checkout",
+                return_value=([checks.passed_check("checkout")], {}),
+            ),
+            patch.object(
+                checks,
+                "inspect_wheel",
+                return_value=([checks.passed_check("wheel")], {}),
+            ),
+            patch.object(checks, "run_installed_checks") as installed,
+        ):
+            report = checks.validate_candidate(
+                root=self.root,
+                wheel=self.wheel,
+                expected_commit="a" * 40,
+                expected_wheel_sha256="b" * 64,
+                python=self.root / "missing-python",
+            )
+        self.assertEqual(report["status"], "blocked")
+        installed.assert_not_called()
+
+    def test_report_is_canonical_ascii_and_blocks_without_private_paths(self) -> None:
+        report = checks.validate_candidate(
+            root=self.root,
+            wheel=self.wheel,
+            expected_commit="invalid",
+            expected_wheel_sha256="invalid",
+            python=Path(sys.executable),
+        )
+
+        encoded = checks.canonical_report(report)
+        self.assertEqual(encoded, checks.canonical_report(json.loads(encoded)))
+        self.assertTrue(encoded.endswith(b"\n"))
+        self.assertTrue(encoded.isascii())
+        self.assertNotIn(str(self.root).encode("ascii"), encoded)
+        checks_list = report["checks"]
+        self.assertIsInstance(checks_list, list)
+        check_ids = [str(item["id"]) for item in checks_list]
+        self.assertEqual(check_ids, sorted(set(check_ids)))
+        self.assertEqual(report["status"], "blocked")
+
+    def test_status_is_passed_only_when_every_check_passes(self) -> None:
+        static_checks = [checks.passed_check("checkout")]
+        wheel_checks = [checks.passed_check("wheel")]
+        installed_checks = [checks.passed_check("installed")]
+        with (
+            patch.object(checks, "inspect_checkout", return_value=(static_checks, {"commit": "a" * 40})),
+            patch.object(checks, "inspect_wheel", return_value=(wheel_checks, {"sha256": "b" * 64})),
+            patch.object(checks, "run_installed_checks", return_value=(installed_checks, {"version": "0.8.0"})),
+        ):
+            report = checks.validate_candidate(
+                root=self.root,
+                wheel=self.wheel,
+                expected_commit="a" * 40,
+                expected_wheel_sha256="b" * 64,
+                python=Path(sys.executable),
+            )
+        self.assertEqual(report["status"], "passed")
+
+        with (
+            patch.object(checks, "inspect_checkout", return_value=([checks.blocked_check("checkout", "blocked")], {})),
+            patch.object(checks, "inspect_wheel", return_value=(wheel_checks, {})),
+            patch.object(checks, "run_installed_checks") as installed,
+        ):
+            report = checks.validate_candidate(
+                root=self.root,
+                wheel=self.wheel,
+                expected_commit="a" * 40,
+                expected_wheel_sha256="b" * 64,
+                python=Path(sys.executable),
+            )
+        self.assertEqual(report["status"], "blocked")
+        installed.assert_not_called()
+
+    def test_blocked_runtime_report_uses_only_bounded_codes(self) -> None:
+        report = checks.blocked_runtime_report("C:\\Users\\private\\secret")
+        encoded = checks.canonical_report(report)
+        self.assertEqual(report["checks"], [checks.blocked_check("runtime", "candidate_validation_failed")])
+        self.assertNotIn(b"C:\\Users", encoded)
+        self.assertNotIn(b"secret", encoded)
+
+    def test_atomic_report_failure_preserves_existing_file(self) -> None:
+        destination = self.root / "report.json"
+        destination.write_bytes(b"original\n")
+        with patch("release_candidate_checks.os.replace", side_effect=OSError("failed")):
+            with self.assertRaises(OSError):
+                checks.atomic_write_report(destination, b"replacement\n")
+        self.assertEqual(destination.read_bytes(), b"original\n")
+
+    def test_atomic_report_rejects_unsafe_destination_and_parent_without_paths(self) -> None:
+        destination = self.root / "directory-destination"
+        destination.mkdir()
+        for unsafe in (destination, self.root / "missing-parent" / "report.json"):
+            with self.subTest(destination=unsafe.name):
+                with self.assertRaises(ValueError) as raised:
+                    checks.atomic_write_report(unsafe, b"report\n")
+                self.assertNotIn(str(self.root), str(raised.exception))
+
+    def test_atomic_report_replaces_regular_destination_in_its_parent(self) -> None:
+        destination = self.root / "report.json"
+        checks.atomic_write_report(destination, b"report\n")
+        self.assertEqual(destination.read_bytes(), b"report\n")
+        self.assertFalse(list(self.root.glob(".release-candidate-*.pending")))

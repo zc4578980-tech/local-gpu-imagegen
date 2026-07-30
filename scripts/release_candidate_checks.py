@@ -709,3 +709,174 @@ def run_installed_checks(
             facts["compiled_source_count"] = count
             results.append(passed_check("installed_compile", count=count))
     return _finalize_checks(results), facts
+
+
+def canonical_report(report: dict[str, object]) -> bytes:
+    """Encode a stable report that is safe to compare or persist verbatim."""
+    return (
+        json.dumps(
+            report, sort_keys=True, indent=2, ensure_ascii=True, allow_nan=False
+        )
+        + "\n"
+    ).encode("ascii")
+
+
+def _is_reparse_point(path_stat: os.stat_result) -> bool:
+    attributes = getattr(path_stat, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(attributes & reparse_flag)
+
+
+def _safe_report_parent(destination: Path) -> Path:
+    parent = destination.parent
+    if destination.name in {"", ".", ".."}:
+        raise ValueError("unsafe report destination")
+    try:
+        parent_stat = os.lstat(parent)
+    except OSError as error:
+        raise ValueError("unsafe report parent") from error
+    if not stat.S_ISDIR(parent_stat.st_mode) or _is_reparse_point(parent_stat):
+        raise ValueError("unsafe report parent")
+    try:
+        destination_stat = os.lstat(destination)
+    except FileNotFoundError:
+        return parent
+    except OSError as error:
+        raise ValueError("unsafe report destination") from error
+    if not stat.S_ISREG(destination_stat.st_mode) or _is_reparse_point(destination_stat):
+        raise ValueError("unsafe report destination")
+    return parent
+
+
+def _owned_pending_file(path: Path, expected: os.stat_result) -> bool:
+    try:
+        current = os.lstat(path)
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(current.st_mode)
+        and not _is_reparse_point(current)
+        and os.path.samestat(current, expected)
+    )
+
+
+def atomic_write_report(destination: Path, encoded: bytes) -> None:
+    """Replace a report only after its complete bytes are durable on disk."""
+    destination = Path(destination)
+    parent = _safe_report_parent(destination)
+    descriptor, pending_name = tempfile.mkstemp(
+        prefix=".release-candidate-", suffix=".pending", dir=parent
+    )
+    pending = Path(pending_name)
+    owned_stat: os.stat_result | None = None
+    try:
+        owned_stat = os.fstat(descriptor)
+        with os.fdopen(descriptor, "wb") as target:
+            descriptor = -1
+            target.write(encoded)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(pending, destination)
+    except BaseException:
+        if descriptor != -1:
+            os.close(descriptor)
+        if owned_stat is not None and _owned_pending_file(pending, owned_stat):
+            try:
+                pending.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def _inspect_release_python(python: Path) -> list[dict[str, object]]:
+    try:
+        python_stat = os.lstat(python)
+    except OSError:
+        return [blocked_check("candidate_python", "candidate_python_unavailable")]
+    if not stat.S_ISREG(python_stat.st_mode) or _is_reparse_point(python_stat):
+        return [blocked_check("candidate_python", "candidate_python_not_regular")]
+    return [passed_check("candidate_python")]
+
+
+def _all_checks_passed(checks: list[dict[str, object]]) -> bool:
+    return bool(checks) and all(check.get("status") == "passed" for check in checks)
+
+
+def _candidate_summary(
+    checkout_facts: dict[str, object],
+    wheel_facts: dict[str, object],
+    installed_facts: dict[str, object],
+) -> dict[str, object]:
+    candidate: dict[str, object] = {}
+    commit = checkout_facts.get("commit")
+    if isinstance(commit, str) and SHA1_RE.fullmatch(commit):
+        candidate["commit"] = commit
+    digest = wheel_facts.get("sha256")
+    if isinstance(digest, str) and SHA256_RE.fullmatch(digest):
+        candidate["wheel_sha256"] = digest
+    if wheel_facts.get("version") == EXPECTED_VERSION:
+        candidate["version"] = EXPECTED_VERSION
+    if installed_facts.get("protocol") == EXPECTED_PROTOCOL:
+        candidate["protocol"] = EXPECTED_PROTOCOL
+    if installed_facts.get("tool_count") == len(EXPECTED_TOOLS):
+        candidate["tool_count"] = len(EXPECTED_TOOLS)
+    return candidate
+
+
+_RUNTIME_CODES = frozenset({"candidate_validation_failed"})
+
+
+def blocked_runtime_report(code: str) -> dict[str, object]:
+    safe_code = code if code in _RUNTIME_CODES else "candidate_validation_failed"
+    return {
+        "schema_version": "1.0",
+        "status": "blocked",
+        "candidate": None,
+        "checks": [blocked_check("runtime", safe_code)],
+        "next_action": "fix_candidate_validation_and_rerun",
+    }
+
+
+def validate_candidate(
+    *,
+    root: Path,
+    wheel: Path,
+    expected_commit: str,
+    expected_wheel_sha256: str,
+    python: Path,
+) -> dict[str, object]:
+    """Validate one local wheel without building, downloading, or publishing."""
+    try:
+        checkout_checks, checkout_facts = inspect_checkout(root, expected_commit)
+        wheel_checks, wheel_facts = inspect_wheel(root, wheel, expected_wheel_sha256)
+        python_checks = _inspect_release_python(python)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return blocked_runtime_report("candidate_validation_failed")
+
+    static_checks = _finalize_checks(checkout_checks + wheel_checks + python_checks)
+    if not _all_checks_passed(static_checks):
+        return {
+            "schema_version": "1.0",
+            "status": "blocked",
+            "candidate": None,
+            "checks": static_checks,
+            "next_action": "fix_candidate_validation_and_rerun",
+        }
+
+    try:
+        installed_checks, installed_facts = run_installed_checks(wheel, python)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return blocked_runtime_report("candidate_validation_failed")
+    all_checks = _finalize_checks(static_checks + installed_checks)
+    passed = _all_checks_passed(all_checks)
+    return {
+        "schema_version": "1.0",
+        "status": "passed" if passed else "blocked",
+        "candidate": _candidate_summary(checkout_facts, wheel_facts, installed_facts),
+        "checks": all_checks,
+        "next_action": (
+            "ready_for_separate_publication_authorization"
+            if passed
+            else "fix_candidate_validation_and_rerun"
+        ),
+    }
