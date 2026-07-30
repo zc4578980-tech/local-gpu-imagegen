@@ -77,6 +77,17 @@ CREDENTIAL_RE = re.compile(
 )
 PUBLIC_TOKEN_PREFIXES = frozenset({b"route:"})
 SELECTOR_LITERAL_RE = re.compile(rb"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+SAFE_SELECTOR_POSITIONAL_ARGUMENTS = {
+    "get": frozenset({0}),
+    "getenv": frozenset({0}),
+    "set_status": frozenset({1}),
+}
+SAFE_SELECTOR_KEYWORD_ARGUMENTS = {
+    "get": frozenset({"key"}),
+    "getenv": frozenset({"key"}),
+    "resolve": frozenset({"active_only"}),
+    "set_status": frozenset({"status"}),
+}
 SENSITIVE_CREDENTIAL_KEYS = frozenset(
     {
         "authorization",
@@ -375,6 +386,14 @@ def _credential_target_name(target: ast.expr) -> str | None:
     return None
 
 
+def _call_name(function: ast.expr) -> str | None:
+    if isinstance(function, ast.Name):
+        return function.id
+    if isinstance(function, ast.Attribute):
+        return function.attr
+    return None
+
+
 def _expression_contains_literal(
     node: ast.expr,
     *,
@@ -407,17 +426,24 @@ def _expression_contains_literal(
             unsafe_selector and _expression_contains_literal(node.slice)
         )
     if isinstance(node, ast.Call):
+        call_name = _call_name(node.func)
+        safe_positions = SAFE_SELECTOR_POSITIONAL_ARGUMENTS.get(
+            call_name or "", frozenset()
+        )
+        safe_keywords = SAFE_SELECTOR_KEYWORD_ARGUMENTS.get(
+            call_name or "", frozenset()
+        )
         return any(
             _expression_contains_literal(
                 argument,
-                allow_selectors=True,
+                allow_selectors=index in safe_positions,
                 allow_public_token_prefix=allow_public_token_prefix,
             )
-            for argument in node.args
+            for index, argument in enumerate(node.args)
         ) or any(
             _expression_contains_literal(
                 keyword.value,
-                allow_selectors=True,
+                allow_selectors=keyword.arg in safe_keywords,
                 allow_public_token_prefix=allow_public_token_prefix,
             )
             for keyword in node.keywords
@@ -434,6 +460,21 @@ def _expression_contains_literal(
         ):
             return True
     return False
+
+
+def _static_string(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value if len(node.value) <= 512 else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_string(node.left)
+        right = _static_string(node.right)
+        if (
+            left is not None
+            and right is not None
+            and len(left) + len(right) <= 512
+        ):
+            return left + right
+    return None
 
 
 def _credential_binding_contains_literal(target: ast.expr, value: ast.expr) -> bool:
@@ -482,15 +523,24 @@ def _python_contains_sensitive_content(data: bytes) -> bool:
             return True
         if isinstance(node, ast.Dict):
             for key, value in zip(node.keys, node.values):
+                key_value = _static_string(key) if key is not None else None
                 if (
-                    isinstance(key, ast.Constant)
-                    and isinstance(key.value, str)
-                    and _normalized_credential_key(key.value)
+                    key_value is not None
+                    and _normalized_credential_key(key_value)
                     in SENSITIVE_CREDENTIAL_KEYS
                     and _expression_contains_literal(value)
                 ):
                     return True
         if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if (
+                    keyword.arg is not None
+                    and _normalized_credential_key(keyword.arg)
+                    in SENSITIVE_CREDENTIAL_KEYS
+                    and _expression_contains_literal(keyword.value)
+                ):
+                    return True
+        if isinstance(node, ast.ClassDef):
             for keyword in node.keywords:
                 if (
                     keyword.arg is not None
@@ -510,6 +560,10 @@ def _python_contains_sensitive_content(data: bytes) -> bool:
                 for target in targets
             ):
                 return True
+        if isinstance(node, ast.AugAssign) and _credential_binding_contains_literal(
+            node.target, node.value
+        ):
+            return True
     return False
 
 

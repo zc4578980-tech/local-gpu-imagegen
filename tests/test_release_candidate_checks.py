@@ -556,6 +556,15 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             'api_key, other = ("secret-value", "x")\n',
             'api_key = "secret-" + suffix\n',
             'api_key = build_secret("secret-value")\n',
+            'api_key = build_secret("secretvalue")\n',
+            'api_key = build_secret("secret_value")\n',
+            'Client(api_key=build_secret("secret_value"))\n',
+            'def f(api_key=build_secret("secret_value")):\n    pass\n',
+            'api_key += "secret-value"\n',
+            'class PrivateClient(Base, api_key="secret-value"):\n    pass\n',
+            'config = {"api_" + "key": "secret-value"}\n',
+            'api_key = config.get("api_key", "secretvalue")\n',
+            'api_key = os.getenv("API_KEY", "secretvalue")\n',
         )
         for content in sensitive_sources:
             with self.subTest(content=content):
