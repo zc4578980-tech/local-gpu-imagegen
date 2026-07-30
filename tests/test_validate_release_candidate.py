@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import validate_release_candidate as cli
+import release_candidate_checks as checks
 
 
 class StdoutCapture:
@@ -103,6 +104,51 @@ class ValidateReleaseCandidateCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(self.report.read_bytes(), b"original\n")
         self.assertEqual(json.loads(stdout)["status"], "blocked")
+
+    def test_cli_stdout_matches_report_after_commit_then_raise(self) -> None:
+        real_commit = checks._commit_report_install_if_absent
+
+        def commit_then_raise(
+            source_fd: int, parent_fd: int, destination: Path,
+        ) -> None:
+            real_commit(source_fd, parent_fd, destination)
+            raise OSError("after commit")
+
+        with patch.object(
+            checks,
+            "_commit_report_install_if_absent",
+            side_effect=commit_then_raise,
+        ):
+            exit_code, stdout = self.run_main(
+                self.passed_report(), report_path=self.report
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stdout, self.report.read_bytes())
+
+    def test_cli_reports_bounded_cleanup_failure_code(self) -> None:
+        with patch.object(
+            cli,
+            "atomic_write_report",
+            side_effect=checks.ReportCleanupError("C:\\Users\\private"),
+        ):
+            exit_code, stdout = self.run_main(
+                self.passed_report(), report_path=self.report
+            )
+
+        payload = json.loads(stdout)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            payload["checks"],
+            [
+                {
+                    "id": "runtime",
+                    "status": "blocked",
+                    "code": "candidate_report_cleanup_failed",
+                }
+            ],
+        )
+        self.assertNotIn(b"C:\\Users", stdout)
 
     def test_cli_keeps_validation_of_malformed_hashes_and_missing_python_in_validator(self) -> None:
         missing_python = self.root / "missing-python"

@@ -939,7 +939,7 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
             [str(installed_python), "-c", checks.PYTHON_VERSION_SCRIPT],
         )
         self.assertEqual(
-            install[0],
+            install[0][:-1],
             [
                 str(installed_python),
                 "-m",
@@ -949,9 +949,10 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
                 "--no-deps",
                 "--no-cache-dir",
                 "--disable-pip-version-check",
-                str(self.wheel.resolve()),
             ],
         )
+        self.assertEqual(Path(install[0][-1]).name, checks.EXPECTED_WHEEL)
+        self.assertNotEqual(Path(install[0][-1]), self.wheel.resolve())
         installed_checks = runner.calls[4:]
         self.assertEqual(len(installed_checks), 5)
         verify, doctor, setup_codex, setup_claude, compile_call = installed_checks
@@ -998,12 +999,18 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
                 super().__init__(responses)
                 self.installed_bytes: bytes | None = None
                 self.installed_path: Path | None = None
+                self.substitution_blocked = False
 
             def __call__(
                 self, command: list[str], **kwargs: object,
             ) -> subprocess.CompletedProcess[str]:
                 if "install" in command:
                     self.installed_path = Path(command[-1])
+                    try:
+                        self.installed_path.unlink()
+                        self.installed_path.write_bytes(b"attacker wheel bytes")
+                    except OSError:
+                        self.substitution_blocked = True
                     self.installed_bytes = self.installed_path.read_bytes()
                 return super().__call__(command, **kwargs)
 
@@ -1016,6 +1023,7 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
         )
 
         self.assertFalse(self.codes(results), results)
+        self.assertTrue(runner.substitution_blocked)
         self.assertEqual(runner.installed_bytes, payload)
         self.assertIsNotNone(runner.installed_path)
         self.assertNotEqual(runner.installed_path, self.wheel)
@@ -1551,3 +1559,55 @@ class ReleaseCandidateReportTests(unittest.TestCase):
         unlink.assert_not_called()
         self.assertFalse(destination.exists())
         self.assertFalse(list(self.root.glob(".release-candidate-*.pending")))
+
+    def test_atomic_report_recovers_success_after_commit_then_raise(self) -> None:
+        destination = self.root / "report.json"
+        real_commit = checks._commit_report_install_if_absent
+
+        def commit_then_raise(
+            source_fd: int, parent_fd: int, target: Path,
+        ) -> None:
+            real_commit(source_fd, parent_fd, target)
+            raise OSError("after commit")
+
+        with patch.object(
+            checks,
+            "_commit_report_install_if_absent",
+            side_effect=commit_then_raise,
+        ):
+            checks.atomic_write_report(destination, b"canonical report\n")
+
+        self.assertEqual(destination.read_bytes(), b"canonical report\n")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fd regression")
+    def test_atomic_report_linux_parent_move_blocks_before_commit(self) -> None:
+        parent = self.root / "report-parent"
+        parent.mkdir()
+        destination = parent / "report.json"
+        displaced = self.root / "displaced-parent"
+        real_open = checks._linux_open_pending
+
+        def move_parent(parent_fd: int) -> int:
+            os.replace(parent, displaced)
+            parent.mkdir()
+            return real_open(parent_fd)
+
+        with patch.object(checks, "_linux_open_pending", side_effect=move_parent):
+            with self.assertRaises(ValueError):
+                checks.atomic_write_report(destination, b"canonical report\n")
+
+        self.assertFalse(destination.exists())
+        self.assertFalse((displaced / "report.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle regression")
+    def test_windows_disposition_failure_is_not_silent(self) -> None:
+        with (
+            patch.object(
+                checks,
+                "_windows_file_api",
+                return_value=(object(), lambda *args: 0, object()),
+            ),
+            patch("msvcrt.get_osfhandle", return_value=1),
+        ):
+            with self.assertRaises(OSError):
+                checks._windows_dispose_pending(1)

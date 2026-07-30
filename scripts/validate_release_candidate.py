@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from release_candidate_checks import (
+    ReportCleanupError,
     atomic_write_report,
     blocked_runtime_report,
     canonical_report,
@@ -35,6 +36,9 @@ def main() -> int:
         encoded = canonical_report(report)
         if args.report is not None:
             atomic_write_report(args.report, encoded)
+    except ReportCleanupError:
+        report = blocked_runtime_report("candidate_report_cleanup_failed")
+        encoded = canonical_report(report)
     except (OSError, ValueError, subprocess.SubprocessError):
         report = blocked_runtime_report("candidate_validation_failed")
         encoded = canonical_report(report)

@@ -178,6 +178,10 @@ class _WheelSnapshotError(Exception):
         self.code = code
 
 
+class ReportCleanupError(OSError):
+    """Signal bounded report cleanup failure without exposing OS details."""
+
+
 def _snapshot_wheel(path: Path, path_stat: os.stat_result) -> tuple[io.BytesIO, str]:
     snapshot = io.BytesIO()
     digest = hashlib.sha256()
@@ -598,6 +602,61 @@ def _python_312_version(
     return version if version == [3, 12] else None
 
 
+@contextmanager
+def _materialized_install_wheel(
+    temporary_root: Path, payload: bytes,
+) -> Iterator[tuple[Path, dict[str, object]]]:
+    wheel_root = temporary_root / "wheel-input"
+    wheel_root.mkdir(mode=0o700)
+    wheel_path = wheel_root / EXPECTED_WHEEL
+    parent_stat = os.lstat(wheel_root)
+    if os.name == "nt":
+        parent_descriptor = _windows_open_parent(wheel_root, parent_stat)
+        try:
+            descriptor = _windows_open_locked_file(wheel_path, delete_access=False)
+        except BaseException:
+            os.close(parent_descriptor)
+            raise
+        install_path = wheel_path
+        runner_options: dict[str, object] = {}
+    elif sys.platform.startswith("linux"):
+        parent_descriptor = os.open(
+            wheel_root,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            descriptor = os.open(
+                EXPECTED_WHEEL,
+                os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+        except BaseException:
+            os.close(parent_descriptor)
+            raise
+        install_path = Path(f"/proc/self/fd/{parent_descriptor}/{EXPECTED_WHEEL}")
+        runner_options = {"pass_fds": (parent_descriptor,)}
+    else:
+        raise OSError("immutable wheel install unsupported")
+
+    try:
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+        _verify_descriptor_bytes(descriptor, payload)
+        if sys.platform.startswith("linux"):
+            os.fchmod(descriptor, 0o400)
+            os.chmod(wheel_root, 0o500)
+        yield install_path, runner_options
+    finally:
+        os.close(descriptor)
+        os.close(parent_descriptor)
+        if sys.platform.startswith("linux"):
+            try:
+                os.chmod(wheel_root, 0o700)
+            except OSError:
+                pass
+
+
 def run_installed_checks(
     wheel: Path, python: Path, *,
     wheel_payload: bytes | None = None,
@@ -607,16 +666,19 @@ def run_installed_checks(
     if wheel.name != EXPECTED_WHEEL:
         return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
     if wheel_payload is None:
-        if not wheel.is_file():
-            return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
         try:
-            resolved_wheel = wheel.resolve(strict=True)
-        except OSError:
+            wheel_stat = os.lstat(wheel)
+            if not stat.S_ISREG(wheel_stat.st_mode) or _is_reparse_point(wheel_stat):
+                raise _WheelSnapshotError("installed_wheel_invalid")
+            snapshot, _ = _snapshot_wheel(wheel, wheel_stat)
+            try:
+                wheel_payload = snapshot.getvalue()
+            finally:
+                snapshot.close()
+        except (OSError, _WheelSnapshotError):
             return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
     elif type(wheel_payload) is not bytes or len(wheel_payload) > MAX_WHEEL_BYTES:
         return [blocked_check("installed_wheel", "installed_wheel_invalid")], {}
-    else:
-        resolved_wheel = None
 
     results: list[dict[str, object]] = []
     facts: dict[str, object] = {}
@@ -679,21 +741,15 @@ def run_installed_checks(
         facts["venv_python_version"] = installed_version
         results.append(passed_check("installed_venv_python", version=installed_version))
         try:
-            install_wheel = resolved_wheel
-            if wheel_payload is not None:
-                install_wheel = temporary_root / EXPECTED_WHEEL
-                with install_wheel.open("xb") as target:
-                    target.write(wheel_payload)
-                    target.flush()
-                    os.fsync(target.fileno())
-            if install_wheel is None:
-                raise OSError("wheel unavailable")
-            completed = runner(
-                [str(installed_python), "-m", "pip", "install", "--no-index", "--no-deps",
-                 "--no-cache-dir", "--disable-pip-version-check", str(install_wheel)],
-                cwd=temporary_root, env=environment, capture_output=True, text=True,
-                timeout=60, check=False,
-            )
+            with _materialized_install_wheel(
+                temporary_root, wheel_payload
+            ) as (install_wheel, runner_options):
+                completed = runner(
+                    [str(installed_python), "-m", "pip", "install", "--no-index", "--no-deps",
+                     "--no-cache-dir", "--disable-pip-version-check", str(install_wheel)],
+                    cwd=temporary_root, env=environment, capture_output=True, text=True,
+                    timeout=60, check=False, **runner_options,
+                )
             if completed.returncode != 0 or "traceback" in (completed.stderr or "").casefold():
                 results.append(blocked_check("installed_pip", "installed_pip_install_failed"))
                 return _finalize_checks(results), facts
@@ -897,31 +953,37 @@ def _windows_open_parent(parent: Path, expected: os.stat_result) -> int:
     return descriptor
 
 
-def _windows_open_pending(parent: Path) -> int:
+def _windows_open_locked_file(path: Path, *, delete_access: bool = True) -> int:
     import ctypes
     import msvcrt
 
     create_file, _, close_handle = _windows_file_api()
+    handle = create_file(
+        str(path),
+        0x80000000 | 0x40000000 | (0x00010000 if delete_access else 0),
+        0x0001,
+        None,
+        1,
+        0x00000080,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return msvcrt.open_osfhandle(int(handle), os.O_RDWR | os.O_BINARY)
+    except BaseException:
+        close_handle(handle)
+        raise
+
+
+def _windows_open_pending(parent: Path) -> int:
     for _ in range(32):
         pending = parent / f".release-candidate-{secrets.token_hex(16)}.pending"
-        handle = create_file(
-            str(pending),
-            0x80000000 | 0x40000000 | 0x00010000,
-            0x0001,
-            None,
-            1,
-            0x00000080,
-            None,
-        )
-        if handle != ctypes.c_void_p(-1).value:
-            try:
-                return msvcrt.open_osfhandle(int(handle), os.O_RDWR | os.O_BINARY)
-            except BaseException:
-                close_handle(handle)
+        try:
+            return _windows_open_locked_file(pending)
+        except OSError as error:
+            if getattr(error, "winerror", None) not in {80, 183}:
                 raise
-        error = ctypes.get_last_error()
-        if error not in {80, 183}:
-            raise ctypes.WinError(error)
     raise OSError("report pending creation failed")
 
 
@@ -934,12 +996,13 @@ def _windows_dispose_pending(descriptor: int) -> None:
 
     _, set_information, _ = _windows_file_api()
     disposition = FileDispositionInfo(1)
-    set_information(
+    if not set_information(
         msvcrt.get_osfhandle(descriptor),
         4,
         ctypes.byref(disposition),
         ctypes.sizeof(disposition),
-    )
+    ):
+        raise OSError("report pending cleanup failed")
 
 
 def _windows_commit_report(descriptor: int, destination: Path) -> None:
@@ -972,11 +1035,11 @@ def _windows_commit_report(descriptor: int, destination: Path) -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-def _linux_open_pending(parent: Path) -> int:
+def _linux_open_pending(parent_descriptor: int) -> int:
     flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_TMPFILE", 0)
     if not getattr(os, "O_TMPFILE", 0):
         raise OSError("atomic report install unsupported")
-    return os.open(parent, flags, 0o600)
+    return os.open(".", flags, 0o600, dir_fd=parent_descriptor)
 
 
 def _linux_commit_report(descriptor: int, parent_descriptor: int, name: str) -> None:
@@ -1000,6 +1063,43 @@ def _commit_report_install_if_absent(
         _linux_commit_report(descriptor, parent_descriptor, destination.name)
     else:
         raise OSError("atomic report install unsupported")
+
+
+def _report_parent_is_bound(
+    parent: Path, parent_descriptor: int, expected: os.stat_result,
+) -> bool:
+    try:
+        current_path = os.lstat(parent)
+        current_handle = os.fstat(parent_descriptor)
+        return (
+            stat.S_ISDIR(current_path.st_mode)
+            and not _is_reparse_point(current_path)
+            and os.path.samestat(current_path, current_handle)
+            and os.path.samestat(current_handle, expected)
+        )
+    except OSError:
+        return False
+
+
+def _report_commit_is_visible(
+    descriptor: int, parent_descriptor: int, destination: Path,
+) -> bool:
+    try:
+        if os.name == "nt":
+            destination_stat = os.lstat(destination)
+        else:
+            destination_stat = os.stat(
+                destination.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        return (
+            stat.S_ISREG(destination_stat.st_mode)
+            and not _is_reparse_point(destination_stat)
+            and os.path.samestat(os.fstat(descriptor), destination_stat)
+        )
+    except OSError:
+        return False
 
 
 def atomic_write_report(destination: Path, encoded: bytes) -> None:
@@ -1029,7 +1129,7 @@ def atomic_write_report(destination: Path, encoded: bytes) -> None:
         try:
             if not os.path.samestat(os.fstat(parent_descriptor), parent_stat):
                 raise ValueError("unsafe report parent")
-            descriptor = _linux_open_pending(resolved_parent)
+            descriptor = _linux_open_pending(parent_descriptor)
         except BaseException:
             os.close(parent_descriptor)
             raise
@@ -1043,22 +1143,40 @@ def atomic_write_report(destination: Path, encoded: bytes) -> None:
         _verify_descriptor_bytes(descriptor, encoded)
         if sys.platform.startswith("linux"):
             os.fchmod(descriptor, 0o400)
-        _commit_report_install_if_absent(
-            descriptor, parent_descriptor, resolved_destination
-        )
-        committed = True
+        if not _report_parent_is_bound(
+            resolved_parent, parent_descriptor, parent_stat
+        ):
+            raise ValueError("unsafe report parent")
+        try:
+            _commit_report_install_if_absent(
+                descriptor, parent_descriptor, resolved_destination
+            )
+        except BaseException:
+            if _report_commit_is_visible(
+                descriptor, parent_descriptor, resolved_destination
+            ):
+                committed = True
+            else:
+                raise
+        else:
+            committed = True
     finally:
+        cleanup_error: ReportCleanupError | None = None
         if not committed and os.name == "nt":
             try:
                 _windows_dispose_pending(descriptor)
             except OSError:
-                pass
+                cleanup_error = ReportCleanupError("report pending cleanup failed")
         for open_descriptor in (descriptor, parent_descriptor):
             try:
                 os.close(open_descriptor)
             except OSError:
                 if not committed:
-                    raise
+                    cleanup_error = cleanup_error or ReportCleanupError(
+                        "report handle cleanup failed"
+                    )
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 def _inspect_release_python(python: Path) -> list[dict[str, object]]:
@@ -1106,7 +1224,9 @@ def _candidate_summary(
     return candidate
 
 
-_RUNTIME_CODES = frozenset({"candidate_validation_failed"})
+_RUNTIME_CODES = frozenset(
+    {"candidate_report_cleanup_failed", "candidate_validation_failed"}
+)
 
 
 def blocked_runtime_report(code: str) -> dict[str, object]:
