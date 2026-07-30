@@ -31,16 +31,21 @@ $expectedWheelSha256 = $env:RELEASE_CANDIDATE_WHEEL_SHA256
 if ($commit -notmatch '^[0-9a-f]{40}$') { throw 'Missing frozen release commit' }
 if ($expectedWheelSha256 -notmatch '^[0-9a-f]{64}$') { throw 'Missing frozen wheel SHA-256' }
 $wheel = Resolve-Path .\dist\local_gpu_imagegen-0.8.0-py3-none-any.whl
+$reportRoot = New-Item -ItemType Directory -Force -Path .\outputs\release-candidate-validation
+$attemptId = [guid]::NewGuid().ToString('N')
+$report = Join-Path $reportRoot.FullName "candidate-report-$attemptId.json"
+if (Test-Path -LiteralPath $report) { throw 'Fresh report path already exists' }
 python .\scripts\validate_release_candidate.py `
   --wheel $wheel `
   --expected-commit $commit `
   --expected-wheel-sha256 $expectedWheelSha256 `
   --python $python312 `
-  --report .\outputs\release-candidate-validation\candidate-report.json
+  --report $report
 ```
 
 Proceed only when the command exits `0`, stdout is byte-identical to
-`candidate-report.json`, and the report contains `"status": "passed"`. Any
+the new `candidate-report.json` attempt path printed in `$report`, and that
+report contains `"status": "passed"`. Any
 blocked check, digest mismatch, dirty tracked state, install failure, existing
 report path, or malformed output stops the release. Correct the candidate,
 freeze it again, and rerun with a new report path.

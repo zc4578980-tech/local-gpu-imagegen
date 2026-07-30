@@ -168,6 +168,24 @@ class PublicDocumentationTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, runbook)
 
+    def test_publication_runbook_creates_parent_and_uses_fresh_report_path(
+        self,
+    ) -> None:
+        runbook = PUBLICATION_RUNBOOK.read_text(encoding="utf-8")
+        for required in (
+            "New-Item -ItemType Directory -Force",
+            "[guid]::NewGuid().ToString('N')",
+            "Join-Path",
+            "Test-Path -LiteralPath $report",
+            "--report $report",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, runbook)
+        self.assertNotIn(
+            "--report .\\outputs\\release-candidate-validation\\candidate-report.json",
+            runbook,
+        )
+
     def test_launch_playbook_requires_passed_publication_runbook_report(self) -> None:
         playbook = LAUNCH_PLAYBOOK.read_text(encoding="utf-8")
         self.assertIn("publication-runbook.md", playbook)
@@ -181,6 +199,14 @@ class PublicDocumentationTests(unittest.TestCase):
             checklist,
         )
         self.assertIn("candidate-report.json", checklist)
+        for pending in (
+            "The final model-free suite",
+            "A fresh isolated Python 3.12 environment",
+            "Installed `verify`",
+            "Tracked files, staged files, and wheel entries",
+        ):
+            with self.subTest(pending=pending):
+                self.assertIn(f"- [ ] {pending}", checklist)
 
     def test_quickstart_uses_three_first_use_decisions_and_one_successful_round(self) -> None:
         quickstart = QUICKSTART.read_text(encoding="utf-8")
