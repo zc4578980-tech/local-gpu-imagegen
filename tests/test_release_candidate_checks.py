@@ -290,6 +290,29 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                 results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
                 self.assertIn("unsafe_wheel_entry", self.codes(results))
 
+    def test_wheel_allows_only_packaged_public_model_descriptors(self) -> None:
+        prefix = (
+            "local_gpu_imagegen-0.8.0.data/data/share/local-gpu-imagegen/"
+            "profiles/models/"
+        )
+        root = self.make_release_root()
+        wheel = self.make_wheel(root, extra_entry=prefix + "public.json")
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertNotIn("unsafe_wheel_entry", self.codes(results))
+
+        for entry in (
+            prefix + "private.safetensors",
+            prefix + "nested/private.json",
+            "package/profiles/models/public.json",
+            "local_gpu_imagegen-0.8.0.data/data/share/local-gpu-imagegen/"
+            "profiles/Models/public.json",
+        ):
+            with self.subTest(entry=entry):
+                root = self.make_release_root()
+                wheel = self.make_wheel(root, extra_entry=entry)
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("unsafe_wheel_entry", self.codes(results))
+
     def test_wheel_rejects_filename_hash_and_dist_info_failures(self) -> None:
         root = self.make_release_root()
         wheel = self.make_wheel(root)
@@ -464,6 +487,44 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                     root,
                     extra_entry="local_gpu_imagegen/private.txt",
                     extra_content=content,
+                )
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertIn("sensitive_wheel_content", self.codes(results))
+
+    def test_wheel_content_scan_distinguishes_guards_from_hardcoded_values(
+        self,
+    ) -> None:
+        safe_entries = (
+            (
+                "local_gpu_imagegen/public.py",
+                "token = derive_token()\n"
+                "markers = ('api_key', 'apikey')\n"
+                "private_path_markers = ('/home/', '/users/')\n"
+                "homepage = 'https://example.invalid/project'\n",
+            ),
+            (
+                "local_gpu_imagegen/schema.json",
+                '{"properties":{"token":{"type":"string"}},'
+                '"homepage":"https://example.invalid/project"}',
+            ),
+        )
+        for entry, content in safe_entries:
+            with self.subTest(entry=entry):
+                root = self.make_release_root()
+                wheel = self.make_wheel(
+                    root, extra_entry=entry, extra_content=content
+                )
+                results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+                self.assertNotIn("sensitive_wheel_content", self.codes(results))
+
+        for entry, content in (
+            ("local_gpu_imagegen/private.py", 'api_key = "secret-value"\n'),
+            ("local_gpu_imagegen/private.json", '{"token":"secret-value"}'),
+        ):
+            with self.subTest(entry=entry):
+                root = self.make_release_root()
+                wheel = self.make_wheel(
+                    root, extra_entry=entry, extra_content=content
                 )
                 results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
                 self.assertIn("sensitive_wheel_content", self.codes(results))

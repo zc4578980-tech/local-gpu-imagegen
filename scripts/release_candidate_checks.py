@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import json
@@ -29,6 +30,10 @@ EXPECTED_VERSION = "0.8.0"
 EXPECTED_REQUIRES_PYTHON = ">=3.11"
 EXPECTED_DIST_INFO = "local_gpu_imagegen-0.8.0.dist-info"
 EXPECTED_PROTOCOL = "2024-11-05"
+PUBLIC_MODEL_DESCRIPTOR_PARENT = PurePosixPath(
+    "local_gpu_imagegen-0.8.0.data/data/share/local-gpu-imagegen/"
+    "profiles/models"
+)
 PYTHON_VERSION_SCRIPT = "import json,sys; print(json.dumps(list(sys.version_info[:2])))"
 CREATE_VENV_SCRIPT = "import sys,venv; venv.EnvBuilder(with_pip=True).create(sys.argv[1])"
 EXPECTED_TOOLS = (
@@ -55,15 +60,33 @@ MAX_ENTRY_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
 # Allows ZIP overhead above the 16 MiB content limit while bounding file I/O.
 MAX_WHEEL_BYTES = 32 * 1024 * 1024
-PRIVATE_PATH_RE = re.compile(rb"(?i)(?:[a-z]:[\\/]|/(?:home|users)/)")
-CREDENTIAL_RE = re.compile(
-    rb"(?i)(?:"
-    rb"\b(?:authorization|proxy-authorization|x-api-key|api-key)\s*:|"
-    rb"\b(?:api[_-]?key|client[_-]?secret|secret[_-]?key|access[_-]?token|"
-    rb"refresh[_-]?token|auth[_-]?token|password|passwd|token)\s*[:=]|"
-    rb"[\"'](?:client_secret|password|token)[\"']\s*:|"
-    rb"\bbearer\s+[a-z0-9._~+/=-]+"
+PRIVATE_PATH_RE = re.compile(
+    rb"(?i)(?<![a-z0-9])(?:"
+    rb"[a-z]:[\\/][^\\/\s\"']+|/(?:home|users)/[^/\s\"']+"
     rb")"
+)
+CREDENTIAL_RE = re.compile(
+    rb"(?i)\b(?:authorization|proxy-authorization|x-api-key|api-key|"
+    rb"api[_-]?key|client[_-]?secret|secret[_-]?key|access[_-]?token|"
+    rb"refresh[_-]?token|auth[_-]?token|password|passwd|token)"
+    rb"[\"']?\s*[:=]\s*(?:[\"'][^\"'\r\n]{1,512}[\"']|"
+    rb"(?:bearer\s+)?[a-z0-9][a-z0-9._~+/=-]{3,})"
+)
+SENSITIVE_CREDENTIAL_KEYS = frozenset(
+    {
+        "authorization",
+        "proxyauthorization",
+        "xapikey",
+        "apikey",
+        "clientsecret",
+        "secretkey",
+        "accesstoken",
+        "refreshtoken",
+        "authtoken",
+        "password",
+        "passwd",
+        "token",
+    }
 )
 
 GitRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -290,7 +313,13 @@ def _is_safe_entry(info: zipfile.ZipInfo) -> bool:
     normalized_name = f"{path}/" if path_is_directory else str(path)
     if normalized_name != name:
         return False
-    if any(part.casefold() in {"models", "outputs"} for part in path.parts):
+    if any(part.casefold() == "outputs" for part in path.parts):
+        return False
+    if any(part.casefold() == "models" for part in path.parts) and not (
+        path.parent == PUBLIC_MODEL_DESCRIPTOR_PARENT
+        and path.suffix == ".json"
+        and len(path.name) > len(".json")
+    ):
         return False
     mode = info.external_attr >> 16
     file_type = stat.S_IFMT(mode)
@@ -306,19 +335,106 @@ def _archive_bytes(archive: zipfile.ZipFile, name: str) -> bytes:
     return archive.read(info)
 
 
-def _contains_sensitive_content(data: bytes) -> bool:
-    lowered = data.lower()
+def _normalized_credential_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+
+def _scalar_bytes(value: object) -> bytes | None:
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    if isinstance(value, bytes):
+        return value
+    return None
+
+
+def _sensitive_scalar(value: object) -> bool:
+    encoded = _scalar_bytes(value)
     return bool(
-        PRIVATE_PATH_RE.search(data)
-        or CREDENTIAL_RE.search(data)
-        or any(
-            marker in lowered
-            for marker in (
-                b"api_key",
-                b"apikey",
-            )
-        )
+        encoded
+        and (PRIVATE_PATH_RE.search(encoded) or CREDENTIAL_RE.search(encoded))
     )
+
+
+def _credential_target_name(target: ast.expr) -> str | None:
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    if (
+        isinstance(target, ast.Subscript)
+        and isinstance(target.slice, ast.Constant)
+        and isinstance(target.slice.value, str)
+    ):
+        return target.slice.value
+    return None
+
+
+def _python_contains_sensitive_content(data: bytes) -> bool:
+    try:
+        tree = ast.parse(data.decode("utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        return True
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and _sensitive_scalar(node.value):
+            return True
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if (
+                    isinstance(key, ast.Constant)
+                    and isinstance(key.value, str)
+                    and _normalized_credential_key(key.value)
+                    in SENSITIVE_CREDENTIAL_KEYS
+                    and isinstance(value, ast.Constant)
+                    and bool(_scalar_bytes(value.value))
+                ):
+                    return True
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            value = node.value
+            if not isinstance(value, ast.Constant) or not bool(
+                _scalar_bytes(value.value)
+            ):
+                continue
+            for target in targets:
+                name = _credential_target_name(target)
+                if (
+                    name is not None
+                    and _normalized_credential_key(name)
+                    in SENSITIVE_CREDENTIAL_KEYS
+                ):
+                    return True
+    return False
+
+
+def _json_contains_sensitive_content(value: object) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if (
+                isinstance(key, str)
+                and _normalized_credential_key(key) in SENSITIVE_CREDENTIAL_KEYS
+                and not isinstance(child, (dict, list))
+                and child not in (None, "")
+            ):
+                return True
+            if _json_contains_sensitive_content(child):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_json_contains_sensitive_content(item) for item in value)
+    return _sensitive_scalar(value)
+
+
+def _contains_sensitive_content(data: bytes, name: str) -> bool:
+    suffix = PurePosixPath(name).suffix.casefold()
+    if suffix == ".py":
+        return _python_contains_sensitive_content(data)
+    if suffix == ".json":
+        try:
+            value = json.loads(data)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return True
+        return _json_contains_sensitive_content(value)
+    return bool(PRIVATE_PATH_RE.search(data) or CREDENTIAL_RE.search(data))
 
 
 def _project_matches(root: Path) -> bool:
@@ -465,7 +581,13 @@ def inspect_wheel(
 
             if archive_too_large or not entries_safe or not dist_info_valid:
                 pass
-            elif any(_contains_sensitive_content(_archive_bytes(archive, info.filename)) for info in entries if not info.is_dir()):
+            elif any(
+                _contains_sensitive_content(
+                    _archive_bytes(archive, info.filename), info.filename
+                )
+                for info in entries
+                if not info.is_dir()
+            ):
                 results.append(blocked_check("wheel_content", "sensitive_wheel_content"))
             else:
                 results.append(passed_check("wheel_content"))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -131,6 +132,19 @@ class PackagingTests(unittest.TestCase):
             with self.subTest(suffix=suffix):
                 self.assertTrue(any(name.endswith(suffix) for name in names), suffix)
         self.assertFalse(any("outputs/" in name or name.endswith(".safetensors") for name in names))
+
+    def test_release_candidate_static_checks_pass_for_real_wheel(self) -> None:
+        digest = hashlib.sha256(self.wheel.read_bytes()).hexdigest()
+        results, facts = release_candidate_checks.inspect_wheel(
+            ROOT, self.wheel, digest
+        )
+
+        self.assertFalse(
+            [item for item in results if item["status"] == "blocked"],
+            results,
+        )
+        self.assertEqual(facts["sha256"], digest)
+        self.assertEqual(facts["version"], "0.8.0")
 
     def test_installed_wheel_verifies_from_outside_checkout(self) -> None:
         environment = dict(os.environ)
