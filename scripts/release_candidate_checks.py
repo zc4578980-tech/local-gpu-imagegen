@@ -13,10 +13,11 @@ import tempfile
 import tomllib
 import zipfile
 from collections import Counter
+from contextlib import contextmanager
 from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path, PurePosixPath
-from typing import Callable
+from typing import Callable, Iterator
 
 
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -210,6 +211,51 @@ def _snapshot_wheel(path: Path, path_stat: os.stat_result) -> tuple[io.BytesIO, 
         raise _WheelSnapshotError("wheel_unavailable") from exc
     snapshot.seek(0)
     return snapshot, digest.hexdigest()
+
+
+@contextmanager
+def _staged_wheel(path: Path, checkout_root: Path) -> Iterator[Path]:
+    """Keep one bounded source snapshot at a private checkout-external path."""
+    try:
+        path_stat = os.lstat(path)
+    except OSError as exc:
+        raise _WheelSnapshotError("wheel_unavailable") from exc
+    if not stat.S_ISREG(path_stat.st_mode) or _is_reparse_point(path_stat):
+        raise _WheelSnapshotError("wheel_not_regular")
+    if path_stat.st_size > MAX_WHEEL_BYTES:
+        raise _WheelSnapshotError("wheel_file_too_large")
+
+    snapshot, _ = _snapshot_wheel(path, path_stat)
+    try:
+        with tempfile.TemporaryDirectory(prefix="local-gpu-imagegen-candidate-") as temporary:
+            staging_root = Path(temporary).resolve(strict=True)
+            try:
+                staging_root.relative_to(checkout_root.resolve(strict=True))
+            except ValueError:
+                pass
+            except OSError as exc:
+                raise _WheelSnapshotError("wheel_staging_unavailable") from exc
+            else:
+                raise _WheelSnapshotError("wheel_staging_checkout_external_required")
+
+            staging_stat = os.lstat(staging_root)
+            if not stat.S_ISDIR(staging_stat.st_mode) or _is_reparse_point(staging_stat):
+                raise _WheelSnapshotError("wheel_staging_unavailable")
+            staged = staging_root / EXPECTED_WHEEL
+            try:
+                with staged.open("xb") as target:
+                    while True:
+                        block = snapshot.read(1024 * 1024)
+                        if not block:
+                            break
+                        target.write(block)
+                    target.flush()
+                    os.fsync(target.fileno())
+            except OSError as exc:
+                raise _WheelSnapshotError("wheel_staging_unavailable") from exc
+            yield staged
+    finally:
+        snapshot.close()
 
 
 def _is_safe_entry(info: zipfile.ZipInfo) -> bool:
@@ -727,7 +773,9 @@ def _is_reparse_point(path_stat: os.stat_result) -> bool:
     return bool(attributes & reparse_flag)
 
 
-def _safe_report_parent(destination: Path) -> Path:
+def _safe_report_parent(
+    destination: Path,
+) -> tuple[Path, os.stat_result, os.stat_result | None]:
     parent = destination.parent
     if destination.name in {"", ".", ".."}:
         raise ValueError("unsafe report destination")
@@ -740,12 +788,78 @@ def _safe_report_parent(destination: Path) -> Path:
     try:
         destination_stat = os.lstat(destination)
     except FileNotFoundError:
-        return parent
+        return parent, parent_stat, None
     except OSError as error:
         raise ValueError("unsafe report destination") from error
     if not stat.S_ISREG(destination_stat.st_mode) or _is_reparse_point(destination_stat):
         raise ValueError("unsafe report destination")
-    return parent
+    return parent, parent_stat, destination_stat
+
+
+def _stat_state(path_stat: os.stat_result) -> tuple[object, ...]:
+    return (
+        path_stat.st_mode,
+        getattr(path_stat, "st_file_attributes", 0),
+        path_stat.st_size,
+        getattr(path_stat, "st_mtime_ns", None),
+        getattr(path_stat, "st_ctime_ns", None),
+    )
+
+
+def _same_identity(current: os.stat_result, expected: os.stat_result) -> bool:
+    try:
+        return os.path.samestat(current, expected)
+    except (AttributeError, OSError, TypeError):
+        return False
+
+
+def _revalidate_report_paths(
+    *,
+    parent: Path,
+    parent_stat: os.stat_result,
+    destination: Path,
+    destination_stat: os.stat_result | None,
+    pending: Path,
+    pending_stat: os.stat_result,
+) -> None:
+    try:
+        current_parent = os.lstat(parent)
+    except OSError as error:
+        raise ValueError("unsafe report parent") from error
+    if (
+        not stat.S_ISDIR(current_parent.st_mode)
+        or _is_reparse_point(current_parent)
+        or not _same_identity(current_parent, parent_stat)
+    ):
+        raise ValueError("unsafe report parent")
+
+    try:
+        current_destination = os.lstat(destination)
+    except FileNotFoundError:
+        if destination_stat is not None:
+            raise ValueError("unsafe report destination") from None
+    except OSError as error:
+        raise ValueError("unsafe report destination") from error
+    else:
+        if (
+            destination_stat is None
+            or not stat.S_ISREG(current_destination.st_mode)
+            or _is_reparse_point(current_destination)
+            or not _same_identity(current_destination, destination_stat)
+            or _stat_state(current_destination) != _stat_state(destination_stat)
+        ):
+            raise ValueError("unsafe report destination")
+
+    try:
+        current_pending = os.lstat(pending)
+    except OSError as error:
+        raise ValueError("unsafe report pending file") from error
+    if (
+        not stat.S_ISREG(current_pending.st_mode)
+        or _is_reparse_point(current_pending)
+        or not _same_identity(current_pending, pending_stat)
+    ):
+        raise ValueError("unsafe report pending file")
 
 
 def _owned_pending_file(path: Path, expected: os.stat_result) -> bool:
@@ -756,14 +870,14 @@ def _owned_pending_file(path: Path, expected: os.stat_result) -> bool:
     return (
         stat.S_ISREG(current.st_mode)
         and not _is_reparse_point(current)
-        and os.path.samestat(current, expected)
+        and _same_identity(current, expected)
     )
 
 
 def atomic_write_report(destination: Path, encoded: bytes) -> None:
     """Replace a report only after its complete bytes are durable on disk."""
     destination = Path(destination)
-    parent = _safe_report_parent(destination)
+    parent, parent_stat, destination_stat = _safe_report_parent(destination)
     descriptor, pending_name = tempfile.mkstemp(
         prefix=".release-candidate-", suffix=".pending", dir=parent
     )
@@ -776,6 +890,15 @@ def atomic_write_report(destination: Path, encoded: bytes) -> None:
             target.write(encoded)
             target.flush()
             os.fsync(target.fileno())
+            owned_stat = os.fstat(target.fileno())
+        _revalidate_report_paths(
+            parent=parent,
+            parent_stat=parent_stat,
+            destination=destination,
+            destination_stat=destination_stat,
+            pending=pending,
+            pending_stat=owned_stat,
+        )
         os.replace(pending, destination)
     except BaseException:
         if descriptor != -1:
@@ -800,6 +923,16 @@ def _inspect_release_python(python: Path) -> list[dict[str, object]]:
 
 def _all_checks_passed(checks: list[dict[str, object]]) -> bool:
     return bool(checks) and all(check.get("status") == "passed" for check in checks)
+
+
+def _blocked_candidate_report(checks: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "status": "blocked",
+        "candidate": None,
+        "checks": _finalize_checks(checks),
+        "next_action": "fix_candidate_validation_and_rerun",
+    }
 
 
 def _candidate_summary(
@@ -848,23 +981,40 @@ def validate_candidate(
     """Validate one local wheel without building, downloading, or publishing."""
     try:
         checkout_checks, checkout_facts = inspect_checkout(root, expected_commit)
-        wheel_checks, wheel_facts = inspect_wheel(root, wheel, expected_wheel_sha256)
         python_checks = _inspect_release_python(python)
     except (OSError, ValueError, subprocess.SubprocessError):
         return blocked_runtime_report("candidate_validation_failed")
 
-    static_checks = _finalize_checks(checkout_checks + wheel_checks + python_checks)
-    if not _all_checks_passed(static_checks):
-        return {
-            "schema_version": "1.0",
-            "status": "blocked",
-            "candidate": None,
-            "checks": static_checks,
-            "next_action": "fix_candidate_validation_and_rerun",
-        }
+    if not SHA256_RE.fullmatch(expected_wheel_sha256):
+        return _blocked_candidate_report(
+            checkout_checks
+            + python_checks
+            + [blocked_check("candidate_sha256", "candidate_sha256_invalid")]
+        )
+    if wheel.name != EXPECTED_WHEEL:
+        return _blocked_candidate_report(
+            checkout_checks
+            + python_checks
+            + [blocked_check("wheel_filename", "wheel_filename_mismatch")]
+        )
 
     try:
-        installed_checks, installed_facts = run_installed_checks(wheel, python)
+        with _staged_wheel(wheel, root) as staged_wheel:
+            wheel_checks, wheel_facts = inspect_wheel(
+                root, staged_wheel, expected_wheel_sha256
+            )
+            static_checks = _finalize_checks(
+                checkout_checks + wheel_checks + python_checks
+            )
+            if not _all_checks_passed(static_checks):
+                return _blocked_candidate_report(static_checks)
+            installed_checks, installed_facts = run_installed_checks(staged_wheel, python)
+    except _WheelSnapshotError as error:
+        return _blocked_candidate_report(
+            checkout_checks
+            + python_checks
+            + [blocked_check("wheel_file", error.code)]
+        )
     except (OSError, ValueError, subprocess.SubprocessError):
         return blocked_runtime_report("candidate_validation_failed")
     all_checks = _finalize_checks(static_checks + installed_checks)

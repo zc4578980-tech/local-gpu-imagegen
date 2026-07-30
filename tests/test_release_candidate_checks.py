@@ -1201,6 +1201,20 @@ class ReleaseCandidateReportTests(unittest.TestCase):
     def sha(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
+    @staticmethod
+    def changed_stat(original: os.stat_result, **changes: object) -> object:
+        values = {
+            "st_mode": original.st_mode,
+            "st_file_attributes": getattr(original, "st_file_attributes", 0),
+            "st_size": original.st_size,
+            "st_mtime_ns": original.st_mtime_ns,
+            "st_ctime_ns": original.st_ctime_ns,
+            "st_dev": original.st_dev,
+            "st_ino": original.st_ino,
+        }
+        values.update(changes)
+        return type("ChangedStat", (), values)()
+
     def test_candidate_runs_static_checks_before_installed_checks(self) -> None:
         with patch.object(checks, "run_installed_checks") as installed:
             report = checks.validate_candidate(
@@ -1326,12 +1340,78 @@ class ReleaseCandidateReportTests(unittest.TestCase):
         self.assertEqual(report["status"], "blocked")
         installed.assert_not_called()
 
+    def test_candidate_stages_one_private_wheel_snapshot_for_both_check_phases(self) -> None:
+        original = self.wheel.read_bytes()
+        original_digest = self.sha(self.wheel)
+        staged_paths: list[Path] = []
+        original_open = Path.open
+        original_read_opens = 0
+
+        def tracked_open(path: Path, *args: object, **kwargs: object) -> object:
+            nonlocal original_read_opens
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if path == self.wheel and mode == "rb":
+                original_read_opens += 1
+            return original_open(path, *args, **kwargs)
+
+        def inspect_staged(
+            root: Path, staged: Path, expected_sha256: str,
+        ) -> tuple[list[dict[str, object]], dict[str, object]]:
+            self.assertEqual(root, self.root)
+            self.assertNotEqual(staged, self.wheel)
+            self.assertEqual(staged.name, checks.EXPECTED_WHEEL)
+            self.assertEqual(staged.read_bytes(), original)
+            with self.assertRaises(ValueError):
+                staged.resolve().relative_to(self.root.resolve())
+            staged_paths.append(staged)
+            self.wheel.write_bytes(b"swapped after static inspection")
+            return [checks.passed_check("wheel")], {"sha256": expected_sha256}
+
+        def install_staged(
+            staged: Path, python: Path,
+        ) -> tuple[list[dict[str, object]], dict[str, object]]:
+            self.assertEqual(python, Path(sys.executable))
+            self.assertEqual(staged_paths, [staged])
+            self.assertEqual(staged.read_bytes(), original)
+            return [checks.passed_check("installed")], {}
+
+        with (
+            patch.object(
+                checks,
+                "inspect_checkout",
+                return_value=([checks.passed_check("checkout")], {"commit": "a" * 40}),
+            ),
+            patch.object(Path, "open", tracked_open),
+            patch.object(checks, "inspect_wheel", side_effect=inspect_staged),
+            patch.object(checks, "run_installed_checks", side_effect=install_staged),
+        ):
+            report = checks.validate_candidate(
+                root=self.root,
+                wheel=self.wheel,
+                expected_commit="a" * 40,
+                expected_wheel_sha256=original_digest,
+                python=Path(sys.executable),
+            )
+
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(len(staged_paths), 1)
+        self.assertEqual(original_read_opens, 1)
+        self.assertEqual(self.wheel.read_bytes(), b"swapped after static inspection")
+        self.assertFalse(staged_paths[0].exists())
+        self.assertFalse(staged_paths[0].parent.exists())
+
     def test_blocked_runtime_report_uses_only_bounded_codes(self) -> None:
         report = checks.blocked_runtime_report("C:\\Users\\private\\secret")
         encoded = checks.canonical_report(report)
         self.assertEqual(report["checks"], [checks.blocked_check("runtime", "candidate_validation_failed")])
         self.assertNotIn(b"C:\\Users", encoded)
         self.assertNotIn(b"secret", encoded)
+
+    def test_canonical_report_rejects_non_finite_numbers(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    checks.canonical_report({"value": value})
 
     def test_atomic_report_failure_preserves_existing_file(self) -> None:
         destination = self.root / "report.json"
@@ -1355,3 +1435,128 @@ class ReleaseCandidateReportTests(unittest.TestCase):
         checks.atomic_write_report(destination, b"report\n")
         self.assertEqual(destination.read_bytes(), b"report\n")
         self.assertFalse(list(self.root.glob(".release-candidate-*.pending")))
+
+    def test_atomic_report_rejects_pending_substitution_and_does_not_clean_it(self) -> None:
+        destination = self.root / "report.json"
+        destination.write_bytes(b"original\n")
+        real_lstat = os.lstat
+
+        def substituted_pending(path: object) -> os.stat_result | object:
+            current = Path(path)  # type: ignore[arg-type]
+            result = real_lstat(current)
+            if current.name.startswith(".release-candidate-"):
+                return self.changed_stat(result, st_ino=result.st_ino + 1)
+            return result
+
+        with (
+            patch.object(checks.os, "lstat", side_effect=substituted_pending),
+            patch.object(checks.os, "replace") as replace,
+        ):
+            with self.assertRaises(ValueError):
+                checks.atomic_write_report(destination, b"replacement\n")
+
+        replace.assert_not_called()
+        self.assertEqual(destination.read_bytes(), b"original\n")
+        self.assertEqual(len(list(self.root.glob(".release-candidate-*.pending"))), 1)
+
+    def test_atomic_report_cleanup_requires_fresh_owned_pending_identity(self) -> None:
+        destination = self.root / "report.json"
+        destination.write_bytes(b"original\n")
+        real_lstat = os.lstat
+        pending_calls = 0
+
+        def substituted_pending(path: object) -> os.stat_result | object:
+            nonlocal pending_calls
+            current = Path(path)  # type: ignore[arg-type]
+            result = real_lstat(current)
+            if current.name.startswith(".release-candidate-"):
+                pending_calls += 1
+                if pending_calls > 1:
+                    return self.changed_stat(result, st_ino=result.st_ino + 1)
+            return result
+
+        with (
+            patch.object(checks.os, "lstat", side_effect=substituted_pending),
+            patch.object(checks.os, "replace", side_effect=OSError("failed")),
+            patch.object(Path, "unlink", autospec=True) as unlink,
+        ):
+            with self.assertRaises(OSError):
+                checks.atomic_write_report(destination, b"replacement\n")
+
+        unlink.assert_not_called()
+        self.assertEqual(destination.read_bytes(), b"original\n")
+        self.assertEqual(len(list(self.root.glob(".release-candidate-*.pending"))), 1)
+
+    def test_atomic_report_revalidates_parent_identity_and_reparse_state(self) -> None:
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        for mutation in ("identity", "reparse"):
+            with self.subTest(mutation=mutation):
+                destination = self.root / f"parent-{mutation}.json"
+                destination.write_bytes(b"original\n")
+                real_lstat = os.lstat
+                parent_calls = 0
+
+                def changed_parent(path: object) -> os.stat_result | object:
+                    nonlocal parent_calls
+                    current = Path(path)  # type: ignore[arg-type]
+                    result = real_lstat(current)
+                    if current == self.root:
+                        parent_calls += 1
+                        if parent_calls > 1:
+                            if mutation == "identity":
+                                return self.changed_stat(result, st_ino=result.st_ino + 1)
+                            return self.changed_stat(
+                                result,
+                                st_file_attributes=(
+                                    getattr(result, "st_file_attributes", 0) | reparse_flag
+                                ),
+                            )
+                    return result
+
+                with (
+                    patch.object(checks.os, "lstat", side_effect=changed_parent),
+                    patch.object(checks.os, "replace") as replace,
+                ):
+                    with self.assertRaises(ValueError):
+                        checks.atomic_write_report(destination, b"replacement\n")
+
+                replace.assert_not_called()
+                self.assertEqual(destination.read_bytes(), b"original\n")
+
+    def test_atomic_report_revalidates_destination_identity_state_and_reparse(self) -> None:
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        for mutation in ("identity", "state", "reparse"):
+            with self.subTest(mutation=mutation):
+                destination = self.root / f"destination-{mutation}.json"
+                destination.write_bytes(b"original\n")
+                real_lstat = os.lstat
+                destination_calls = 0
+
+                def changed_destination(path: object) -> os.stat_result | object:
+                    nonlocal destination_calls
+                    current = Path(path)  # type: ignore[arg-type]
+                    result = real_lstat(current)
+                    if current == destination:
+                        destination_calls += 1
+                        if destination_calls > 1:
+                            if mutation == "identity":
+                                return self.changed_stat(result, st_ino=result.st_ino + 1)
+                            if mutation == "state":
+                                return self.changed_stat(result, st_size=result.st_size + 1)
+                            return self.changed_stat(
+                                result,
+                                st_file_attributes=(
+                                    getattr(result, "st_file_attributes", 0) | reparse_flag
+                                ),
+                            )
+                    return result
+
+                with (
+                    patch.object(checks.os, "lstat", side_effect=changed_destination),
+                    patch.object(checks.os, "replace") as replace,
+                ):
+                    with self.assertRaises(ValueError):
+                        checks.atomic_write_report(destination, b"replacement\n")
+
+                replace.assert_not_called()
+                self.assertEqual(destination.read_bytes(), b"original\n")
