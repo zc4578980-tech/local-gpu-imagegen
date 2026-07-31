@@ -4,7 +4,7 @@ This checklist covers repository release readiness. It does not grant model, wor
 
 ## Gate policy
 
-The v0.8 preview gate requires exact-commit model-free tests, a clean wheel install, exactly seventeen tools, fail-closed `doctor` behavior, safe named-client setup contracts, the portable historical Codex 0.7 generation labeled historical, the Codex 0.8 zero-GPU onboarding record labeled non-generation, and explicit disclosure of missing evidence. A current-v0.8 Codex managed-MCP live gate generated one private, unreviewed SDXL image as local development validation. It is not a publishable release-set artifact, reviewed candidate, finalized image, image-quality evidence, or full acceptance.
+The v0.8 preview gate requires exact-commit model-free tests, a clean wheel install, exactly seventeen tools, fail-closed `doctor` behavior, safe named-client setup contracts, the portable historical Codex 0.7 generation labeled historical, the Codex 0.8 zero-GPU onboarding record labeled non-generation, and explicit disclosure of missing evidence. A current-v0.8 Codex managed-MCP live gate and its separately approved bounded replacement produced two private, reviewed, ineligible runs. They are fail-closed local development evidence, not publishable release-set artifacts, finalized images, image-quality evidence, or full acceptance.
 
 The unchanged `python scripts/validate_acceptance_evidence.py --strict` command remains the full-acceptance/v1.0 gate. It requires exactly nine accepted roots and three declared child revisions. Its expected failure on the currently incomplete matrix does not block the separately defined v0.8 preview gate, but it does block any full-acceptance or v1.0 claim.
 
@@ -20,7 +20,7 @@ The unchanged `python scripts/validate_acceptance_evidence.py --strict` command 
 
 - [x] The retained Codex `0.7.0` generation is historical evidence and is not a v0.8 release-set record.
 - [x] The retained Codex `0.8.0` workflow-onboarding session is zero-GPU evidence and is not generation evidence.
-- [x] A current-v0.8 Codex managed-MCP live gate generated one private, unreviewed SDXL image. It remains local development validation and not a publishable release-set artifact.
+- [x] A current-v0.8 Codex managed-MCP live gate and its separately approved bounded replacement produced two private, reviewed, ineligible runs. They remain fail-closed local development evidence and not publishable release-set artifacts.
 - [ ] Claude Code hosted generation remains pending, and no publishable current-v0.8 named-client generation release set is retained.
 - [x] One historical ordinary-route SDXL root retains its original PNG and MCP result, passes full-resolution structured review, and is finalized by a later byte-bound user confirmation.
 - [x] The historical ordinary-route public demo validates portably under `docs/demo/real/`, including public rights, exact artifact hashes, route identity, and sanitized client binding.

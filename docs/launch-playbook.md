@@ -18,8 +18,8 @@ Before any remote action:
 - Require `verify` to report version `0.8.0`, protocol `2024-11-05`, and exactly
   seventeen tools; require `doctor` to fail closed when no backend is selected.
 - Keep the validated historical SDXL showcase ahead of the simulated protocol
-  animation. Do not promote the private, unreviewed current-v0.8 live-gate image
-  into public evidence.
+  animation. Do not promote the two private, reviewed, ineligible current-v0.8
+  runs or their fail-closed local development evidence into public evidence.
 - Keep ComfyUI's role and the product boundary explicit: ComfyUI generates the
   pixels; Local GPU Imagegen controls authority, reproducibility, review, and
   recovery.

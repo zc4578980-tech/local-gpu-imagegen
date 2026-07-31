@@ -19,7 +19,7 @@ All notable changes will be documented in this file.
 ### Evidence Boundary
 
 - The earlier single-pass regional route remains retained negative evidence and experimental compatibility; together with the rejected two-stage run, it does not establish a visual-quality improvement.
-- A current-v0.8 Codex managed-MCP live gate generated one private, unreviewed SDXL image. This is local development validation, not a publishable release-set artifact, reviewed candidate, finalized image, or image-quality claim. Claude Code hosted generation remains pending.
+- A current-v0.8 Codex managed-MCP live gate and its separately approved bounded replacement produced two private, reviewed, ineligible runs. They are fail-closed local development evidence, not publishable release-set artifacts, finalized images, or image-quality evidence. Claude Code hosted generation remains pending.
 - No measured quality, latency, VRAM, production-readiness, complete 9+3 acceptance, or publication claim is made.
 
 ## [0.8.0] - 2026-07-24

@@ -191,15 +191,25 @@ def inspect_checkout(
     else:
         results.append(passed_check("index"))
 
-    status = _run_git(runner, root, "status", "--porcelain=v1")
+    status = _run_git(
+        runner,
+        root,
+        "status",
+        "--porcelain=v1",
+        "--ignored",
+        "--untracked-files=all",
+    )
     if status is None or status.returncode != 0 or status.stderr.strip():
         results.append(blocked_check("git_checkout", "git_checkout_unavailable"))
         return _finalize_checks(results), facts
 
     untracked_count = 0
+    ignored_count = 0
     for line in status.stdout.splitlines():
         if line.startswith("?? "):
             untracked_count += 1
+        elif line.startswith("!! "):
+            ignored_count += 1
         elif len(line) < 3 or line[2] != " ":
             results.append(blocked_check("git_checkout", "git_checkout_status_invalid"))
         else:
@@ -208,6 +218,8 @@ def inspect_checkout(
             if line[1] != " ":
                 results.append(blocked_check("tracked_worktree", "tracked_worktree_dirty"))
     facts["untracked_count"] = untracked_count
+    facts["ignored_count"] = ignored_count
+    results.append(passed_check("ignored_files", count=ignored_count))
     results.append(passed_check("untracked_files", count=untracked_count))
     return _finalize_checks(results), facts
 
@@ -836,7 +848,11 @@ def inspect_wheel(
     except _WheelSnapshotError as exc:
         return [blocked_check("wheel_file", exc.code)], {}
     results: list[dict[str, object]] = []
-    facts: dict[str, object] = {"sha256": actual_sha256}
+    facts: dict[str, object] = {
+        "filename": wheel.name,
+        "sha256": actual_sha256,
+        "size_bytes": path_stat.st_size,
+    }
     if wheel.name != EXPECTED_WHEEL:
         results.append(blocked_check("wheel_filename", "wheel_filename_mismatch"))
     else:
@@ -1710,6 +1726,11 @@ def _candidate_summary(
     digest = wheel_facts.get("sha256")
     if isinstance(digest, str) and SHA256_RE.fullmatch(digest):
         candidate["wheel_sha256"] = digest
+    if wheel_facts.get("filename") == EXPECTED_WHEEL:
+        candidate["wheel_name"] = EXPECTED_WHEEL
+    size_bytes = wheel_facts.get("size_bytes")
+    if type(size_bytes) is int and 0 <= size_bytes <= MAX_WHEEL_BYTES:
+        candidate["wheel_size_bytes"] = size_bytes
     if wheel_facts.get("version") == EXPECTED_VERSION:
         candidate["version"] = EXPECTED_VERSION
     if installed_facts.get("protocol") == EXPECTED_PROTOCOL:

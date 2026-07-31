@@ -95,9 +95,22 @@ class ReleaseCandidateStaticTests(unittest.TestCase):
         root, commit = self.make_git_checkout()
         (root / ".codex").mkdir()
         (root / ".codex" / "config.toml").write_text("local = true\n", encoding="utf-8")
+        (root / ".git" / "info" / "exclude").write_text(
+            "ignored-local/\n",
+            encoding="utf-8",
+        )
+        (root / "ignored-local").mkdir()
+        (root / "ignored-local" / "private-state.json").write_text(
+            "{}\n",
+            encoding="utf-8",
+        )
         results, facts = checks.inspect_checkout(root, commit)
         self.assertNotIn("untracked_files", self.blocked_ids(results))
         self.assertEqual(facts["untracked_count"], 1)
+        self.assertEqual(facts["ignored_count"], 1)
+        ignored = [item for item in results if item["id"] == "ignored_files"]
+        self.assertEqual(ignored, [checks.passed_check("ignored_files", count=1)])
+        self.assertNotIn("private-state.json", str(results))
 
     def test_checkout_bounds_untracked_names_and_runner_failure(self) -> None:
         root, commit = self.make_git_checkout()
@@ -129,7 +142,12 @@ class ReleaseCandidateStaticTests(unittest.TestCase):
         def porcelain_dirty(_: Path, *args: str) -> subprocess.CompletedProcess[str]:
             if args == ("rev-parse", "HEAD"):
                 return subprocess.CompletedProcess(["git", *args], 0, commit + "\n", "")
-            if args == ("status", "--porcelain=v1"):
+            if args == (
+                "status",
+                "--porcelain=v1",
+                "--ignored",
+                "--untracked-files=all",
+            ):
                 return subprocess.CompletedProcess(["git", *args], 0, " M tracked.txt\n", "")
             return subprocess.CompletedProcess(["git", *args], 0, "", "")
 
@@ -150,7 +168,12 @@ class ReleaseCandidateStaticTests(unittest.TestCase):
                 return subprocess.CompletedProcess(["git", *args], 0, commit + "\n", "")
             if args == ("diff", "--quiet") or args == ("diff", "--cached", "--quiet"):
                 return subprocess.CompletedProcess(["git", *args], 1, "", "")
-            if args == ("status", "--porcelain=v1"):
+            if args == (
+                "status",
+                "--porcelain=v1",
+                "--ignored",
+                "--untracked-files=all",
+            ):
                 return subprocess.CompletedProcess(["git", *args], 0, "MM tracked.txt\n", "")
             raise AssertionError(args)
 
@@ -1691,7 +1714,18 @@ class ReleaseCandidateReportTests(unittest.TestCase):
         installed_checks = [checks.passed_check("installed")]
         with (
             patch.object(checks, "inspect_checkout", return_value=(static_checks, {"commit": "a" * 40})),
-            patch.object(checks, "inspect_wheel", return_value=(wheel_checks, {"sha256": "b" * 64})),
+            patch.object(
+                checks,
+                "inspect_wheel",
+                return_value=(
+                    wheel_checks,
+                    {
+                        "filename": checks.EXPECTED_WHEEL,
+                        "size_bytes": len(b"wheel fixture"),
+                        "sha256": "b" * 64,
+                    },
+                ),
+            ),
             patch.object(checks, "run_installed_checks", return_value=(installed_checks, {"version": "0.8.0"})),
         ):
             report = checks.validate_candidate(
@@ -1702,6 +1736,8 @@ class ReleaseCandidateReportTests(unittest.TestCase):
                 python=Path(sys.executable).resolve(),
             )
         self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["candidate"]["wheel_name"], checks.EXPECTED_WHEEL)
+        self.assertEqual(report["candidate"]["wheel_size_bytes"], len(b"wheel fixture"))
 
         with (
             patch.object(checks, "inspect_checkout", return_value=([checks.blocked_check("checkout", "blocked")], {})),

@@ -159,7 +159,7 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertIn("local-gpu-imagegen==0.8.0", listings)
         self.assertIn("Status: prepared, not submitted", listings)
         self.assertIn(
-            "not a publishable current-v0.8 generation release set",
+            "not publishable release-set artifacts",
             listings,
         )
         self.assertIn("Complete 9+3 acceptance is not claimed.", listings)

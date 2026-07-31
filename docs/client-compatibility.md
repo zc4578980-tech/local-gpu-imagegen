@@ -18,7 +18,7 @@ python scripts/verify_client_configs.py
 
 The report deliberately returns `hosted_client_session: false` because this verifier covers setup and stdio contracts only. Setup verification does not establish that a hosted client generated an image.
 
-The retained Codex `0.7.0` generation is historical evidence and is not a v0.8 release-set record. The retained Codex `0.8.0` workflow-onboarding session is zero-GPU evidence and is not generation evidence. Separately, a current-v0.8 Codex managed-MCP live gate generated one private, unreviewed SDXL image. It is local development validation, not a publishable release-set artifact, reviewed candidate, finalized image, or proof of image-quality improvement. Claude Code hosted generation remains pending. None of these runtime facts are inferred from the setup verifier.
+The retained Codex `0.7.0` generation is historical evidence and is not a v0.8 release-set record. The retained Codex `0.8.0` workflow-onboarding session is zero-GPU evidence and is not generation evidence. Separately, a current-v0.8 Codex managed-MCP live gate and its separately approved bounded replacement produced two private, reviewed, ineligible runs. They are fail-closed local development evidence, not publishable release-set artifacts, finalized images, or proof of image-quality improvement. Claude Code hosted generation remains pending. None of these runtime facts are inferred from the setup verifier.
 
 ## Codex
 

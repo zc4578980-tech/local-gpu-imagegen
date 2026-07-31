@@ -746,12 +746,13 @@ class PublicDocumentationTests(unittest.TestCase):
         )
         for required in (
             "current-v0.8 Codex managed-MCP live gate",
-            "one private, unreviewed SDXL image",
-            "local development validation",
-            "not a publishable release-set artifact",
+            "two private, reviewed, ineligible runs",
+            "fail-closed local development evidence",
+            "not publishable release-set artifacts",
             "Claude Code hosted generation remains pending",
         ):
             self.assertIn(required, public)
+        self.assertNotIn("one private, unreviewed SDXL image", public)
 
     def test_preview_and_full_acceptance_gates_remain_distinct(self) -> None:
         for path in (RELEASE_CHECKLIST, EVIDENCE_README):
@@ -759,7 +760,7 @@ class PublicDocumentationTests(unittest.TestCase):
                 text = path.read_text(encoding="utf-8")
                 self.assertIn("v0.8 preview gate", text)
                 self.assertIn("full-acceptance/v1.0 gate", text)
-                self.assertIn("not a publishable release-set artifact", text)
+                self.assertIn("not publishable release-set artifacts", text)
 
     def test_release_coherence_docs_share_v080_state(self) -> None:
         release_documents = (
