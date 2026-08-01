@@ -1,5 +1,7 @@
 # Five-Minute Quickstart
 
+[English](quickstart.md) | [简体中文](quickstart.zh-CN.md)
+
 This path is for Python 3.11 or 3.12 users whose supported backend and model are already running. It excludes backend installation, model downloads, and generation time.
 
 ## 1. Verify The Installed Server

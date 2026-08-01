@@ -2,6 +2,8 @@
 
 <!-- mcp-name: io.github.zc4578980-tech/local-gpu-imagegen -->
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 An MCP-first control plane with cryptographic model identity, explicit approvals,
 and durable run evidence for the ComfyUI setup you already use.
 

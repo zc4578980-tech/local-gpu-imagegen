@@ -14,6 +14,8 @@ else:
 ROOT = Path(__file__).resolve().parents[1]
 REAL_DEMO = ROOT / "docs" / "demo" / "real"
 QUICKSTART = ROOT / "docs" / "quickstart.md"
+CHINESE_README = ROOT / "README.zh-CN.md"
+CHINESE_QUICKSTART = ROOT / "docs" / "quickstart.zh-CN.md"
 ALTERNATIVES = ROOT / "docs" / "alternatives.md"
 LAUNCH_PLAYBOOK = ROOT / "docs" / "launch-playbook.md"
 RELEASE_CHECKLIST = ROOT / "docs" / "release-checklist.md"
@@ -54,6 +56,7 @@ PUBLIC_TOOLS = {
 }
 ACTIVE_PUBLIC_DOCS = (
     ROOT / "README.md",
+    CHINESE_README,
     ROOT / "docs" / "architecture.md",
     ROOT / "docs" / "troubleshooting.md",
     ROOT / ".codex-plugin" / "plugin.json",
@@ -62,10 +65,12 @@ PUBLIC_RELEASE_DOCS = ACTIVE_PUBLIC_DOCS + (
     ROOT / "CHANGELOG.md",
     ROOT / "docs" / "github-listing.md",
     QUICKSTART,
+    CHINESE_QUICKSTART,
     LAUNCH_PLAYBOOK,
     ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md",
 )
 ACTIVE_VERSION_FILES = ACTIVE_PUBLIC_DOCS + (
+    CHINESE_QUICKSTART,
     ROOT / "skills" / "local-gpu-imagegen" / "SKILL.md",
     ROOT / "scripts" / "mcp_server.py",
     ROOT / "scripts" / "local_gpu_imagegen" / "generation_plan.py",
@@ -85,6 +90,34 @@ def _assert_ordered(text: str, values: tuple[str, ...]) -> None:
 
 
 class PublicDocumentationTests(unittest.TestCase):
+    def test_bilingual_readme_and_quickstart_preserve_first_run_contract(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        quickstart = QUICKSTART.read_text(encoding="utf-8")
+        chinese_readme = CHINESE_README.read_text(encoding="utf-8")
+        chinese_quickstart = CHINESE_QUICKSTART.read_text(encoding="utf-8")
+
+        self.assertIn("[简体中文](README.zh-CN.md)", readme)
+        self.assertIn("[简体中文](quickstart.zh-CN.md)", quickstart)
+        self.assertIn("[English](README.md)", chinese_readme)
+        self.assertIn("[English](quickstart.md)", chinese_quickstart)
+
+        for required in (
+            "uvx local-gpu-imagegen verify",
+            "uvx local-gpu-imagegen setup codex --apply",
+            "uvx local-gpu-imagegen setup claude-code --apply",
+            "uvx local-gpu-imagegen doctor",
+            "codex mcp remove local-gpu-imagegen",
+            "claude mcp remove --scope user local-gpu-imagegen",
+            "ready: false",
+            "17 个工具",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, chinese_readme + "\n" + chinese_quickstart)
+
+        for private_value in ("D:\\", "C:\\Users\\", "route:", "model:"):
+            with self.subTest(private_value=private_value):
+                self.assertNotIn(private_value, chinese_readme + "\n" + chinese_quickstart)
+
     def test_codex_first_viewport_states_literal_offer_and_ready_request(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         first_viewport = readme[:3500]
