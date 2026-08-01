@@ -67,7 +67,7 @@ class FakeAdapter:
 
 class DiscoveryTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.temporary_directory = tempfile.TemporaryDirectory(dir=str(Path.home()))
         self.root = Path(self.temporary_directory.name) / "models"
         self.root.mkdir()
         self.clock = MutableClock()

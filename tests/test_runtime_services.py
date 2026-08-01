@@ -54,7 +54,7 @@ class FakeComfyUIAdapter:
 
 class RuntimeServicesTests(unittest.TestCase):
     def test_build_services_composes_one_shared_runtime_graph(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=str(Path.home())) as directory:
             root = Path(directory)
             runner = lambda request: dict(request)  # noqa: E731
             capabilities = lambda: {  # noqa: E731
@@ -84,7 +84,7 @@ class RuntimeServicesTests(unittest.TestCase):
         )
 
     def test_build_services_wires_workflow_onboarding_to_shared_dependencies(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=str(Path.home())) as directory:
             root = Path(directory)
             with patch(
                 "local_gpu_imagegen.services.adapters_from_environment",

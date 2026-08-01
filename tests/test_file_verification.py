@@ -16,7 +16,7 @@ from local_gpu_imagegen.file_verification import FileVerificationRegistry  # noq
 
 class FileVerificationRegistryTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.temporary_directory = tempfile.TemporaryDirectory(dir=str(Path.home()))
         self.state_dir = Path(self.temporary_directory.name) / "state"
         self.root = Path(self.temporary_directory.name) / "models"
         self.root.mkdir()
