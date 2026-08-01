@@ -119,7 +119,7 @@ class FileVerificationRegistryTests(unittest.TestCase):
             )
 
     def test_registry_rejects_state_outside_user_local_roots(self) -> None:
-        outside = Path("\\\\server\\share\\local-gpu-imagegen")
+        outside = Path.home().resolve().parent / "local-gpu-imagegen-nonlocal-state"
         with self.assertRaisesRegex(ValidationError, "invalid_file_verification_state_dir"):
             FileVerificationRegistry(outside)
 
