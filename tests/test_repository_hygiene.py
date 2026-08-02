@@ -12,6 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RepositoryHygieneTests(unittest.TestCase):
+    def test_ci_installs_the_durable_launcher_prerequisite(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "tests.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"uv==0.11.16"', workflow)
+
     def test_hash_bound_workflows_disable_checkout_eol_conversion(self) -> None:
         attributes = ROOT / ".gitattributes"
         self.assertTrue(attributes.is_file())
