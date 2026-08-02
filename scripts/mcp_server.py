@@ -305,7 +305,7 @@ def _output_schema(properties: dict[str, Any], required: list[str]) -> dict[str,
         ["code", "category", "message"],
     )
     error = _object_schema({"error": error_value}, ["error"])
-    return {"oneOf": [success, error]}
+    return {"type": "object", "oneOf": [success, error]}
 
 
 def tool_schema() -> list[dict[str, Any]]:

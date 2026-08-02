@@ -2,7 +2,19 @@
 
 All notable changes will be documented in this file.
 
-## [0.8.1] - Unreleased
+## [0.8.2] - Unreleased
+
+### Fixed
+
+- All seventeen MCP tool descriptors now declare an object-root `outputSchema`, while the fifteen high-level tools retain their closed success/error `oneOf` contract for strict client compatibility.
+- A model-free regression test requires the object-root declaration across the complete seventeen-tool surface.
+
+### Evidence Boundary
+
+- The source-level compatibility correction is model-free. A `0.8.2` wheel, public package, and fresh hosted-client reconnection remain pending separate verification and authority.
+- No ComfyUI process, GPU, model read, image generation, trust mutation, or publication action is part of this change.
+
+## [0.8.1] - 2026-08-02
 
 ### Added
 

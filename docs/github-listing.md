@@ -14,7 +14,7 @@ Topics:
 
 ## Preview release
 
-Title: `v0.8.1 Preview - Run supported ComfyUI workflows from your Agent`
+Title: `v0.8.2 Preview - Run supported ComfyUI workflows from your Agent`
 
 Summary:
 

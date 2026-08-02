@@ -1,6 +1,6 @@
 {
   "name": "local-gpu-imagegen",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "MCP-first control plane for ComfyUI workflows with explicit approvals and no silent downloads.",
   "author": {
     "name": "Capricorn"

@@ -15,7 +15,7 @@ Before any remote action:
 - Follow the [publication runbook](publication-runbook.md) and require its
   `candidate-report.json` to contain `"status": "passed"` before any remote
   action.
-- Require `verify` to report version `0.8.1`, protocol `2024-11-05`, and exactly
+- Require `verify` to report version `0.8.2`, protocol `2024-11-05`, and exactly
   seventeen tools; require `doctor` to fail closed when no backend is selected.
 - Keep the validated historical SDXL showcase ahead of the simulated protocol
   animation. Do not promote the two private, reviewed, ineligible current-v0.8

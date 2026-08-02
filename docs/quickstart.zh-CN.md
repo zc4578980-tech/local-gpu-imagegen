@@ -11,7 +11,7 @@
 uvx local-gpu-imagegen verify
 ```
 
-检查点：JSON 应报告 `ok: true`、版本 `0.8.1`，并且恰好包含 17 个工具。
+检查点：JSON 应报告 `ok: true`、版本 `0.8.2`，并且恰好包含 17 个工具。
 如果不符合，请停止并查看[首次运行问题](#首次运行问题)。
 
 ## 2. 添加到 Codex 或 Claude Code
@@ -28,7 +28,7 @@ uvx local-gpu-imagegen setup claude-code --apply
 固定当前版本的服务器命令，而不是依赖临时 `uvx` 环境中的控制台脚本：
 
 ```text
-uvx --from local-gpu-imagegen==0.8.1 local-gpu-imagegen serve
+uvx --from local-gpu-imagegen==0.8.2 local-gpu-imagegen serve
 ```
 
 如果 setup 报告 `client_setup_drift`，说明已有条目使用了不同的启动器。不要直接编辑

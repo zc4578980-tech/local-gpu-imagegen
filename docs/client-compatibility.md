@@ -6,13 +6,13 @@ The Codex and Claude Code official CLI setup contracts are parsed and checked
 against the same version-pinned `uvx` command:
 
 ```text
-uvx --from local-gpu-imagegen==0.8.1 local-gpu-imagegen serve
+uvx --from local-gpu-imagegen==0.8.2 local-gpu-imagegen serve
 ```
 
 At apply time, setup resolves `uvx` to an executable path before delegating to
 the client's official CLI. For each contract, the model-free verifier requires
 that launcher to be executable, launches the equivalent local stdio server,
-checks its `0.8.1` server identity and protocol version, and requires exactly seventeen tools. This is a **Configuration contract** backed by each client's
+checks its `0.8.2` server identity and protocol version, and requires exactly seventeen tools. This is a **Configuration contract** backed by each client's
 official CLI setup shape, launcher resolution, and equivalent stdio-launch
 verification. It is not a real hosted LLM session, UI integration test, or
 proof that either client completed an image-generation run.
@@ -75,7 +75,7 @@ Other MCP clients can adapt the same stdio command and arguments, but no other n
   "command": "uvx",
   "args": [
     "--from",
-    "local-gpu-imagegen==0.8.1",
+    "local-gpu-imagegen==0.8.2",
     "local-gpu-imagegen",
     "serve"
   ]

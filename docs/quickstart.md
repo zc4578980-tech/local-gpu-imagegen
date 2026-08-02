@@ -10,7 +10,7 @@ This path is for Python 3.11 or 3.12 users whose supported backend and model are
 uvx local-gpu-imagegen verify
 ```
 
-Checkpoint: the JSON reports `ok: true`, version `0.8.1`, and exactly seventeen tools. Stop and use [First-Run Problems](#first-run-problems) if it does not.
+Checkpoint: the JSON reports `ok: true`, version `0.8.2`, and exactly seventeen tools. Stop and use [First-Run Problems](#first-run-problems) if it does not.
 
 ## 2. Add It To Codex Or Claude Code
 
@@ -28,7 +28,7 @@ command, rather than relying on a console script from the temporary `uvx`
 environment:
 
 ```text
-uvx --from local-gpu-imagegen==0.8.1 local-gpu-imagegen serve
+uvx --from local-gpu-imagegen==0.8.2 local-gpu-imagegen serve
 ```
 
 If setup reports `client_setup_drift`, the existing entry uses a different

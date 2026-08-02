@@ -98,7 +98,7 @@ class PackagingTests(unittest.TestCase):
     def test_metadata_defines_preview_cli(self) -> None:
         document = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         project = document["project"]
-        self.assertEqual(project["version"], "0.8.1")
+        self.assertEqual(project["version"], "0.8.2")
         self.assertEqual(project["license"], "MIT")
         self.assertEqual(
             project["scripts"]["local-gpu-imagegen"],
@@ -145,7 +145,7 @@ class PackagingTests(unittest.TestCase):
             results,
         )
         self.assertEqual(facts["sha256"], digest)
-        self.assertEqual(facts["version"], "0.8.1")
+        self.assertEqual(facts["version"], "0.8.2")
 
     def test_installed_wheel_verifies_from_outside_checkout(self) -> None:
         environment = dict(os.environ)
@@ -189,7 +189,7 @@ class PackagingTests(unittest.TestCase):
             report["server"]["command"][1:],
             [
                 "--from",
-                "local-gpu-imagegen==0.8.1",
+                "local-gpu-imagegen==0.8.2",
                 "local-gpu-imagegen",
                 "serve",
             ],
@@ -255,7 +255,7 @@ class PackagingTests(unittest.TestCase):
         ]
         self.assertEqual(len(responses), 2)
         initialize = responses[0]["result"]
-        self.assertEqual(initialize["serverInfo"]["version"], "0.8.1")
+        self.assertEqual(initialize["serverInfo"]["version"], "0.8.2")
         self.assertEqual(initialize["protocolVersion"], "2024-11-05")
         tools = responses[1]["result"]["tools"]
         self.assertEqual(len(tools), 17)
@@ -294,7 +294,7 @@ class PackagingTests(unittest.TestCase):
             [item for item in results if item["status"] == "blocked"],
             results,
         )
-        self.assertEqual(facts["version"], "0.8.1")
+        self.assertEqual(facts["version"], "0.8.2")
         self.assertEqual(facts["protocol"], "2024-11-05")
         self.assertEqual(facts["tool_count"], 17)
 
