@@ -2,20 +2,24 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tomllib
 from typing import Any
 
 from local_gpu_imagegen.cli import render_client_config
-from local_gpu_imagegen.client_setup import setup_contract
+from local_gpu_imagegen.client_setup import SERVER_COMMAND, setup_contract
 from verify_mcp import verify
 
 
-EXPECTED_COMMAND = {"command": "local-gpu-imagegen", "args": ["serve"]}
+EXPECTED_COMMAND = {
+    "command": SERVER_COMMAND[0],
+    "args": list(SERVER_COMMAND[1:]),
+}
 EXPECTED_SETUP_SERVER = {
     "name": "local-gpu-imagegen",
-    "command": ["local-gpu-imagegen", "serve"],
+    "command": list(SERVER_COMMAND),
 }
 
 
@@ -38,9 +42,14 @@ def _parse_setup_contract(client: str) -> dict[str, Any]:
     contract = setup_contract(client)
     if contract["server"] != EXPECTED_SETUP_SERVER:
         raise RuntimeError(f"{client} setup does not resolve to the installed stdio command.")
+    launcher = shutil.which(SERVER_COMMAND[0])
+    if launcher is None:
+        raise RuntimeError(f"{client} setup launcher is not executable: {SERVER_COMMAND[0]}")
     return {
         "configuration_kind": "official_cli_setup_contract",
         "format": "official_cli",
+        "launcher": SERVER_COMMAND[0],
+        "launcher_resolved": True,
         "setup": contract,
     }
 

@@ -2,7 +2,7 @@
 
 All notable changes will be documented in this file.
 
-## [Unreleased]
+## [0.8.1] - Unreleased
 
 ### Added
 
@@ -12,6 +12,11 @@ All notable changes will be documented in this file.
 
 ### Changed
 
+- Named-client setup now stores a resolved, version-pinned `uvx --from`
+  launcher so the MCP server remains launchable after the setup process exits.
+- Existing Codex and Claude Code entries are compared with the expected
+  launcher. Configuration drift fails closed and requires explicit removal
+  before reapplying setup; existing entries are never silently overwritten.
 - Supported ordinary ComfyUI API workflow execution is now the primary launch path for Codex and Claude Code; built-in prompt workflows make no image-quality superiority claim.
 - The public path now leads with installed verification, official-client setup, explicit route authority, structured review, and byte-bound finalization without silent downloads or model switches.
 - `sdxl-regional-txt2img` and `sdxl-two-stage-copy-subject` remain implemented and model-free tested, but both are experimental, not part of the golden path, and provide no fallback from the ordinary route.

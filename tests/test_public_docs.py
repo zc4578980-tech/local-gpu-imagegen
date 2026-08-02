@@ -90,6 +90,28 @@ def _assert_ordered(text: str, values: tuple[str, ...]) -> None:
 
 
 class PublicDocumentationTests(unittest.TestCase):
+    def test_bilingual_quickstarts_explain_the_durable_launcher_and_drift_recovery(self) -> None:
+        english = QUICKSTART.read_text(encoding="utf-8")
+        chinese = CHINESE_QUICKSTART.read_text(encoding="utf-8")
+        english_readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        chinese_readme = CHINESE_README.read_text(encoding="utf-8")
+        launcher = (
+            "uvx --from local-gpu-imagegen==0.8.1 "
+            "local-gpu-imagegen serve"
+        )
+
+        for text in (english, chinese):
+            with self.subTest(document="english" if text is english else "chinese"):
+                self.assertIn(launcher, text)
+                self.assertIn("client_setup_drift", text)
+                self.assertIn("remove", text)
+                self.assertIn("setup claude-code --apply", text)
+        for text in (english_readme, chinese_readme):
+            with self.subTest(document="readme"):
+                self.assertIn(launcher, text)
+                self.assertIn("client_setup_drift", text)
+                self.assertIn("ComfyUI", text)
+
     def test_bilingual_readme_and_quickstart_preserve_first_run_contract(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         quickstart = QUICKSTART.read_text(encoding="utf-8")
@@ -447,7 +469,7 @@ class PublicDocumentationTests(unittest.TestCase):
     def test_github_listing_bounds_the_workflow_offer(self) -> None:
         listing = GITHUB_LISTING.read_text(encoding="utf-8")
         self.assertIn(
-            "v0.8.0 Preview - Run supported ComfyUI workflows from your Agent",
+            "v0.8.1 Preview - Run supported ComfyUI workflows from your Agent",
             listing,
         )
 
@@ -682,7 +704,7 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("experimental compatibility", public)
         self.assertIn("does not establish a visual-quality improvement", public)
 
-    def test_active_versions_are_v080_and_historical_versions_are_preserved(self) -> None:
+    def test_active_versions_are_v081_and_historical_versions_are_preserved(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -691,9 +713,10 @@ class PublicDocumentationTests(unittest.TestCase):
             for path in ACTIVE_VERSION_FILES
         )
 
-        self.assertEqual(plugin["version"], "0.8.0")
-        self.assertIn('"version": "0.8.0"', readme)
+        self.assertEqual(plugin["version"], "0.8.1")
+        self.assertIn('"version": "0.8.1"', readme)
         self.assertEqual(active_version_findings(active_documents), [])
+        self.assertIn("## [0.8.1] - Unreleased", changelog)
         self.assertIn("## [0.8.0] - 2026-07-24", changelog)
         self.assertIn("## [0.7.0] - 2026-07-23", changelog)
         self.assertIn("## [0.6.1] - 2026-07-22", changelog)
@@ -743,11 +766,11 @@ class PublicDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(required, public)
 
-    def test_active_release_guides_pin_v080_and_seventeen_tools(self) -> None:
+    def test_active_release_guides_pin_v081_and_seventeen_tools(self) -> None:
         for path in (RELEASE_CHECKLIST, ROOT / "docs" / "client-compatibility.md"):
             with self.subTest(path=path):
                 text = path.read_text(encoding="utf-8")
-                self.assertIn("`0.8.0`", text)
+                self.assertIn("`0.8.1`", text)
                 self.assertIn("exactly seventeen tools", text)
                 self.assertNotIn("exactly fifteen tools", text)
 
@@ -795,7 +818,7 @@ class PublicDocumentationTests(unittest.TestCase):
                 self.assertIn("full-acceptance/v1.0 gate", text)
                 self.assertIn("not publishable release-set artifacts", text)
 
-    def test_release_coherence_docs_share_v080_state(self) -> None:
+    def test_release_coherence_docs_share_v081_state(self) -> None:
         release_documents = (
             RELEASE_CHECKLIST,
             ROOT / "docs" / "client-compatibility.md",
@@ -804,7 +827,7 @@ class PublicDocumentationTests(unittest.TestCase):
         )
         for path in release_documents:
             with self.subTest(path=path):
-                self.assertIn("0.8.0", path.read_text(encoding="utf-8"))
+                self.assertIn("0.8.1", path.read_text(encoding="utf-8"))
 
         for path in (RELEASE_CHECKLIST, ROOT / "docs" / "client-compatibility.md"):
             with self.subTest(path=path):

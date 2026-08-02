@@ -10,7 +10,7 @@ This path is for Python 3.11 or 3.12 users whose supported backend and model are
 uvx local-gpu-imagegen verify
 ```
 
-Checkpoint: the JSON reports `ok: true`, version `0.8.0`, and exactly seventeen tools. Stop and use [First-Run Problems](#first-run-problems) if it does not.
+Checkpoint: the JSON reports `ok: true`, version `0.8.1`, and exactly seventeen tools. Stop and use [First-Run Problems](#first-run-problems) if it does not.
 
 ## 2. Add It To Codex Or Claude Code
 
@@ -21,7 +21,22 @@ uvx local-gpu-imagegen setup codex --apply
 uvx local-gpu-imagegen setup claude-code --apply
 ```
 
-Checkpoint: setup JSON reports `applied: true`. The command delegates to the client's official MCP command and does not edit its configuration file directly.
+Checkpoint: setup JSON reports `applied: true`. The command delegates to the
+client's official MCP command and does not edit its configuration file directly.
+It registers the resolved `uvx` executable with this version-pinned server
+command, rather than relying on a console script from the temporary `uvx`
+environment:
+
+```text
+uvx --from local-gpu-imagegen==0.8.1 local-gpu-imagegen serve
+```
+
+If setup reports `client_setup_drift`, the existing entry uses a different
+launcher. Do not edit client configuration directly. Run the selected client's
+documented remove command under [Roll Back Client Setup](#roll-back-client-setup),
+then run its setup command once more. Starting ComfyUI cannot repair an MCP
+launcher failure; backend readiness is checked only after the client loads the
+server.
 
 ## 3. Restart Or Reload The Client
 

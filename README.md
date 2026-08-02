@@ -14,6 +14,13 @@ uvx local-gpu-imagegen verify
 uvx local-gpu-imagegen setup codex --apply
 ```
 
+Setup stores a resolved, version-pinned launcher equivalent to
+`uvx --from local-gpu-imagegen==0.8.1 local-gpu-imagegen serve`; it does not
+depend on a console script from the temporary `uvx` environment. If an older
+entry reports `client_setup_drift`, remove only that client entry and apply
+setup again. Starting ComfyUI does not repair an MCP launcher failure; backend
+readiness is checked after the client loads the server.
+
 Ask Codex:
 
 ```text
@@ -97,7 +104,7 @@ Expected result:
   "ok": true,
   "transport": "stdio",
   "python": "<current-python>",
-  "server": {"name": "local-gpu-imagegen", "version": "0.8.0"},
+  "server": {"name": "local-gpu-imagegen", "version": "0.8.1"},
   "protocolVersion": "2024-11-05",
   "tools": [
     "local_gpu_branch_run",

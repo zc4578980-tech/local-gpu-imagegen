@@ -119,7 +119,7 @@ class RepositoryHygieneTests(unittest.TestCase):
             "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
         )
         self.assertEqual(server["name"], "io.github.zc4578980-tech/local-gpu-imagegen")
-        self.assertEqual(server["version"], "0.8.0")
+        self.assertEqual(server["version"], "0.8.1")
         self.assertLessEqual(len(server["description"]), 100)
         self.assertIn("MCP-first control plane", server["description"])
         self.assertEqual(server["description"], plugin["description"])
@@ -138,7 +138,7 @@ class RepositoryHygieneTests(unittest.TestCase):
                 "registryType": "pypi",
                 "registryBaseUrl": "https://pypi.org",
                 "identifier": "local-gpu-imagegen",
-                "version": "0.8.0",
+                "version": "0.8.1",
                 "runtimeHint": "uvx",
                 "packageArguments": [
                     {"type": "positional", "value": "serve"},
@@ -156,7 +156,7 @@ class RepositoryHygieneTests(unittest.TestCase):
         )
         self.assertIn("awesome-mcp-servers", listings)
         self.assertIn("Glama", listings)
-        self.assertIn("local-gpu-imagegen==0.8.0", listings)
+        self.assertIn("local-gpu-imagegen==0.8.1", listings)
         self.assertIn("Status: prepared, not submitted", listings)
         self.assertIn(
             "not publishable release-set artifacts",

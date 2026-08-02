@@ -230,25 +230,25 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         metadata_mode: int | None = None,
         wheel_headers: str = "Wheel-Version: 1.0\nTag: py3-none-any\n",
     ) -> Path:
-        wheel = root / "local_gpu_imagegen-0.8.0-py3-none-any.whl"
+        wheel = root / "local_gpu_imagegen-0.8.1-py3-none-any.whl"
         metadata = metadata or (
-            "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.0\n"
+            "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.1\n"
             "Requires-Python: >=3.11\n\n"
         )
         with zipfile.ZipFile(wheel, "w") as archive:
-            archive.writestr("local_gpu_imagegen/__init__.py", '__version__ = "0.8.0"\n')
+            archive.writestr("local_gpu_imagegen/__init__.py", '__version__ = "0.8.1"\n')
             if include_metadata:
                 if metadata_mode is None:
-                    archive.writestr("local_gpu_imagegen-0.8.0.dist-info/METADATA", metadata)
+                    archive.writestr("local_gpu_imagegen-0.8.1.dist-info/METADATA", metadata)
                 else:
-                    info = zipfile.ZipInfo("local_gpu_imagegen-0.8.0.dist-info/METADATA")
+                    info = zipfile.ZipInfo("local_gpu_imagegen-0.8.1.dist-info/METADATA")
                     info.external_attr = metadata_mode << 16
                     archive.writestr(info, metadata)
             archive.writestr(
-                "local_gpu_imagegen-0.8.0.dist-info/WHEEL",
+                "local_gpu_imagegen-0.8.1.dist-info/WHEEL",
                 wheel_headers,
             )
-            archive.writestr("local_gpu_imagegen-0.8.0.dist-info/RECORD", "")
+            archive.writestr("local_gpu_imagegen-0.8.1.dist-info/RECORD", "")
             if extra_dist_info:
                 archive.writestr("other-1.0.dist-info/METADATA", metadata)
             if extra_entry is not None:
@@ -275,7 +275,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
         results, facts = checks.inspect_wheel(root, wheel, digest)
         self.assertEqual(self.blocked_ids(results), set())
-        self.assertEqual(facts["version"], "0.8.0")
+        self.assertEqual(facts["version"], "0.8.1")
         self.assertEqual(facts["registry_identifier"], "local-gpu-imagegen")
 
     def test_wheel_returns_sorted_unique_checks_with_explicit_dist_info(self) -> None:
@@ -315,7 +315,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
 
     def test_wheel_allows_only_packaged_public_model_descriptors(self) -> None:
         prefix = (
-            "local_gpu_imagegen-0.8.0.data/data/share/local-gpu-imagegen/"
+            "local_gpu_imagegen-0.8.1.data/data/share/local-gpu-imagegen/"
             "profiles/models/"
         )
         root = self.make_release_root()
@@ -327,7 +327,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             prefix + "private.safetensors",
             prefix + "nested/private.json",
             "package/profiles/models/public.json",
-            "local_gpu_imagegen-0.8.0.data/data/share/local-gpu-imagegen/"
+            "local_gpu_imagegen-0.8.1.data/data/share/local-gpu-imagegen/"
             "profiles/Models/public.json",
         ):
             with self.subTest(entry=entry):
@@ -341,7 +341,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         wheel = self.make_wheel(
             root,
             extra_entry=(
-                "local_gpu_imagegen-0.8.0.data/data/share/local-gpu-imagegen/"
+                "local_gpu_imagegen-0.8.1.data/data/share/local-gpu-imagegen/"
                 "profiles/models/public.json/"
             ),
             extra_content="",
@@ -376,7 +376,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         root = self.make_release_root()
         wheel = self.make_wheel(
             root,
-            metadata="Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.0\n"
+            metadata="Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.1\n"
             "Requires-Python: >=3.12\nRequires-Dist: requests\n\n",
         )
         results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
@@ -395,11 +395,11 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
     def test_wheel_rejects_duplicate_or_conflicting_metadata_identity_headers(self) -> None:
         identity_headers = {
             "Name": ("local-gpu-imagegen", "other-project"),
-            "Version": ("0.8.0", "9.9.9"),
+            "Version": ("0.8.1", "9.9.9"),
             "Requires-Python": (">=3.11", ">=3.12"),
         }
         base = (
-            "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.0\n"
+            "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.1\n"
             "Requires-Python: >=3.11\n"
         )
         for header, (expected, conflicting) in identity_headers.items():
@@ -475,7 +475,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
 
     def test_wheel_rejects_parser_defects_in_metadata_and_wheel_headers(self) -> None:
         malformed_metadata = (
-            "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.0\n"
+            "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.1\n"
             "Requires-Python: >=3.11\nBad Header: value\n\n"
         )
         malformed_wheel = "Wheel-Version: 1.0\nTag: py3-none-any\nBad Header: value\n\n"
@@ -491,7 +491,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
 
     def test_registry_descriptor_rejects_duplicate_keys_at_every_object_level(self) -> None:
         replacements = (
-            ('"version": "0.8.0",', '"version": "0.8.0",\n  "version": "0.8.0",'),
+            ('"version": "0.8.1",', '"version": "0.8.1",\n  "version": "0.8.1",'),
             ('"runtimeHint": "uvx",', '"runtimeHint": "uvx",\n      "runtimeHint": "uvx",'),
             ('"type": "stdio"', '"type": "stdio",\n        "type": "stdio"'),
         )
@@ -983,8 +983,8 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", UserWarning)
                 archive.writestr(
-                    "local_gpu_imagegen-0.8.0.dist-info/METADATA",
-                    "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.0\n"
+                    "local_gpu_imagegen-0.8.1.dist-info/METADATA",
+                    "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.1\n"
                     "Requires-Python: >=3.11\n\n",
                 )
         results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
@@ -1081,7 +1081,7 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
             "version": [3, 12],
             "verify": {
                 "ok": True,
-                "server": {"version": "0.8.0"},
+                "server": {"version": "0.8.1"},
                 "protocolVersion": "2024-11-05",
                 "tools": list(checks.EXPECTED_TOOLS),
             },
@@ -1138,7 +1138,7 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
             {
                 "release_python_version": [3, 12],
                 "venv_python_version": [3, 12],
-                "version": "0.8.0",
+                "version": "0.8.1",
                 "protocol": "2024-11-05",
                 "tool_count": 17,
                 "tools": list(checks.EXPECTED_TOOLS),
@@ -1314,22 +1314,22 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
         metadata = (
             "Metadata-Version: 2.4\n"
             "Name: local-gpu-imagegen\n"
-            "Version: 0.8.0\n"
+            "Version: 0.8.1\n"
             "Requires-Python: >=3.11\n\n"
         )
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr(
-                "local_gpu_imagegen/__init__.py", '__version__ = "0.8.0"\n'
+                "local_gpu_imagegen/__init__.py", '__version__ = "0.8.1"\n'
             )
             archive.writestr(
-                "local_gpu_imagegen-0.8.0.dist-info/METADATA", metadata
+                "local_gpu_imagegen-0.8.1.dist-info/METADATA", metadata
             )
             archive.writestr(
-                "local_gpu_imagegen-0.8.0.dist-info/WHEEL",
+                "local_gpu_imagegen-0.8.1.dist-info/WHEEL",
                 "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\n"
                 "Tag: py3-none-any\n",
             )
-            archive.writestr("local_gpu_imagegen-0.8.0.dist-info/RECORD", "")
+            archive.writestr("local_gpu_imagegen-0.8.1.dist-info/RECORD", "")
 
         digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
         base_command = [
@@ -1445,7 +1445,7 @@ class ReleaseCandidateInstalledTests(unittest.TestCase):
 
     def test_installed_contract_requires_exact_version_protocol_and_tools(self) -> None:
         cases = (
-            ("version", "installed_version_mismatch", "0.8.1"),
+            ("version", "installed_version_mismatch", "9.9.9"),
             ("protocol", "installed_protocol_mismatch", "2025-01-01"),
             ("tools", "installed_tool_contract_mismatch", list(reversed(checks.EXPECTED_TOOLS))),
         )
@@ -1726,7 +1726,7 @@ class ReleaseCandidateReportTests(unittest.TestCase):
                     },
                 ),
             ),
-            patch.object(checks, "run_installed_checks", return_value=(installed_checks, {"version": "0.8.0"})),
+            patch.object(checks, "run_installed_checks", return_value=(installed_checks, {"version": "0.8.1"})),
         ):
             report = checks.validate_candidate(
                 root=self.root,

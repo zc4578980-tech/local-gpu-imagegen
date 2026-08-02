@@ -2,13 +2,20 @@
 
 ## Verified Setup Boundary
 
-The Codex and Claude Code official CLI setup contracts are parsed and checked against the same installed command:
+The Codex and Claude Code official CLI setup contracts are parsed and checked
+against the same version-pinned `uvx` command:
 
 ```text
-local-gpu-imagegen serve
+uvx --from local-gpu-imagegen==0.8.1 local-gpu-imagegen serve
 ```
 
-For each contract, the model-free verifier launches the equivalent local stdio server, checks its `0.8.0` server identity and protocol version, and requires exactly seventeen tools. This is a **Configuration contract** backed by each client's official CLI setup shape plus stdio-launch verification. It is not a real hosted LLM session, UI integration test, or proof that either client completed an image-generation run.
+At apply time, setup resolves `uvx` to an executable path before delegating to
+the client's official CLI. For each contract, the model-free verifier requires
+that launcher to be executable, launches the equivalent local stdio server,
+checks its `0.8.1` server identity and protocol version, and requires exactly seventeen tools. This is a **Configuration contract** backed by each client's
+official CLI setup shape, launcher resolution, and equivalent stdio-launch
+verification. It is not a real hosted LLM session, UI integration test, or
+proof that either client completed an image-generation run.
 
 Run the checks with:
 
@@ -25,13 +32,13 @@ The retained Codex `0.7.0` generation is historical evidence and is not a v0.8 r
 Preview the exact official setup plan without changing configuration:
 
 ```shell
-local-gpu-imagegen setup codex
+uvx local-gpu-imagegen setup codex
 ```
 
 Apply it explicitly, then remove it when no longer needed:
 
 ```shell
-local-gpu-imagegen setup codex --apply
+uvx local-gpu-imagegen setup codex --apply
 codex mcp remove local-gpu-imagegen
 ```
 
@@ -40,12 +47,20 @@ codex mcp remove local-gpu-imagegen
 Preview, apply, and remove the user-scoped official setup:
 
 ```shell
-local-gpu-imagegen setup claude-code
-local-gpu-imagegen setup claude-code --apply
+uvx local-gpu-imagegen setup claude-code
+uvx local-gpu-imagegen setup claude-code --apply
 claude mcp remove --scope user local-gpu-imagegen
 ```
 
 The project delegates mutation to each client's official `mcp add` command. It does not directly edit TOML or JSON configuration files.
+
+An entry created by the earlier bare-command setup may exist while still being
+unable to launch after the temporary `uvx` process exits. The corrected setup
+compares the observed command with the expected resolved launcher. If it reports
+`client_setup_drift`, use the selected client's remove command above, then apply
+setup once more. It fails closed instead of overwriting an existing entry.
+Starting ComfyUI does not repair an MCP launcher failure; backend reachability
+is a separate check after the client has loaded the server.
 
 ## Legacy Claude Desktop Template
 
@@ -57,8 +72,13 @@ Other MCP clients can adapt the same stdio command and arguments, but no other n
 
 ```json
 {
-  "command": "local-gpu-imagegen",
-  "args": ["serve"]
+  "command": "uvx",
+  "args": [
+    "--from",
+    "local-gpu-imagegen==0.8.1",
+    "local-gpu-imagegen",
+    "serve"
+  ]
 }
 ```
 

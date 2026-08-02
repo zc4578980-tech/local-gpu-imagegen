@@ -6,14 +6,16 @@ import subprocess
 import sys
 from typing import Sequence
 
+from local_gpu_imagegen.client_setup import SERVER_COMMAND
+
 
 def render_client_config(client: str) -> str:
     if client == "codex":
         return "\n".join(
             (
                 "[mcp_servers.local-gpu-imagegen]",
-                'command = "local-gpu-imagegen"',
-                'args = ["serve"]',
+                f'command = "{SERVER_COMMAND[0]}"',
+                f"args = {json.dumps(list(SERVER_COMMAND[1:]))}",
             )
         )
     if client == "claude-desktop":
@@ -21,8 +23,8 @@ def render_client_config(client: str) -> str:
             {
                 "mcpServers": {
                     "local-gpu-imagegen": {
-                        "command": "local-gpu-imagegen",
-                        "args": ["serve"],
+                        "command": SERVER_COMMAND[0],
+                        "args": list(SERVER_COMMAND[1:]),
                     }
                 }
             },

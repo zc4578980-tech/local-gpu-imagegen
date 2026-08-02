@@ -11,7 +11,7 @@
 uvx local-gpu-imagegen verify
 ```
 
-检查点：JSON 应报告 `ok: true`、版本 `0.8.0`，并且恰好包含 17 个工具。
+检查点：JSON 应报告 `ok: true`、版本 `0.8.1`，并且恰好包含 17 个工具。
 如果不符合，请停止并查看[首次运行问题](#首次运行问题)。
 
 ## 2. 添加到 Codex 或 Claude Code
@@ -24,7 +24,17 @@ uvx local-gpu-imagegen setup claude-code --apply
 ```
 
 检查点：setup JSON 应报告 `applied: true`。该命令会委托给客户端官方的 MCP
-命令，不会直接编辑客户端配置文件。
+命令，不会直接编辑客户端配置文件。它会注册已经解析到的 `uvx` 可执行文件和下面这条
+固定当前版本的服务器命令，而不是依赖临时 `uvx` 环境中的控制台脚本：
+
+```text
+uvx --from local-gpu-imagegen==0.8.1 local-gpu-imagegen serve
+```
+
+如果 setup 报告 `client_setup_drift`，说明已有条目使用了不同的启动器。不要直接编辑
+客户端配置；请先执行[回滚客户端配置](#回滚客户端配置)中对应客户端的 remove 命令，
+再重新执行一次 setup。启动 ComfyUI 不能修复 MCP 启动器故障；只有客户端成功加载
+服务器后，才进入后端就绪检查。
 
 ## 3. 重启或重新加载客户端
 

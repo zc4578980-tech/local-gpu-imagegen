@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import json
+import os
+import re
+import shlex
 import shutil
 import subprocess
 from collections.abc import Callable, Sequence
 
+from local_gpu_imagegen import __version__
+
 
 SERVER_NAME = "local-gpu-imagegen"
-SERVER_COMMAND = ("local-gpu-imagegen", "serve")
+SERVER_COMMAND = (
+    "uvx",
+    "--from",
+    f"local-gpu-imagegen=={__version__}",
+    "local-gpu-imagegen",
+    "serve",
+)
 SUBPROCESS_TIMEOUT_SECONDS = 15
 MAX_ERROR_LENGTH = 500
 
@@ -59,6 +71,51 @@ def _command(executable: str, value: object) -> list[str]:
     return [executable, *_arguments(value)]
 
 
+def _same_executable(observed: str, expected: str) -> bool:
+    return os.path.normcase(os.path.normpath(observed)) == os.path.normcase(
+        os.path.normpath(expected)
+    )
+
+
+def _existing_server_command(client: str, stdout: str) -> list[str] | None:
+    if client == "codex":
+        try:
+            document = json.loads(stdout)
+        except json.JSONDecodeError:
+            return None
+        transport = document.get("transport")
+        if not isinstance(transport, dict):
+            return None
+        command = transport.get("command")
+        args = transport.get("args")
+        if not isinstance(command, str) or not isinstance(args, list):
+            return None
+        if not all(isinstance(item, str) for item in args):
+            return None
+        return [command, *args]
+    if client == "claude-code":
+        command_match = re.search(r"(?m)^\s*Command:\s*(.+?)\s*$", stdout)
+        args_match = re.search(r"(?m)^\s*Args:\s*(.*?)\s*$", stdout)
+        if command_match is None or args_match is None:
+            return None
+        try:
+            args = shlex.split(args_match.group(1), posix=False)
+        except ValueError:
+            return None
+        return [command_match.group(1), *args]
+    return None
+
+
+def _existing_matches(client: str, stdout: str, expected: Sequence[str]) -> bool:
+    observed = _existing_server_command(client, stdout)
+    return bool(
+        observed
+        and len(observed) == len(expected)
+        and _same_executable(observed[0], expected[0])
+        and observed[1:] == list(expected[1:])
+    )
+
+
 def setup_contract(client: str) -> dict[str, object]:
     definition = CLIENTS.get(client)
     if definition is None:
@@ -93,6 +150,10 @@ def build_setup_plan(
     executable = executable_lookup(binary)
     if executable is None:
         raise RuntimeError(f"client_not_found:{binary}")
+    server_executable = executable_lookup(SERVER_COMMAND[0])
+    if server_executable is None:
+        raise RuntimeError(f"server_launcher_not_found:{SERVER_COMMAND[0]}")
+    server_command = [server_executable, *SERVER_COMMAND[1:]]
 
     version_result = _run(runner, [executable, "--version"])
     if version_result.returncode != 0:
@@ -102,16 +163,29 @@ def build_setup_plan(
         raise RuntimeError(f"client_version_failed:{client}")
 
     existing_result = _run(runner, _command(executable, definition["get"]))
+    add_args = _arguments(definition["add"])
+    add_args[-len(SERVER_COMMAND) :] = server_command
+    existing = existing_result.returncode == 0
+    existing_matches = existing and _existing_matches(
+        client,
+        existing_result.stdout or "",
+        server_command,
+    )
     return {
         "client": client,
         "detected": True,
         "version": version[:MAX_ERROR_LENGTH],
-        "server": {"name": SERVER_NAME, "command": list(SERVER_COMMAND)},
-        "existing": existing_result.returncode == 0,
-        "add_command": _command(executable, definition["add"]),
+        "server": {"name": SERVER_NAME, "command": server_command},
+        "existing": existing,
+        "existing_matches": existing_matches,
+        "add_command": [executable, *add_args],
         "remove_command": _command(executable, definition["remove"]),
         "applied": False,
-        "status": "already_configured" if existing_result.returncode == 0 else "planned",
+        "status": (
+            "already_configured"
+            if existing_matches
+            else "configuration_drift" if existing else "planned"
+        ),
     }
 
 
@@ -121,7 +195,10 @@ def apply_setup_plan(
     runner: Runner = subprocess.run,
 ) -> dict[str, object]:
     if plan.get("existing") is True:
-        return {**plan, "status": "already_configured"}
+        if plan.get("existing_matches") is True:
+            return {**plan, "status": "already_configured"}
+        client = plan.get("client", "unknown")
+        raise RuntimeError(f"client_setup_drift:{client}:remove_then_reapply")
 
     add_command = plan.get("add_command")
     if not isinstance(add_command, list) or not all(

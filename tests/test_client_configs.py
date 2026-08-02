@@ -14,7 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 class ClientConfigTests(unittest.TestCase):
     def test_named_setup_contracts_resolve_to_the_same_installed_command(self) -> None:
-        from local_gpu_imagegen.client_setup import setup_contract
+        from local_gpu_imagegen.client_setup import SERVER_COMMAND, setup_contract
 
         codex = setup_contract("codex")
         claude = setup_contract("claude-code")
@@ -23,7 +23,7 @@ class ClientConfigTests(unittest.TestCase):
             codex["server"],
             {
                 "name": "local-gpu-imagegen",
-                "command": ["local-gpu-imagegen", "serve"],
+                "command": list(SERVER_COMMAND),
             },
         )
         self.assertEqual(codex["add_args"][:3], ["mcp", "add", "local-gpu-imagegen"])
@@ -31,9 +31,13 @@ class ClientConfigTests(unittest.TestCase):
 
     def test_claude_desktop_remains_a_legacy_render_only_template(self) -> None:
         from local_gpu_imagegen.cli import render_client_config
+        from local_gpu_imagegen.client_setup import SERVER_COMMAND
 
         claude = json.loads(render_client_config("claude-desktop"))["mcpServers"]["local-gpu-imagegen"]
-        self.assertEqual(claude, {"command": "local-gpu-imagegen", "args": ["serve"]})
+        self.assertEqual(
+            claude,
+            {"command": SERVER_COMMAND[0], "args": list(SERVER_COMMAND[1:])},
+        )
 
     def test_verifier_checks_both_contracts_and_exact_stdio_surface(self) -> None:
         import verify_client_configs
@@ -46,9 +50,12 @@ class ClientConfigTests(unittest.TestCase):
         self.assertEqual(set(report["legacy_templates"]), {"claude-desktop"})
         for client in report["clients"].values():
             self.assertTrue(client["config_valid"])
+            self.assertIs(client["launcher_resolved"], True)
+            self.assertEqual(client["launcher"], "uvx")
             self.assertEqual(client["configuration_kind"], "official_cli_setup_contract")
             self.assertEqual(client["server"]["name"], "local-gpu-imagegen")
             self.assertEqual(len(client["tools"]), 17)
+        self.assertNotIn(str(Path.home()), json.dumps(report))
         self.assertEqual(
             report["legacy_templates"]["claude-desktop"]["configuration_kind"],
             "render_only_template",
@@ -71,6 +78,12 @@ class ClientConfigTests(unittest.TestCase):
         text = (ROOT / "docs" / "client-compatibility.md").read_text(encoding="utf-8")
         self.assertIn("Configuration contract", text)
         self.assertIn("not a real hosted LLM session", text)
+        self.assertIn(
+            "uvx --from local-gpu-imagegen==0.8.1 local-gpu-imagegen serve",
+            text,
+        )
+        self.assertIn("client_setup_drift", text)
+        self.assertIn("Starting ComfyUI does not repair", text)
         self.assertIn("Codex", text)
         self.assertIn("Claude Desktop", text)
         self.assertIn("Unverified client templates", text)

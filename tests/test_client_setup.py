@@ -21,12 +21,14 @@ class RecordingRunner:
         version_returncode: int = 0,
         add_returncode: int = 0,
         stderr: str = "",
+        get_stdout: str | None = None,
     ) -> None:
         self.get_returncode = get_returncode
         self.version = version
         self.version_returncode = version_returncode
         self.add_returncode = add_returncode
         self.stderr = stderr
+        self.get_stdout = get_stdout
         self.calls: list[list[str]] = []
 
     def __call__(
@@ -61,7 +63,11 @@ class RecordingRunner:
             return subprocess.CompletedProcess(
                 command,
                 self.get_returncode,
-                stdout="configured\n" if self.get_returncode == 0 else "",
+                stdout=(
+                    self.get_stdout
+                    if self.get_stdout is not None
+                    else "configured\n" if self.get_returncode == 0 else ""
+                ),
                 stderr=self.stderr,
             )
         if "add" in command:
@@ -94,7 +100,61 @@ class RecordingRunner:
 
 
 class ClientSetupTests(unittest.TestCase):
+    def test_apply_rejects_an_existing_entry_with_a_different_launcher(self) -> None:
+        from local_gpu_imagegen.client_setup import apply_setup_plan, build_setup_plan
+
+        executables = {
+            "claude": "C:/bin/claude.exe",
+            "uvx": "C:/bin/uvx.exe",
+        }
+        plan = build_setup_plan(
+            "claude-code",
+            executable_lookup=executables.get,
+            runner=RecordingRunner(
+                get_returncode=0,
+                get_stdout=(
+                    "local-gpu-imagegen:\n"
+                    "  Type: stdio\n"
+                    "  Command: local-gpu-imagegen\n"
+                    "  Args: serve\n"
+                ),
+            ),
+        )
+
+        self.assertEqual(plan["status"], "configuration_drift")
+        self.assertFalse(plan["existing_matches"])
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "client_setup_drift:claude-code:remove_then_reapply",
+        ):
+            apply_setup_plan(plan, runner=RecordingRunner())
+
+    def test_setup_plan_registers_a_resolved_version_pinned_uvx_launcher(self) -> None:
+        from local_gpu_imagegen import __version__
+        from local_gpu_imagegen.client_setup import build_setup_plan
+
+        executables = {
+            "claude": "C:/bin/claude.exe",
+            "uvx": "C:/bin/uvx.exe",
+        }
+        plan = build_setup_plan(
+            "claude-code",
+            executable_lookup=executables.get,
+            runner=RecordingRunner(get_returncode=1, version="2.1.220"),
+        )
+
+        server_command = [
+            "C:/bin/uvx.exe",
+            "--from",
+            f"local-gpu-imagegen=={__version__}",
+            "local-gpu-imagegen",
+            "serve",
+        ]
+        self.assertEqual(plan["server"]["command"], server_command)
+        self.assertEqual(plan["add_command"][-len(server_command) :], server_command)
+
     def test_static_contract_omits_executable_and_preserves_official_commands(self) -> None:
+        from local_gpu_imagegen import __version__
         from local_gpu_imagegen.client_setup import setup_contract
 
         contract = setup_contract("claude-code")
@@ -104,7 +164,13 @@ class ClientSetupTests(unittest.TestCase):
             contract["server"],
             {
                 "name": "local-gpu-imagegen",
-                "command": ["local-gpu-imagegen", "serve"],
+                "command": [
+                    "uvx",
+                    "--from",
+                    f"local-gpu-imagegen=={__version__}",
+                    "local-gpu-imagegen",
+                    "serve",
+                ],
             },
         )
         self.assertEqual(
@@ -116,6 +182,9 @@ class ClientSetupTests(unittest.TestCase):
                 "user",
                 "local-gpu-imagegen",
                 "--",
+                "uvx",
+                "--from",
+                f"local-gpu-imagegen=={__version__}",
                 "local-gpu-imagegen",
                 "serve",
             ],
@@ -123,12 +192,17 @@ class ClientSetupTests(unittest.TestCase):
         self.assertNotIn("executable", contract)
 
     def test_codex_plan_is_read_only_and_exact(self) -> None:
+        from local_gpu_imagegen import __version__
         from local_gpu_imagegen.client_setup import build_setup_plan
 
         runner = RecordingRunner(get_returncode=1, version="codex-cli 0.144.5")
+        executables = {
+            "codex": "C:/bin/codex.exe",
+            "uvx": "C:/bin/uvx.exe",
+        }
         plan = build_setup_plan(
             "codex",
-            executable_lookup=lambda _binary: "C:/bin/codex.exe",
+            executable_lookup=executables.get,
             runner=runner,
         )
 
@@ -142,6 +216,9 @@ class ClientSetupTests(unittest.TestCase):
                 "add",
                 "local-gpu-imagegen",
                 "--",
+                "C:/bin/uvx.exe",
+                "--from",
+                f"local-gpu-imagegen=={__version__}",
                 "local-gpu-imagegen",
                 "serve",
             ],
@@ -158,11 +235,16 @@ class ClientSetupTests(unittest.TestCase):
         self.assertNotIn(plan["add_command"], runner.calls)
 
     def test_claude_code_plan_uses_user_scope(self) -> None:
+        from local_gpu_imagegen import __version__
         from local_gpu_imagegen.client_setup import build_setup_plan
 
+        executables = {
+            "claude": "C:/bin/claude.exe",
+            "uvx": "C:/bin/uvx.exe",
+        }
         plan = build_setup_plan(
             "claude-code",
-            executable_lookup=lambda _binary: "C:/bin/claude.exe",
+            executable_lookup=executables.get,
             runner=RecordingRunner(get_returncode=1, version="2.1.195"),
         )
 
@@ -176,6 +258,9 @@ class ClientSetupTests(unittest.TestCase):
                 "user",
                 "local-gpu-imagegen",
                 "--",
+                "C:/bin/uvx.exe",
+                "--from",
+                f"local-gpu-imagegen=={__version__}",
                 "local-gpu-imagegen",
                 "serve",
             ],
@@ -193,12 +278,36 @@ class ClientSetupTests(unittest.TestCase):
         )
 
     def test_apply_is_idempotent_for_an_existing_entry(self) -> None:
+        import json
+
+        from local_gpu_imagegen import __version__
         from local_gpu_imagegen.client_setup import apply_setup_plan, build_setup_plan
 
-        discovery_runner = RecordingRunner(get_returncode=0)
+        server_args = [
+            "--from",
+            f"local-gpu-imagegen=={__version__}",
+            "local-gpu-imagegen",
+            "serve",
+        ]
+        discovery_runner = RecordingRunner(
+            get_returncode=0,
+            get_stdout=json.dumps(
+                {
+                    "transport": {
+                        "type": "stdio",
+                        "command": "C:/bin/uvx.exe",
+                        "args": server_args,
+                    }
+                }
+            ),
+        )
+        executables = {
+            "codex": "C:/bin/codex.exe",
+            "uvx": "C:/bin/uvx.exe",
+        }
         plan = build_setup_plan(
             "codex",
-            executable_lookup=lambda _binary: "codex",
+            executable_lookup=executables.get,
             runner=discovery_runner,
         )
         apply_runner = RecordingRunner()
@@ -207,6 +316,40 @@ class ClientSetupTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "already_configured")
         self.assertFalse(result["applied"])
+        self.assertEqual(apply_runner.calls, [])
+
+    def test_claude_existing_matching_launcher_is_idempotent(self) -> None:
+        from local_gpu_imagegen import __version__
+        from local_gpu_imagegen.client_setup import apply_setup_plan, build_setup_plan
+
+        executable = "C:/Users/test/.local/bin/uvx.exe"
+        args = (
+            f"--from local-gpu-imagegen=={__version__} "
+            "local-gpu-imagegen serve"
+        )
+        executables = {
+            "claude": "C:/bin/claude.exe",
+            "uvx": executable,
+        }
+        plan = build_setup_plan(
+            "claude-code",
+            executable_lookup=executables.get,
+            runner=RecordingRunner(
+                get_returncode=0,
+                get_stdout=(
+                    "local-gpu-imagegen:\n"
+                    "  Type: stdio\n"
+                    f"  Command: {executable}\n"
+                    f"  Args: {args}\n"
+                ),
+            ),
+        )
+        apply_runner = RecordingRunner()
+
+        result = apply_setup_plan(plan, runner=apply_runner)
+
+        self.assertEqual(result["status"], "already_configured")
+        self.assertTrue(result["existing_matches"])
         self.assertEqual(apply_runner.calls, [])
 
     def test_apply_invokes_only_the_planned_official_command(self) -> None:
@@ -232,6 +375,11 @@ class ClientSetupTests(unittest.TestCase):
             build_setup_plan("unknown")
         with self.assertRaisesRegex(RuntimeError, "client_not_found:codex"):
             build_setup_plan("codex", executable_lookup=lambda _binary: None)
+        with self.assertRaisesRegex(RuntimeError, "server_launcher_not_found:uvx"):
+            build_setup_plan(
+                "codex",
+                executable_lookup=lambda binary: "codex" if binary == "codex" else None,
+            )
         with self.assertRaisesRegex(RuntimeError, "client_version_failed:codex"):
             build_setup_plan(
                 "codex",

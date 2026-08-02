@@ -123,20 +123,29 @@ class CliTests(unittest.TestCase):
                     resolve_resource_root()
 
     def test_config_emits_codex_toml_without_checkout_paths(self) -> None:
+        from local_gpu_imagegen import __version__
         from local_gpu_imagegen.cli import render_client_config
 
         rendered = render_client_config("codex")
         self.assertIn("[mcp_servers.local-gpu-imagegen]", rendered)
-        self.assertIn('command = "local-gpu-imagegen"', rendered)
-        self.assertIn('args = ["serve"]', rendered)
+        self.assertIn('command = "uvx"', rendered)
+        self.assertIn(
+            f'args = ["--from", "local-gpu-imagegen=={__version__}", '
+            '"local-gpu-imagegen", "serve"]',
+            rendered,
+        )
         self.assertNotIn(str(ROOT), rendered)
 
     def test_config_emits_claude_desktop_json_without_checkout_paths(self) -> None:
+        from local_gpu_imagegen.client_setup import SERVER_COMMAND
         from local_gpu_imagegen.cli import render_client_config
 
         document = json.loads(render_client_config("claude-desktop"))
         server = document["mcpServers"]["local-gpu-imagegen"]
-        self.assertEqual(server, {"command": "local-gpu-imagegen", "args": ["serve"]})
+        self.assertEqual(
+            server,
+            {"command": SERVER_COMMAND[0], "args": list(SERVER_COMMAND[1:])},
+        )
         self.assertNotIn(str(ROOT), json.dumps(document))
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -97,7 +98,7 @@ class PackagingTests(unittest.TestCase):
     def test_metadata_defines_preview_cli(self) -> None:
         document = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         project = document["project"]
-        self.assertEqual(project["version"], "0.8.0")
+        self.assertEqual(project["version"], "0.8.1")
         self.assertEqual(project["license"], "MIT")
         self.assertEqual(
             project["scripts"]["local-gpu-imagegen"],
@@ -144,7 +145,7 @@ class PackagingTests(unittest.TestCase):
             results,
         )
         self.assertEqual(facts["sha256"], digest)
-        self.assertEqual(facts["version"], "0.8.0")
+        self.assertEqual(facts["version"], "0.8.1")
 
     def test_installed_wheel_verifies_from_outside_checkout(self) -> None:
         environment = dict(os.environ)
@@ -185,10 +186,101 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(report["status"], "planned")
         self.assertFalse(report["applied"])
         self.assertEqual(
-            report["server"]["command"],
-            ["local-gpu-imagegen", "serve"],
+            report["server"]["command"][1:],
+            [
+                "--from",
+                "local-gpu-imagegen==0.8.1",
+                "local-gpu-imagegen",
+                "serve",
+            ],
+        )
+        self.assertEqual(
+            Path(report["server"]["command"][0]).name.lower(),
+            "uvx.exe" if os.name == "nt" else "uvx",
         )
         self.assertFalse(marker.exists())
+
+    def test_local_wheel_launches_through_offline_uvx_stdio(self) -> None:
+        uvx = shutil.which("uvx")
+        if uvx is None:
+            self.skipTest("uvx is required for the durable launcher integration check")
+
+        requests = "\n".join(
+            (
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/list",
+                        "params": {},
+                    }
+                ),
+            )
+        )
+        environment = dict(os.environ)
+        environment.pop("PYTHONPATH", None)
+        environment["UV_OFFLINE"] = "1"
+        environment["UV_NO_INDEX"] = "1"
+        environment["UV_CACHE_DIR"] = str(self.temp / "uv-cache")
+
+        completed = subprocess.run(
+            [
+                uvx,
+                "--from",
+                str(self.wheel),
+                "local-gpu-imagegen",
+                "serve",
+            ],
+            cwd=self.temp,
+            env=environment,
+            input=requests + "\n",
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+
+        responses = [
+            json.loads(line)
+            for line in completed.stdout.splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(len(responses), 2)
+        initialize = responses[0]["result"]
+        self.assertEqual(initialize["serverInfo"]["version"], "0.8.1")
+        self.assertEqual(initialize["protocolVersion"], "2024-11-05")
+        tools = responses[1]["result"]["tools"]
+        self.assertEqual(len(tools), 17)
+        self.assertEqual(
+            {tool["name"] for tool in tools},
+            {
+                "local_gpu_branch_run",
+                "local_gpu_cleanup_run",
+                "local_gpu_confirm_mask",
+                "local_gpu_discover_models",
+                "local_gpu_finalize_run",
+                "local_gpu_generate_image",
+                "local_gpu_generate_round",
+                "local_gpu_get_run",
+                "local_gpu_imagegen_check",
+                "local_gpu_inspect_workflow",
+                "local_gpu_list_profiles",
+                "local_gpu_prepare_mask",
+                "local_gpu_recommend_models",
+                "local_gpu_record_review",
+                "local_gpu_register_workflow",
+                "local_gpu_set_model_trust",
+                "local_gpu_start_run",
+            },
+        )
 
     @unittest.skipUnless(
         sys.version_info[:2] == (3, 12),
@@ -202,7 +294,7 @@ class PackagingTests(unittest.TestCase):
             [item for item in results if item["status"] == "blocked"],
             results,
         )
-        self.assertEqual(facts["version"], "0.8.0")
+        self.assertEqual(facts["version"], "0.8.1")
         self.assertEqual(facts["protocol"], "2024-11-05")
         self.assertEqual(facts["tool_count"], 17)
 
