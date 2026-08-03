@@ -110,6 +110,18 @@ def append_event(directory: Path, **overrides: object) -> dict[str, object]:
 
 
 class StarCampaignValidationTests(unittest.TestCase):
+    def test_tracked_campaigns_validate(self) -> None:
+        adoption_root = ROOT / "docs" / "evidence" / "adoption"
+        campaigns = sorted(
+            path for path in adoption_root.iterdir() if path.is_dir()
+        )
+        self.assertTrue(campaigns)
+        for campaign in campaigns:
+            with self.subTest(campaign=campaign.name):
+                report = validate_campaign(campaign)
+                self.assertTrue(report["ok"], report)
+                self.assertEqual(report["findings"], [])
+
     def test_empty_valid_campaign_is_measurement_incomplete(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             report = validate_campaign(write_campaign(Path(temporary)))

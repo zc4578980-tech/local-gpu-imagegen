@@ -32,6 +32,11 @@ With no approved authority or retained runs it returns `ok: true`, zero counts, 
 
 Each formal Release campaign owns `docs/evidence/adoption/<campaign_id>/campaign.json` and `docs/evidence/adoption/<campaign_id>/events.jsonl`. The first file fixes the repository, Release ID/tag/publication time, target, and timing policy. The second is canonical append-only JSONL linked by SHA-256.
 
+The current `v0.8.3-release-364342670` campaign recorded a zero-Star baseline
+37 minutes after publication. Validation classifies that observation as
+`degraded` and the unfinished campaign as `measurement_incomplete`; it is not
+reconstructed publication-time evidence.
+
 Collect and validate with the repository-maintenance scripts:
 
 ```powershell

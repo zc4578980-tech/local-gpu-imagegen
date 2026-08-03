@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "campaign_id": "v0.8.3-release-364342670",
+  "repository": "zc4578980-tech/local-gpu-imagegen",
+  "release": {
+    "id": 364342670,
+    "tag_name": "v0.8.3",
+    "html_url": "https://github.com/zc4578980-tech/local-gpu-imagegen/releases/tag/v0.8.3",
+    "published_at": "2026-08-03T16:13:32Z"
+  },
+  "goal": {
+    "metric": "net_new_repository_stars",
+    "target": 100,
+    "target_days": 30,
+    "baseline_grace_seconds": 300,
+    "collection_window_hours": 24
+  },
+  "events_file": "events.jsonl",
+  "hash_algorithm": "sha256"
+}

@@ -47,7 +47,7 @@ and a missed result does not retract the Release.
 
 ## Post-release adoption measurement
 
-- [ ] At formal GitHub Release publication time, initialize the append-only campaign baseline under `docs/evidence/adoption/<campaign_id>/` within five minutes when possible.
+- [x] Campaign `v0.8.3-release-364342670` is anchored to the formal GitHub Release publication time and recorded a truthful degraded baseline of zero Stars at `2026-08-03T16:50:55Z`, 37 minutes later. It is usable but must never be presented as an on-time publication count.
 - [ ] During the inclusive 24-hour T+30 collection window, append the repository-level Star total and validate the complete hash chain.
 - [ ] Measure the floor as T+30 total Stars minus baseline total Stars; `100 net-new GitHub Stars` is the minimum acceptable first-month outcome, not the target, and the operating target remains above it.
 - [ ] Record `goal_met`, `goal_missed`, or `measurement_incomplete` without interpolation or stargazer identities; an actual result below the floor is `goal_missed` and requires continued iteration, while a missed or incomplete result does not retract the Release.
