@@ -18,6 +18,15 @@ class RepositoryHygieneTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('"uv==0.11.16"', workflow)
 
+    def test_ci_uses_node24_actions(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "tests.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("actions/checkout@v7", workflow)
+        self.assertIn("actions/setup-python@v7", workflow)
+        self.assertNotIn("actions/checkout@v4", workflow)
+        self.assertNotIn("actions/setup-python@v5", workflow)
+
     def test_hash_bound_workflows_disable_checkout_eol_conversion(self) -> None:
         attributes = ROOT / ".gitattributes"
         self.assertTrue(attributes.is_file())
