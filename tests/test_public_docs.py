@@ -245,12 +245,15 @@ class PublicDocumentationTests(unittest.TestCase):
     def test_directory_docs_separate_submitted_and_blocked_channels(self) -> None:
         listings = DIRECTORY_LISTINGS.read_text(encoding="utf-8")
         checklist = RELEASE_CHECKLIST.read_text(encoding="utf-8")
+        github_listing = GITHUB_LISTING.read_text(encoding="utf-8")
 
         self.assertIn("awesome-mcp-servers#11452", listings)
         self.assertIn("check-submission", listings)
         self.assertIn("status `active`", listings)
         self.assertIn("Status: not submitted", listings)
         self.assertIn("Glama remains unsubmitted", checklist)
+        self.assertIn("PR `#11452`", github_listing)
+        self.assertIn("Glama remains unsubmitted", github_listing)
         self.assertNotIn("publication remains pending", listings)
 
     def test_publication_runbook_binds_exact_offline_candidate_before_remote_actions(
