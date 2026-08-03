@@ -26,13 +26,13 @@ from typing import Callable, Iterator
 
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-EXPECTED_WHEEL = "local_gpu_imagegen-0.8.2-py3-none-any.whl"
-EXPECTED_VERSION = "0.8.2"
+EXPECTED_WHEEL = "local_gpu_imagegen-0.8.3-py3-none-any.whl"
+EXPECTED_VERSION = "0.8.3"
 EXPECTED_REQUIRES_PYTHON = ">=3.11"
-EXPECTED_DIST_INFO = "local_gpu_imagegen-0.8.2.dist-info"
+EXPECTED_DIST_INFO = "local_gpu_imagegen-0.8.3.dist-info"
 EXPECTED_PROTOCOL = "2024-11-05"
 PUBLIC_MODEL_DESCRIPTOR_PARENT = PurePosixPath(
-    "local_gpu_imagegen-0.8.2.data/data/share/local-gpu-imagegen/"
+    "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
     "profiles/models"
 )
 PYTHON_VERSION_SCRIPT = "import json,sys; print(json.dumps(list(sys.version_info[:2])))"

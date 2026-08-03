@@ -79,7 +79,7 @@ class ClientConfigTests(unittest.TestCase):
         self.assertIn("Configuration contract", text)
         self.assertIn("not a real hosted LLM session", text)
         self.assertIn(
-            "uvx --from local-gpu-imagegen==0.8.2 local-gpu-imagegen serve",
+            "uvx --from local-gpu-imagegen==0.8.3 local-gpu-imagegen serve",
             text,
         )
         self.assertIn("client_setup_drift", text)

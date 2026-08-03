@@ -42,6 +42,31 @@ Checks:
 3. Set `LOCAL_GPU_IMAGEGEN_WEBUI_URL` or pass `--webui-url` when using a non-default port.
 4. Keep the URL on loopback unless remote exposure is intentional and secured.
 
+## Managed ComfyUI Does Not Start
+
+Managed startup is opt-in and supports one explicitly named Windows
+`ComfyUI_windows_portable` root. It never searches drives, installs ComfyUI,
+downloads a model, or adopts an existing process.
+
+Checks:
+
+1. Confirm the root contains `python_embeded\python.exe` and `ComfyUI\main.py`.
+2. Inspect the setup plan and require `serve --auto-start-comfyui`, the exact
+   resolved root, `http://127.0.0.1:8188`, and the intended timeout.
+3. Preserve Python's `-s` argument. Without it, user-site Torch packages can
+   contaminate the portable runtime and produce a Torch/TorchAudio CUDA mismatch.
+4. Inspect `backend-logs` under the Local GPU Imagegen state directory. Startup
+   failures return a machine-readable error and never trigger dependency repair.
+5. If setup reports `client_setup_drift`, remove only the existing MCP entry
+   with the client's official command, review the new plan, and apply once.
+
+The MCP transport starts without waiting for the full ComfyUI cold start. The
+first managed `local_gpu_imagegen_check` may wait up to the configured timeout.
+At MCP exit, an owned child is stopped only when its queue is empty. An existing
+backend is never stopped; an owned backend with a non-empty queue is retained
+and its cleanup status is written to stderr. If queue state cannot be verified,
+the owned process is also retained and reported as `retained_unknown_queue`.
+
 ## Discovery Plan Expired Or Changed
 
 `discovery_plan_expired` means the short-lived plan is no longer valid. `discovery_plan_changed` means mode, roots, exclusions, selected candidates, or endpoint facts differ from what was displayed. Request a new `plan` phase, show the complete scope again, and obtain the new exact confirmation. Never reuse an older confirmation.

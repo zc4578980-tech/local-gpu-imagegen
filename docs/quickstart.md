@@ -2,7 +2,10 @@
 
 [English](quickstart.md) | [简体中文](quickstart.zh-CN.md)
 
-This path is for Python 3.11 or 3.12 users whose supported backend and model are already running. It excludes backend installation, model downloads, and generation time.
+By default, this path is for Python 3.11 or 3.12 users whose supported backend and model are already running.
+An existing Windows portable ComfyUI may instead
+be explicitly registered for managed startup. This path excludes backend
+installation, model downloads, and generation time.
 
 ## 1. Verify The Installed Server
 
@@ -10,7 +13,7 @@ This path is for Python 3.11 or 3.12 users whose supported backend and model are
 uvx local-gpu-imagegen verify
 ```
 
-Checkpoint: the JSON reports `ok: true`, version `0.8.2`, and exactly seventeen tools. Stop and use [First-Run Problems](#first-run-problems) if it does not.
+Checkpoint: the JSON reports `ok: true`, version `0.8.3`, and exactly seventeen tools. Stop and use [First-Run Problems](#first-run-problems) if it does not.
 
 ## 2. Add It To Codex Or Claude Code
 
@@ -21,6 +24,20 @@ uvx local-gpu-imagegen setup codex --apply
 uvx local-gpu-imagegen setup claude-code --apply
 ```
 
+For an existing Windows portable ComfyUI that should start with the MCP server,
+add the explicit managed-start options to the selected client command:
+
+```powershell
+uvx local-gpu-imagegen setup codex --apply `
+  --auto-start-comfyui `
+  --comfyui-root "<ComfyUI_windows_portable>"
+```
+
+This validates, but does not install, the portable runtime. It pins
+`python_embeded\python.exe -s ComfyUI\main.py`, `127.0.0.1:8188`, and a
+120-second first-readiness window into the displayed official setup plan.
+Review the full `server.command` before applying it.
+
 Checkpoint: setup JSON reports `applied: true`. The command delegates to the
 client's official MCP command and does not edit its configuration file directly.
 It registers the resolved `uvx` executable with this version-pinned server
@@ -28,7 +45,7 @@ command, rather than relying on a console script from the temporary `uvx`
 environment:
 
 ```text
-uvx --from local-gpu-imagegen==0.8.2 local-gpu-imagegen serve
+uvx --from local-gpu-imagegen==0.8.3 local-gpu-imagegen serve
 ```
 
 If setup reports `client_setup_drift`, the existing entry uses a different
@@ -48,7 +65,10 @@ Restart or reload the selected client, then confirm its MCP server list includes
 uvx local-gpu-imagegen doctor
 ```
 
-Checkpoint: doctor reports the selected backend reachable. A backend or model that is not already running is outside this five-minute path.
+Checkpoint: doctor reports the selected backend reachable. `doctor` is always
+read-only. In managed mode the MCP process starts ComfyUI in the background,
+and its first `local_gpu_imagegen_check` waits for the configured startup
+window. An existing endpoint is reused without being owned or stopped.
 
 ## 5. Run One Supported Workflow
 
@@ -116,9 +136,12 @@ visual brief. For example:
 
 Before generation, the Agent should show the results of `local_gpu_discover_models`, any required `local_gpu_set_model_trust` action, `local_gpu_recommend_models`, and the exact selected route. It should wait for your confirmation before `local_gpu_generate_round`, display each retained image for review, and wait for a later byte-bound finalization confirmation.
 
-Both paths require an already-running supported backend and model. UI-format conversion,
-custom nodes, img2img, inpaint, regional/two-stage onboarding,
-implicit backend startup, and model installation remain outside this quickstart.
+Both paths require an installed supported backend and model. UI-format conversion,
+workflows that require unsupported custom nodes, img2img, inpaint, regional/two-stage onboarding,
+model installation, and backend discovery remain outside this quickstart.
+Backend startup occurs only through the explicit Windows portable option above;
+that option does not remove or manage custom nodes already present in the
+selected installation.
 
 ## Roll Back Client Setup
 

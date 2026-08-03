@@ -1,6 +1,6 @@
 # Prepared Directory Listings
 
-These entries are release materials for version `0.8.2` only. They do not authorize a package publication, Registry publication, submission, maintainer contact, or third-party pull request.
+These entries are release materials for version `0.8.3` only. They do not authorize a package publication, Registry publication, submission, maintainer contact, or third-party pull request.
 
 ## awesome-mcp-servers
 
@@ -13,7 +13,7 @@ Alphabetized entry under Image Generation:
 PR body:
 
 ```text
-Adds local-gpu-imagegen `0.8.2`, a Python stdio MCP server that connects Codex or Claude Code to an existing local image-generation stack through a version-pinned durable `uvx` launcher, supported ordinary ComfyUI API workflow onboarding, explicit model routes, bounded review, byte-bound finalization, and durable recovery. It does not bundle model weights or download or switch them silently. A historical Codex `0.7.0` generation demo and a Codex `0.8.0` zero-GPU onboarding session are retained separately; regional and two-stage composition remain experimental.
+Adds local-gpu-imagegen `0.8.3`, a Python stdio MCP server that connects Codex or Claude Code to an existing local image-generation stack through a version-pinned durable `uvx` launcher, optional explicit Windows portable ComfyUI lifecycle management, supported ordinary ComfyUI API workflow onboarding, explicit model routes, bounded review, byte-bound finalization, and durable recovery. It does not bundle model weights or download or switch them silently. A historical Codex `0.7.0` generation demo and a Codex `0.8.0` zero-GPU onboarding session are retained separately; regional and two-stage composition remain experimental.
 ```
 
 A current-v0.8 Codex managed-MCP live gate and its separately approved bounded
@@ -25,7 +25,7 @@ Claude Code hosted generation remains pending.
 
 - Name: `local-gpu-imagegen`
 - Repository: `https://github.com/zc4578980-tech/local-gpu-imagegen`
-- Prepared package target: `local-gpu-imagegen==0.8.2`; publication remains pending
+- Prepared package target: `local-gpu-imagegen==0.8.3`; publication remains pending
 - Transport: `stdio`
 - Install/run: `uvx local-gpu-imagegen serve`
 - Description: `Run supported local image workflows from Codex or Claude Code across existing ComfyUI, AUTOMATIC1111/Forge, and Diffusers installations with explicit routes and review.`

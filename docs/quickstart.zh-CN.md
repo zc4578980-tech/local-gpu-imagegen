@@ -2,8 +2,9 @@
 
 [English](quickstart.md) | **简体中文**
 
-本路径适用于使用 Python 3.11 或 3.12，且受支持的后端和模型已经在运行的
-用户。它不包含后端安装、模型下载和图像生成所需时间。
+本路径适用于使用 Python 3.11 或 3.12，并且已经安装受支持后端和模型的用户。
+ComfyUI 可以已经在运行，也可以显式注册一个 Windows portable 安装，由 MCP 托管启动。
+本路径不包含后端安装、模型下载和图像生成所需时间。
 
 ## 1. 验证已安装的服务器
 
@@ -11,7 +12,7 @@
 uvx local-gpu-imagegen verify
 ```
 
-检查点：JSON 应报告 `ok: true`、版本 `0.8.2`，并且恰好包含 17 个工具。
+检查点：JSON 应报告 `ok: true`、版本 `0.8.3`，并且恰好包含 17 个工具。
 如果不符合，请停止并查看[首次运行问题](#首次运行问题)。
 
 ## 2. 添加到 Codex 或 Claude Code
@@ -23,12 +24,25 @@ uvx local-gpu-imagegen setup codex --apply
 uvx local-gpu-imagegen setup claude-code --apply
 ```
 
+如果已有 Windows portable ComfyUI，并希望它随 MCP 服务器启动，请只对所选客户端命令
+增加下面这些显式选项：
+
+```powershell
+uvx local-gpu-imagegen setup codex --apply `
+  --auto-start-comfyui `
+  --comfyui-root "<ComfyUI_windows_portable>"
+```
+
+该命令只验证 portable 运行时，不会安装它。显示的官方 setup 计划会固定
+`python_embeded\python.exe -s ComfyUI\main.py`、`127.0.0.1:8188` 和首次就绪检查
+120 秒等待窗口。应用前应检查完整的 `server.command`。
+
 检查点：setup JSON 应报告 `applied: true`。该命令会委托给客户端官方的 MCP
 命令，不会直接编辑客户端配置文件。它会注册已经解析到的 `uvx` 可执行文件和下面这条
 固定当前版本的服务器命令，而不是依赖临时 `uvx` 环境中的控制台脚本：
 
 ```text
-uvx --from local-gpu-imagegen==0.8.2 local-gpu-imagegen serve
+uvx --from local-gpu-imagegen==0.8.3 local-gpu-imagegen serve
 ```
 
 如果 setup 报告 `client_setup_drift`，说明已有条目使用了不同的启动器。不要直接编辑
@@ -48,8 +62,10 @@ uvx --from local-gpu-imagegen==0.8.2 local-gpu-imagegen serve
 uvx local-gpu-imagegen doctor
 ```
 
-检查点：doctor 应报告选定后端可以访问。尚未运行的后端或模型不属于这条五分钟
-路径。`ready: false` 可以是后端停止时的有效诊断状态，不表示 MCP 协议失败。
+检查点：doctor 应报告选定后端可以访问。`doctor` 始终只读。在托管模式下，MCP 进程会
+在后台启动 ComfyUI，首次 `local_gpu_imagegen_check` 会在配置的启动窗口内等待。
+如果端点已经运行，程序只复用它，不取得所有权，也不会停止它。`ready: false` 可以是
+后端停止时的有效诊断状态，不表示 MCP 协议失败。
 
 ## 5. 运行一个受支持的工作流
 
@@ -111,8 +127,10 @@ Codex 调用 `local_gpu_recommend_models`，解析并显示一条精确路线、
 选定的路线。它应在调用 `local_gpu_generate_round` 前等待你的确认，展示每张保留图像
 供审查，并等待之后单独给出的、绑定到图像字节的最终确认。
 
-两种路径都要求受支持的后端和模型已经运行。UI 格式转换、自定义节点、img2img、
-inpaint、区域/两阶段工作流接入、隐式启动后端和模型安装均不属于本快速开始。
+两种路径都要求受支持的后端和模型已经安装。UI 格式转换、依赖不受支持 custom nodes
+的工作流、img2img、inpaint、区域/两阶段工作流接入、模型安装和后端自动发现均不属于
+本快速开始。只有通过上面的 Windows portable 显式选项才会启动后端；该选项不会删除或
+管理所选安装中已经存在的 custom nodes。
 
 ## 回滚客户端配置
 

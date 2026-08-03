@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -39,20 +41,41 @@ def check_comfyui() -> dict[str, object]:
         "LOCAL_GPU_IMAGEGEN_COMFYUI_URL",
         "http://127.0.0.1:8188",
     )
+    wait_text = os.environ.get("LOCAL_GPU_IMAGEGEN_COMFYUI_STARTUP_WAIT_SECONDS", "0")
     try:
-        adapter = ComfyUIAdapter(base_url, timeout=5)
-        return {
-            **adapter.probe(),
-            "url": adapter.base_url,
-            "available": True,
-            "api_error": None,
-        }
-    except AssetEngineError as error:
-        return {
-            "url": base_url,
-            "available": False,
-            "api_error": error.code,
-        }
+        parsed_wait = float(wait_text)
+        wait_seconds = (
+            min(max(parsed_wait, 0.0), 300.0)
+            if math.isfinite(parsed_wait)
+            else 0.0
+        )
+    except ValueError:
+        wait_seconds = 0.0
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        attempt_timeout = 5.0
+        if wait_seconds > 0:
+            remaining = max(deadline - time.monotonic(), 0.0)
+            attempt_timeout = max(min(5.0, remaining), 0.001)
+        try:
+            adapter = ComfyUIAdapter(base_url, timeout=attempt_timeout)
+            return {
+                **adapter.probe(),
+                "url": adapter.base_url,
+                "available": True,
+                "managed_start": os.environ.get("LOCAL_GPU_IMAGEGEN_COMFYUI_MANAGED") == "1",
+                "api_error": None,
+            }
+        except AssetEngineError as error:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {
+                    "url": base_url,
+                    "available": False,
+                    "managed_start": os.environ.get("LOCAL_GPU_IMAGEGEN_COMFYUI_MANAGED") == "1",
+                    "api_error": error.code,
+                }
+            time.sleep(min(0.25, remaining))
 
 
 def collect_report() -> dict[str, object]:

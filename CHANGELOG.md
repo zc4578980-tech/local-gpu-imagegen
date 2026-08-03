@@ -2,7 +2,25 @@
 
 All notable changes will be documented in this file.
 
-## [0.8.2] - Unreleased
+## [0.8.3] - Unreleased
+
+### Added
+
+- Added explicit Windows portable ComfyUI lifecycle management for `serve` and
+  official `setup` plans. Managed startup pins Python `-s`, loopback-only
+  binding, bounded readiness waiting, and owned-process cleanup without model
+  installation or downloads.
+- Added model-free lifecycle tests for existing-backend reuse, exact portable
+  commands, non-loopback rejection, queue-aware cleanup, and paths with spaces.
+
+### Safety
+
+- `doctor` remains read-only. Managed startup requires both
+  `--auto-start-comfyui` and an exact `--comfyui-root`; it never searches for,
+  adopts, or stops an existing backend. An owned process with a non-empty queue
+  is retained rather than terminated.
+
+## [0.8.2] - 2026-08-03
 
 ### Fixed
 
@@ -11,7 +29,9 @@ All notable changes will be documented in this file.
 
 ### Evidence Boundary
 
-- The source-level compatibility correction is model-free. A `0.8.2` wheel, public package, and fresh hosted-client reconnection remain pending separate verification and authority.
+- The source-level compatibility correction was model-free. The exact `0.8.2`
+  wheel, public clean-cache acquisition, and Claude Code tool-catalog ingestion
+  were verified later under separate authority.
 - No ComfyUI process, GPU, model read, image generation, trust mutation, or publication action is part of this change.
 
 ## [0.8.1] - 2026-08-02

@@ -15,7 +15,7 @@ uvx local-gpu-imagegen setup codex --apply
 ```
 
 Setup stores a resolved, version-pinned launcher equivalent to
-`uvx --from local-gpu-imagegen==0.8.2 local-gpu-imagegen serve`; it does not
+`uvx --from local-gpu-imagegen==0.8.3 local-gpu-imagegen serve`; it does not
 depend on a console script from the temporary `uvx` environment. If an older
 entry reports `client_setup_drift`, remove only that client entry and apply
 setup again. Starting ComfyUI does not repair an MCP launcher failure; backend
@@ -30,10 +30,11 @@ Use this prompt: <prompt>. Preserve every other workflow setting.
 
 This path requires Python 3.11 or 3.12, Codex, an already-running local ComfyUI
 instance, an already-installed model, and one ordinary `txt2img` API workflow
-using the supported built-in topology. It uses your existing local
-image backend and model with no silent model downloads or switches. It does
-not install a backend, download a model, convert UI-format JSON, or run custom
-nodes.
+using the supported built-in topology. It uses your existing local image
+backend and model with no silent model downloads or switches. It does not
+install a backend, download a model, convert UI-format JSON, or execute a
+workflow that requires unsupported custom nodes. An explicit Windows portable
+managed-start option is documented below.
 
 ComfyUI generates the pixels. Local GPU Imagegen controls authority,
 reproducibility, review, and recovery around that generation.
@@ -54,6 +55,26 @@ This path requires an existing local image backend and model; there are no silen
 
 **Trust proof:** the retained ordinary-route result came from one installed Codex session. Discovery did not load weights; trust and route identity were explicit; successful rounds were bounded; review used the original-resolution PNG; finalization was bound to the reviewed bytes; and the run state remains recoverable. The evidence proves this one result, not complete 9+3 acceptance, measured performance, or production readiness.
 
+### Optional Managed ComfyUI Startup
+
+Windows setup can register one existing portable root for managed startup:
+
+```powershell
+uvx local-gpu-imagegen setup codex --apply `
+  --auto-start-comfyui `
+  --comfyui-root "<ComfyUI_windows_portable>"
+```
+
+The opt-in command validates the fixed portable layout and registers
+`python_embeded\python.exe -s ComfyUI\main.py` at `127.0.0.1:8188`. It does not
+install ComfyUI or download a model. An already-running endpoint is reused but
+never owned or stopped. A child started by the MCP process is stopped at MCP
+exit only when its queue is empty; a non-empty queue is retained and reported.
+Both modes use the existing backend and model with no silent model downloads
+or switches. Workflow execution remains limited to supported built-in
+topologies; managed startup does not remove or manage custom nodes already
+present in the selected portable installation.
+
 ![Simulated brief-to-candidate protocol loop](docs/demo/preview-loop.gif)
 
 > The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. It remains secondary to the genuine result above. Model-free tests cover the protocol and backend contracts, not image quality, broader named-client generation, performance, or complete 9+3 acceptance.
@@ -65,7 +86,7 @@ Before PyPI publication, install the verified wheel or a source checkout, then u
 ## Why This Project
 
 - **Run supported workflows from your Agent:** inspect and register ordinary ComfyUI API graphs instead of rebuilding them as one-off scripts.
-- **Reuse the backends you already run:** ComfyUI is the primary existing-workflow path; AUTOMATIC1111/Forge and Diffusers remain compatibility paths.
+- **Reuse or explicitly manage your backend:** ComfyUI is the primary existing-workflow path; an opt-in Windows portable supervisor removes manual startup without taking ownership of an existing process. AUTOMATIC1111/Forge and Diffusers remain compatibility paths.
 - **Make runs reproducible:** freeze workflow, model identity, prompts, settings, seed, budget, and output hashes in a durable manifest.
 - **Use the installed CLI:** verify readiness and delegate setup to the official Codex or Claude Code command without requiring a source checkout.
 - **Keep model authority explicit:** discovery never loads weights, and generation cannot silently download or switch a model.
@@ -104,7 +125,7 @@ Expected result:
   "ok": true,
   "transport": "stdio",
   "python": "<current-python>",
-  "server": {"name": "local-gpu-imagegen", "version": "0.8.2"},
+  "server": {"name": "local-gpu-imagegen", "version": "0.8.3"},
   "protocolVersion": "2024-11-05",
   "tools": [
     "local_gpu_branch_run",
@@ -133,7 +154,7 @@ Expected result:
 | Backend | Best when | Setup | Network behavior |
 |---|---|---|---|
 | WebUI | AUTOMATIC1111 or Forge is already installed | Start it with API access enabled | Prompts/images go to the configured WebUI URL |
-| ComfyUI | You already run ComfyUI and want reviewed graph execution | Set `LOCAL_GPU_IMAGEGEN_COMFYUI_URL`; use a shipped or validated imported workflow | Prompts/images go only to the confirmed endpoint |
+| ComfyUI | You already run ComfyUI and want reviewed graph execution | Start it yourself, or opt into `setup --auto-start-comfyui --comfyui-root <root>` for one existing Windows portable install | Prompts/images go only to the loopback or separately confirmed endpoint |
 | Diffusers | You want a self-contained Python pipeline | Create the project `.venv` with `scripts/install.ps1` | Model/LoRA downloads are blocked unless explicitly allowed |
 
 Check current readiness:
@@ -143,6 +164,12 @@ python .\scripts\check_gpu.py
 ```
 
 The command returns JSON. `ready: false` is a valid diagnostic state, not a protocol failure.
+
+Managed startup is explicit and Windows-portable-only. It forces Python `-s`
+isolation so user-site Torch packages cannot contaminate the portable runtime,
+starts in the background so MCP initialization is not delayed, and lets the
+first managed readiness check wait up to the configured startup timeout.
+`doctor` itself remains read-only and never starts a backend.
 
 To verify the MCP server under a specific virtual environment and call readiness through MCP:
 

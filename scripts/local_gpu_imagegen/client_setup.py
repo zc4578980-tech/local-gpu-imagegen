@@ -9,6 +9,11 @@ import subprocess
 from collections.abc import Callable, Sequence
 
 from local_gpu_imagegen import __version__
+from local_gpu_imagegen.backend_lifecycle import (
+    DEFAULT_COMFYUI_URL,
+    DEFAULT_START_TIMEOUT_SECONDS,
+    build_comfyui_start_config,
+)
 
 
 SERVER_NAME = "local-gpu-imagegen"
@@ -47,6 +52,32 @@ CLIENTS: dict[str, dict[str, object]] = {
 
 ExecutableLookup = Callable[[str], str | None]
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def managed_comfyui_server_command(
+    root: str | os.PathLike[str],
+    *,
+    base_url: str = DEFAULT_COMFYUI_URL,
+    timeout_seconds: float = DEFAULT_START_TIMEOUT_SECONDS,
+) -> tuple[str, ...]:
+    config = build_comfyui_start_config(
+        root,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+    )
+    timeout = str(int(config.timeout_seconds)) if config.timeout_seconds.is_integer() else str(
+        config.timeout_seconds
+    )
+    return (
+        *SERVER_COMMAND,
+        "--auto-start-comfyui",
+        "--comfyui-root",
+        str(config.root),
+        "--comfyui-url",
+        config.base_url,
+        "--comfyui-start-timeout-seconds",
+        timeout,
+    )
 
 
 def _run(runner: Runner, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -102,6 +133,12 @@ def _existing_server_command(client: str, stdout: str) -> list[str] | None:
             args = shlex.split(args_match.group(1), posix=False)
         except ValueError:
             return None
+        args = [
+            item[1:-1]
+            if len(item) >= 2 and item[0] == item[-1] and item[0] in {'"', "'"}
+            else item
+            for item in args
+        ]
         return [command_match.group(1), *args]
     return None
 
@@ -137,6 +174,7 @@ def setup_contract(client: str) -> dict[str, object]:
 def build_setup_plan(
     client: str,
     *,
+    server_command: Sequence[str] = SERVER_COMMAND,
     executable_lookup: ExecutableLookup = shutil.which,
     runner: Runner = subprocess.run,
 ) -> dict[str, object]:
@@ -150,10 +188,12 @@ def build_setup_plan(
     executable = executable_lookup(binary)
     if executable is None:
         raise RuntimeError(f"client_not_found:{binary}")
-    server_executable = executable_lookup(SERVER_COMMAND[0])
+    if not server_command or not all(isinstance(item, str) and item for item in server_command):
+        raise RuntimeError("invalid_server_command")
+    server_executable = executable_lookup(server_command[0])
     if server_executable is None:
-        raise RuntimeError(f"server_launcher_not_found:{SERVER_COMMAND[0]}")
-    server_command = [server_executable, *SERVER_COMMAND[1:]]
+        raise RuntimeError(f"server_launcher_not_found:{server_command[0]}")
+    resolved_server_command = [server_executable, *server_command[1:]]
 
     version_result = _run(runner, [executable, "--version"])
     if version_result.returncode != 0:
@@ -164,18 +204,18 @@ def build_setup_plan(
 
     existing_result = _run(runner, _command(executable, definition["get"]))
     add_args = _arguments(definition["add"])
-    add_args[-len(SERVER_COMMAND) :] = server_command
+    add_args[-len(SERVER_COMMAND) :] = resolved_server_command
     existing = existing_result.returncode == 0
     existing_matches = existing and _existing_matches(
         client,
         existing_result.stdout or "",
-        server_command,
+        resolved_server_command,
     )
     return {
         "client": client,
         "detected": True,
         "version": version[:MAX_ERROR_LENGTH],
-        "server": {"name": SERVER_NAME, "command": server_command},
+        "server": {"name": SERVER_NAME, "command": resolved_server_command},
         "existing": existing,
         "existing_matches": existing_matches,
         "add_command": [executable, *add_args],

@@ -362,7 +362,7 @@ def client_session(image_sha256: str) -> dict[str, object]:
         "hosted_client_session": True,
         "server": {
             "name": "local-gpu-imagegen",
-            "version": "0.8.2",
+            "version": "0.8.3",
             "protocol_version": "2024-11-05",
             "wheel_sha256": "a" * 64,
         },

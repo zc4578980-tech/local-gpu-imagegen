@@ -115,6 +115,106 @@ class CheckGpuTests(unittest.TestCase):
         self.assertFalse(report["webui_ready"])
         self.assertFalse(fake_cuda.called)
 
+    def test_managed_start_is_reported_without_changing_readiness(self) -> None:
+        adapter = unittest.mock.MagicMock()
+        adapter.base_url = "http://127.0.0.1:8188"
+        adapter.probe.return_value = {"backend": "comfyui", "ready": True}
+        with (
+            patch.object(check_gpu, "ComfyUIAdapter", return_value=adapter),
+            patch.dict(
+                check_gpu.os.environ,
+                {
+                    "LOCAL_GPU_IMAGEGEN_COMFYUI_MANAGED": "1",
+                    "LOCAL_GPU_IMAGEGEN_COMFYUI_STARTUP_WAIT_SECONDS": "120",
+                },
+            ),
+        ):
+            report = check_gpu.check_comfyui()
+
+        self.assertTrue(report["available"])
+        self.assertTrue(report["managed_start"])
+
+    def test_managed_check_waits_for_the_starting_backend(self) -> None:
+        from local_gpu_imagegen.errors import AssetEngineError
+
+        adapter = unittest.mock.MagicMock()
+        adapter.base_url = "http://127.0.0.1:8188"
+        adapter.probe.return_value = {"backend": "comfyui", "ready": True}
+        with (
+            patch.object(
+                check_gpu,
+                "ComfyUIAdapter",
+                side_effect=(
+                    AssetEngineError("backend_request_failed", "starting", "backend"),
+                    adapter,
+                ),
+            ),
+            patch.object(check_gpu.time, "monotonic", return_value=10.0),
+            patch.object(check_gpu.time, "sleep") as sleep,
+            patch.dict(
+                check_gpu.os.environ,
+                {"LOCAL_GPU_IMAGEGEN_COMFYUI_STARTUP_WAIT_SECONDS": "120"},
+            ),
+        ):
+            report = check_gpu.check_comfyui()
+
+        self.assertTrue(report["available"])
+        sleep.assert_called_once_with(0.25)
+
+    def test_managed_wait_caps_each_probe_to_the_remaining_budget(self) -> None:
+        from local_gpu_imagegen.errors import AssetEngineError
+
+        with (
+            patch.object(
+                check_gpu,
+                "ComfyUIAdapter",
+                side_effect=AssetEngineError(
+                    "backend_request_failed",
+                    "stopped",
+                    "backend",
+                ),
+            ) as adapter,
+            patch.object(
+                check_gpu.time,
+                "monotonic",
+                side_effect=(10.0, 10.0, 11.0),
+            ),
+            patch.object(check_gpu.time, "sleep") as sleep,
+            patch.dict(
+                check_gpu.os.environ,
+                {"LOCAL_GPU_IMAGEGEN_COMFYUI_STARTUP_WAIT_SECONDS": "1"},
+            ),
+        ):
+            report = check_gpu.check_comfyui()
+
+        self.assertFalse(report["available"])
+        self.assertEqual(adapter.call_args.kwargs["timeout"], 1.0)
+        sleep.assert_not_called()
+
+    def test_nonfinite_managed_wait_fails_without_sleeping(self) -> None:
+        from local_gpu_imagegen.errors import AssetEngineError
+
+        with (
+            patch.object(
+                check_gpu,
+                "ComfyUIAdapter",
+                side_effect=AssetEngineError(
+                    "backend_request_failed",
+                    "stopped",
+                    "backend",
+                ),
+            ),
+            patch.object(check_gpu.time, "sleep") as sleep,
+            patch.dict(
+                check_gpu.os.environ,
+                {"LOCAL_GPU_IMAGEGEN_COMFYUI_STARTUP_WAIT_SECONDS": "nan"},
+            ),
+        ):
+            report = check_gpu.check_comfyui()
+
+        self.assertFalse(report["available"])
+        sleep.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

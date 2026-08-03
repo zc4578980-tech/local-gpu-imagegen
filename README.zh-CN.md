@@ -16,7 +16,7 @@ uvx local-gpu-imagegen setup codex --apply
 ```
 
 setup 会保存一个已经解析、固定当前版本的启动器，等价命令为
-`uvx --from local-gpu-imagegen==0.8.2 local-gpu-imagegen serve`；它不依赖临时
+`uvx --from local-gpu-imagegen==0.8.3 local-gpu-imagegen serve`；它不依赖临时
 `uvx` 环境中的控制台脚本。如果旧条目报告 `client_setup_drift`，请只移除对应客户端
 条目，再重新应用 setup。启动 ComfyUI 不能修复 MCP 启动器故障；客户端成功加载
 服务器后，才进入后端就绪检查。
@@ -28,10 +28,23 @@ Run this supported ComfyUI API workflow from Codex: <path>.
 Use this prompt: <prompt>. Preserve every other workflow setting.
 ```
 
-这条路径要求 Python 3.11 或 3.12、Codex、已经运行的本地 ComfyUI、已经安装的
-模型，以及一个采用受支持内置拓扑的普通 `txt2img` API 工作流。它复用现有本地图像
-后端和模型，不会静默下载或切换模型；也不会安装后端、下载模型、转换 UI 格式 JSON
-或运行自定义节点。
+这条路径要求 Python 3.11 或 3.12、Codex、已经安装的本地 ComfyUI、已经安装的模型，
+以及一个采用受支持内置拓扑的普通 `txt2img` API 工作流。默认情况下 ComfyUI 仍需提前
+运行。在 Windows 上，也可以在 setup 时显式指定一个已有 portable 根目录，让 MCP 托管
+启动：
+
+```powershell
+uvx local-gpu-imagegen setup codex --apply `
+  --auto-start-comfyui `
+  --comfyui-root "<ComfyUI_windows_portable>"
+```
+
+这项 opt-in 功能会验证固定 portable 布局，并且只在 `127.0.0.1:8188` 上注册
+`python_embeded\python.exe -s ComfyUI\main.py`。它不会安装 ComfyUI，也不会下载模型。
+若端点已经运行，程序只复用它，不取得所有权，也不会停止它。由 MCP 创建的子进程只会在
+MCP 退出且队列为空时停止；队列非空时会保留进程并报告状态。两种模式都不会静默下载或
+切换模型，工作流执行仍限于受支持的内置拓扑。托管启动不会删除或管理所选 portable
+安装中已经存在的 custom nodes。
 
 ComfyUI 负责生成像素；Local GPU Imagegen 负责围绕生成建立权限、可复现性、审查和
 恢复控制。
@@ -85,7 +98,8 @@ PyPI 发布前，请安装已验证 wheel 或使用源码检出，然后运行�
 
 - **从 Agent 运行受支持的工作流：**检查和注册普通 ComfyUI API 图，而不是把它们
   重写成一次性脚本。
-- **复用已有后端：**ComfyUI 是现有工作流的主要路径；AUTOMATIC1111/Forge 和
+- **复用或显式托管后端：**ComfyUI 是现有工作流的主要路径；可选的 Windows portable
+  supervisor 可以免去手动启动，同时不会接管已经运行的进程。AUTOMATIC1111/Forge 和
   Diffusers 保留为兼容路径。
 - **让运行可复现：**将工作流、模型身份、提示词、参数、种子、预算和输出哈希冻结在
   持久 manifest 中。
@@ -129,7 +143,7 @@ PyPI 发布前，请安装已验证 wheel 或使用源码检出，然后运行�
 python .\scripts\verify_mcp.py
 ```
 
-预期 JSON 包含：`ok: true`、服务器版本 `0.8.2`、协议 `2024-11-05`，以及以下
+预期 JSON 包含：`ok: true`、服务器版本 `0.8.3`、协议 `2024-11-05`，以及以下
 恰好 17 个工具：
 
 ```text
@@ -157,7 +171,7 @@ local_gpu_start_run
 | 后端 | 适用场景 | 配置 | 网络行为 |
 |---|---|---|---|
 | WebUI | 已安装 AUTOMATIC1111 或 Forge | 启动时启用 API | 提示词/图像发送到配置的 WebUI URL |
-| ComfyUI | 已使用 ComfyUI，希望执行经过审查的图 | 设置 `LOCAL_GPU_IMAGEGEN_COMFYUI_URL`，使用内置或已验证导入工作流 | 提示词/图像只发送到确认的端点 |
+| ComfyUI | 已使用 ComfyUI，希望执行经过审查的图 | 自行启动，或对一个已有 Windows portable 安装显式使用 `setup --auto-start-comfyui --comfyui-root <root>` | 提示词/图像只发送到 loopback 或另行确认的端点 |
 | Diffusers | 希望使用独立 Python pipeline | 用 `scripts/install.ps1` 创建项目 `.venv` | 除非明确允许，否则阻止模型/LoRA 下载 |
 
 检查当前就绪状态：
@@ -167,6 +181,11 @@ python .\scripts\check_gpu.py
 ```
 
 该命令返回 JSON。`ready: false` 是有效诊断状态，不是协议失败。
+
+托管启动必须显式开启，并且只支持 Windows portable。它强制使用 Python `-s` 隔离，
+避免用户 site 中的 Torch 包污染 portable 运行时；启动在后台进行，不阻塞 MCP 初始化；
+首次托管 readiness 检查会在配置的启动超时内等待。`doctor` 本身仍是只读命令，永远不会
+启动后端。
 
 在指定虚拟环境下验证 MCP，并通过 MCP 调用就绪检查：
 

@@ -12,7 +12,7 @@ The unchanged `python scripts/validate_acceptance_evidence.py --strict` command 
 
 - [ ] The offline release-candidate verifier passes at the exact final commit, and its new `candidate-report.json` contains `"status": "passed"` for the frozen wheel SHA-256.
 - [ ] The final model-free suite, Python compilation, strict UTF-8 JSON parse, repository hygiene, and public-document truthfulness gates pass at one exact commit.
-- [ ] A fresh isolated Python 3.12 environment installs the final exact-commit wheel outside the checkout and verifies version `0.8.2`, protocol `2024-11-05`, and exactly seventeen tools; exact-commit Python 3.11 verification remains a CI gate.
+- [ ] A fresh isolated Python 3.12 environment installs the final exact-commit wheel outside the checkout and verifies version `0.8.3`, protocol `2024-11-05`, and exactly seventeen tools; exact-commit Python 3.11 verification remains a CI gate.
 - [ ] Installed `verify`, fail-closed `doctor`, local-wheel `uvx`, and read-only Codex and Claude Code setup paths succeed against the final exact-commit wheel without a source clone or direct configuration-file edit.
 - [ ] Tracked files, staged files, and wheel entries contain no credentials, personal paths, trust state, private runs, rejected images, model weights, or temporary client files.
 
@@ -31,11 +31,11 @@ The unchanged `python scripts/validate_acceptance_evidence.py --strict` command 
 
 - [x] The genuine-image social preview is generated, validated at 1280x640, and visually reviewed without mutating remote metadata.
 - [ ] Explicit authority is granted for each remote metadata change and publication action.
-- [ ] README, changelog, package metadata, plugin metadata, `server.json`, GitHub copy, directory copy, and release notes agree on version `0.8.2`, exactly seventeen tools, three backends, the ordinary golden path, and open limitations.
+- [ ] README, changelog, package metadata, plugin metadata, `server.json`, GitHub copy, directory copy, and release notes agree on version `0.8.3`, exactly seventeen tools, three backends, the ordinary golden path, and open limitations.
 - [ ] Windows and Ubuntu jobs on Python 3.11 and 3.12 are green at the exact release commit.
 - [ ] The exact locally verified wheel is published without rebuilding and its public digest matches.
-- [ ] The official MCP Registry record resolves version `0.8.2` to the exact PyPI package and stdio command.
-- [ ] Tag `v0.8.2`, the preview release, package URL, Registry URL, and repository evidence URLs resolve to the exact verified release state.
+- [ ] The official MCP Registry record resolves version `0.8.3` to the exact PyPI package and stdio command.
+- [ ] Tag `v0.8.3`, the preview release, package URL, Registry URL, and repository evidence URLs resolve to the exact verified release state.
 - [ ] Directory submissions remain unsubmitted until each receives separate authority.
 - [ ] A written pessimistic forecast based on named channels, documented conversion assumptions, and available response capacity is at or above the planning floor; a forecast below `100 net-new GitHub Stars` blocks the formal launch.
 

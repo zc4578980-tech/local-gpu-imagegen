@@ -39,7 +39,24 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run and verify the local GPU Imagegen MCP control plane.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("serve", help="Serve MCP over standard input/output.")
+    serve = subparsers.add_parser("serve", help="Serve MCP over standard input/output.")
+    serve.add_argument(
+        "--auto-start-comfyui",
+        action="store_true",
+        help="Start and own one explicitly configured Windows portable ComfyUI.",
+    )
+    serve.add_argument("--comfyui-root", help="Existing ComfyUI_windows_portable root.")
+    serve.add_argument(
+        "--comfyui-url",
+        default="http://127.0.0.1:8188",
+        help="Loopback-only managed endpoint.",
+    )
+    serve.add_argument(
+        "--comfyui-start-timeout-seconds",
+        type=float,
+        default=120.0,
+        help="Maximum first readiness wait, from 1 through 300 seconds.",
+    )
     subparsers.add_parser("doctor", help="Report local backend readiness as JSON.")
     verify = subparsers.add_parser("verify", help="Verify the exact MCP stdio contract.")
     verify.add_argument("--python", default=sys.executable, help="Python used to launch the MCP server.")
@@ -53,6 +70,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Apply the displayed plan through the client's official mcp add command.",
     )
+    setup.add_argument(
+        "--auto-start-comfyui",
+        action="store_true",
+        help="Register an MCP command that owns an explicit portable ComfyUI child.",
+    )
+    setup.add_argument("--comfyui-root", help="Existing ComfyUI_windows_portable root.")
+    setup.add_argument("--comfyui-url", default="http://127.0.0.1:8188")
+    setup.add_argument("--comfyui-start-timeout-seconds", type=float, default=120.0)
     return parser
 
 
@@ -61,7 +86,46 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "serve":
         import mcp_server
 
-        return mcp_server.main()
+        if not args.auto_start_comfyui:
+            if (
+                args.comfyui_root is not None
+                or args.comfyui_url != "http://127.0.0.1:8188"
+                or args.comfyui_start_timeout_seconds != 120.0
+            ):
+                print(
+                    json.dumps({"ok": False, "error": "comfyui_options_require_autostart"}),
+                    file=sys.stderr,
+                )
+                return 1
+            return mcp_server.main()
+        try:
+            from local_gpu_imagegen.backend_lifecycle import (
+                ComfyUIProcessSupervisor,
+                build_comfyui_start_config,
+            )
+
+            if args.comfyui_root is None:
+                raise ValueError("comfyui_autostart_requires_root")
+            config = build_comfyui_start_config(
+                args.comfyui_root,
+                base_url=args.comfyui_url,
+                timeout_seconds=args.comfyui_start_timeout_seconds,
+            )
+            supervisor = ComfyUIProcessSupervisor(config)
+            supervisor.start()
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
+            return 1
+        try:
+            return mcp_server.main()
+        finally:
+            cleanup = supervisor.close()
+            if cleanup.get("cleanup_status") in {
+                "retained_nonempty_queue",
+                "retained_unknown_queue",
+                "terminate_timeout",
+            }:
+                print(json.dumps({"backend_cleanup": cleanup}), file=sys.stderr)
     if args.command == "doctor":
         import check_gpu
 
@@ -72,10 +136,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "setup":
         import check_gpu
 
-        from local_gpu_imagegen.client_setup import apply_setup_plan, build_setup_plan
+        from local_gpu_imagegen.client_setup import (
+            apply_setup_plan,
+            build_setup_plan,
+            managed_comfyui_server_command,
+        )
 
         try:
-            plan = build_setup_plan(args.client)
+            if args.auto_start_comfyui:
+                if args.comfyui_root is None:
+                    raise ValueError("comfyui_autostart_requires_root")
+                command = managed_comfyui_server_command(
+                    args.comfyui_root,
+                    base_url=args.comfyui_url,
+                    timeout_seconds=args.comfyui_start_timeout_seconds,
+                )
+                plan = build_setup_plan(args.client, server_command=command)
+            else:
+                if (
+                    args.comfyui_root is not None
+                    or args.comfyui_url != "http://127.0.0.1:8188"
+                    or args.comfyui_start_timeout_seconds != 120.0
+                ):
+                    raise ValueError("comfyui_options_require_autostart")
+                plan = build_setup_plan(args.client)
             result = apply_setup_plan(plan) if args.apply else plan
             report = {
                 "ok": True,

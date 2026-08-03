@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Sequence
@@ -100,6 +101,77 @@ class RecordingRunner:
 
 
 class ClientSetupTests(unittest.TestCase):
+    def test_managed_comfyui_plan_pins_the_explicit_portable_root(self) -> None:
+        from local_gpu_imagegen import __version__
+        from local_gpu_imagegen.client_setup import (
+            build_setup_plan,
+            managed_comfyui_server_command,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "ComfyUI_windows_portable"
+            python = root / "python_embeded" / "python.exe"
+            main = root / "ComfyUI" / "main.py"
+            python.parent.mkdir(parents=True)
+            main.parent.mkdir(parents=True)
+            python.write_bytes(b"python")
+            main.write_text("# ComfyUI", encoding="utf-8")
+            command = managed_comfyui_server_command(root)
+            plan = build_setup_plan(
+                "codex",
+                server_command=command,
+                executable_lookup=lambda binary: f"C:/bin/{binary}.exe",
+                runner=RecordingRunner(get_returncode=1),
+            )
+
+        expected_prefix = [
+            "C:/bin/uvx.exe",
+            "--from",
+            f"local-gpu-imagegen=={__version__}",
+            "local-gpu-imagegen",
+            "serve",
+        ]
+        self.assertEqual(plan["server"]["command"][:5], expected_prefix)
+        self.assertIn("--auto-start-comfyui", plan["server"]["command"])
+        self.assertIn("--comfyui-root", plan["server"]["command"])
+        self.assertEqual(
+            plan["add_command"][-len(plan["server"]["command"]) :],
+            plan["server"]["command"],
+        )
+
+    def test_claude_matching_managed_path_with_spaces_is_idempotent(self) -> None:
+        from local_gpu_imagegen.client_setup import apply_setup_plan, build_setup_plan
+
+        server_command = (
+            "uvx",
+            "--from",
+            "local-gpu-imagegen==test",
+            "local-gpu-imagegen",
+            "serve",
+            "--auto-start-comfyui",
+            "--comfyui-root",
+            "C:\\AI Runtime\\ComfyUI_windows_portable",
+        )
+        executable = "C:/bin/uvx.exe"
+        args = subprocess.list2cmdline([*server_command[1:]])
+        plan = build_setup_plan(
+            "claude-code",
+            server_command=server_command,
+            executable_lookup={"claude": "C:/bin/claude.exe", "uvx": executable}.get,
+            runner=RecordingRunner(
+                get_returncode=0,
+                get_stdout=(
+                    "local-gpu-imagegen:\n"
+                    f"  Command: {executable}\n"
+                    f"  Args: {args}\n"
+                ),
+            ),
+        )
+        applied = apply_setup_plan(plan, runner=RecordingRunner())
+
+        self.assertTrue(plan["existing_matches"])
+        self.assertEqual(applied["status"], "already_configured")
+
     def test_apply_rejects_an_existing_entry_with_a_different_launcher(self) -> None:
         from local_gpu_imagegen.client_setup import apply_setup_plan, build_setup_plan
 
