@@ -39,9 +39,11 @@ and a missed result does not retract the Release.
 - [x] README, changelog, package metadata, plugin metadata, `server.json`, GitHub copy, directory copy, and release notes agree on version `0.8.3`, exactly seventeen tools, three backends, the ordinary golden path, and open limitations.
 - [x] Windows and Ubuntu jobs on Python 3.11 and 3.12 are green at exact release commit `6627838`.
 - [x] The exact locally verified wheel was published without rebuilding, and PyPI reports the matching 260,937-byte SHA-256 identity.
-- [ ] The official MCP Registry record resolves version `0.8.3` to the exact PyPI package and stdio command.
+- [x] The official MCP Registry record is active and resolves version `0.8.3` to the exact PyPI package, `uvx` runtime, positional `serve` argument, and stdio transport.
 - [x] Tag `v0.8.3`, the public non-prerelease GitHub Release, package URL, and repository evidence URLs resolve to the exact verified release state.
-- [ ] The MCP Registry URL remains pending.
+- [x] The public Registry API returns exactly one matching `0.8.3` record with `status: active` and `isLatest: true`.
+- [x] The repository description and all eight prepared GitHub topics are applied and verified through the public repository API.
+- [ ] Remote social-preview metadata remains pending; the validated local preview asset has not been uploaded.
 - [ ] Directory submissions remain unsubmitted until each receives separate authority.
 - [x] The earlier pessimistic forecast is retained as planning evidence, while the approved post-release measurement policy supersedes it as a publication gate.
 

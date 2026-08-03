@@ -33,7 +33,8 @@ Before any remote action:
 Each remote mutation needs separate approval unless the user explicitly bundles
 named actions. For `v0.8.3`, the exact release commit passed four green CI jobs,
 the exact verified wheel reached PyPI, and tag `v0.8.3` plus the public GitHub
-Release were published. The MCP Registry record, repository topics,
+Release were published. The official MCP Registry record is active, and the
+repository description plus all eight prepared topics are applied. Remote
 social-preview metadata, `awesome-mcp-servers`, and Glama remain pending.
 
 For subsequent releases, preserve this order so every public record points to

@@ -225,6 +225,22 @@ class PublicDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(required, playbook)
 
+    def test_release_docs_record_registry_and_topics_without_claiming_preview_upload(self) -> None:
+        listing = GITHUB_LISTING.read_text(encoding="utf-8")
+        playbook = LAUNCH_PLAYBOOK.read_text(encoding="utf-8")
+        checklist = RELEASE_CHECKLIST.read_text(encoding="utf-8")
+        combined = "\n".join((listing, playbook, checklist))
+
+        self.assertIn("official MCP Registry", combined)
+        self.assertIn("status `active`", listing)
+        self.assertIn("all eight prepared topics are applied", combined)
+        self.assertIn("Remote social-preview metadata remains pending", checklist)
+        self.assertNotIn(
+            "MCP Registry publication, repository topics, social-preview metadata",
+            combined,
+        )
+        self.assertNotIn("The MCP Registry URL remains pending", combined)
+
     def test_publication_runbook_binds_exact_offline_candidate_before_remote_actions(
         self,
     ) -> None:
