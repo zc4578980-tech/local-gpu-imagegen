@@ -21,6 +21,7 @@ LAUNCH_PLAYBOOK = ROOT / "docs" / "launch-playbook.md"
 RELEASE_CHECKLIST = ROOT / "docs" / "release-checklist.md"
 PUBLICATION_RUNBOOK = ROOT / "docs" / "publication-runbook.md"
 GITHUB_LISTING = ROOT / "docs" / "github-listing.md"
+DIRECTORY_LISTINGS = ROOT / "docs" / "directory-listings.md"
 EVIDENCE_README = ROOT / "docs" / "evidence" / "README.md"
 QUALITY_CONTROL = ROOT / "docs" / "image-quality-control.md"
 HISTORICAL_STAR_GATE_DOCS = (
@@ -240,6 +241,17 @@ class PublicDocumentationTests(unittest.TestCase):
             combined,
         )
         self.assertNotIn("The MCP Registry URL remains pending", combined)
+
+    def test_directory_docs_separate_submitted_and_blocked_channels(self) -> None:
+        listings = DIRECTORY_LISTINGS.read_text(encoding="utf-8")
+        checklist = RELEASE_CHECKLIST.read_text(encoding="utf-8")
+
+        self.assertIn("awesome-mcp-servers#11452", listings)
+        self.assertIn("check-submission", listings)
+        self.assertIn("status `active`", listings)
+        self.assertIn("Status: not submitted", listings)
+        self.assertIn("Glama remains unsubmitted", checklist)
+        self.assertNotIn("publication remains pending", listings)
 
     def test_publication_runbook_binds_exact_offline_candidate_before_remote_actions(
         self,

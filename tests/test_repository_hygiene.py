@@ -153,7 +153,7 @@ class RepositoryHygieneTests(unittest.TestCase):
             },
         )
 
-    def test_registry_ownership_marker_and_prepared_directory_copy_are_explicit(self) -> None:
+    def test_registry_ownership_marker_and_directory_statuses_are_explicit(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         listings = (ROOT / "docs" / "directory-listings.md").read_text(encoding="utf-8")
         self.assertIn(
@@ -163,13 +163,16 @@ class RepositoryHygieneTests(unittest.TestCase):
         self.assertIn("awesome-mcp-servers", listings)
         self.assertIn("Glama", listings)
         self.assertIn("local-gpu-imagegen==0.8.3", listings)
-        self.assertIn("Status: prepared, not submitted", listings)
+        self.assertIn("awesome-mcp-servers#11452", listings)
+        self.assertIn("check-submission", listings)
+        self.assertIn("Status: not submitted", listings)
         self.assertIn(
             "not publishable release-set artifacts",
             listings,
         )
         self.assertIn("Complete 9+3 acceptance is not claimed.", listings)
         self.assertNotIn("local-gpu-imagegen==0.7.0", listings)
+        self.assertNotIn("publication remains pending", listings)
         self.assertNotIn("Status: submitted", listings)
 
 

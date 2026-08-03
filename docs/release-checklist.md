@@ -44,7 +44,7 @@ and a missed result does not retract the Release.
 - [x] The public Registry API returns exactly one matching `0.8.3` record with `status: active` and `isLatest: true`.
 - [x] The repository description and all eight prepared GitHub topics are applied and verified through the public repository API.
 - [ ] Remote social-preview metadata remains pending; the validated local preview asset has not been uploaded.
-- [ ] Directory submissions remain unsubmitted until each receives separate authority.
+- [ ] Directory submissions remain incomplete: `awesome-mcp-servers` PR [#11452](https://github.com/punkpeye/awesome-mcp-servers/pull/11452) is open with `check-submission` passing, while Glama remains unsubmitted because its current Add Server action requires an unavailable interactive browser surface.
 - [x] The earlier pessimistic forecast is retained as planning evidence, while the approved post-release measurement policy supersedes it as a publication gate.
 
 ## Post-release adoption measurement
