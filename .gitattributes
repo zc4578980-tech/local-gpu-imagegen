@@ -11,3 +11,6 @@ docs/assets/github-social-preview.html text eol=lf
 docs/demo/real/*.json text eol=lf
 docs/demo/real/*.md text eol=lf
 docs/evidence/client-sessions/*.json text eol=lf
+
+# Adoption event logs are canonical JSONL and back a SHA-256 hash chain.
+docs/evidence/adoption/**/events.jsonl text eol=lf
