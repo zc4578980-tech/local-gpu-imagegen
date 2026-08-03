@@ -203,13 +203,14 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("three explicit first-use decisions", " ".join(alternatives.split()))
         self.assertNotIn("two visible decisions", alternatives)
 
-    def test_launch_playbook_binds_100_star_floor_to_release_and_measurement(self) -> None:
+    def test_launch_playbook_binds_100_star_floor_to_post_release_measurement(self) -> None:
         playbook = LAUNCH_PLAYBOOK.read_text(encoding="utf-8")
         for required in (
             "100 net-new GitHub Stars",
             "minimum acceptable first-month outcome",
             "planning floor",
-            "below 100 blocks the formal launch",
+            "post-release adoption goal",
+            "does not block publication",
             "goal_missed",
             "continue iteration",
             "not a guarantee",
@@ -268,21 +269,21 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("candidate-report.json", playbook)
         self.assertIn('"status": "passed"', playbook)
 
-    def test_release_checklist_keeps_exact_candidate_report_unchecked(self) -> None:
+    def test_release_checklist_records_completed_local_release_gates(self) -> None:
         checklist = RELEASE_CHECKLIST.read_text(encoding="utf-8")
         self.assertIn(
-            "- [ ] The offline release-candidate verifier passes at the exact final commit",
+            "- [x] The offline release-candidate verifier passed at exact commit `6627838`",
             checklist,
         )
-        self.assertIn("candidate-report.json", checklist)
-        for pending in (
+        self.assertIn('"status": "passed"', checklist)
+        for completed in (
             "The final model-free suite",
             "A fresh isolated Python 3.12 environment",
             "Installed `verify`",
             "Tracked files, staged files, and wheel entries",
         ):
-            with self.subTest(pending=pending):
-                self.assertIn(f"- [ ] {pending}", checklist)
+            with self.subTest(completed=completed):
+                self.assertIn(f"- [x] {completed}", checklist)
 
     def test_quickstart_uses_three_first_use_decisions_and_one_successful_round(self) -> None:
         quickstart = QUICKSTART.read_text(encoding="utf-8")
@@ -332,15 +333,18 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertNotIn(" Stars", alternatives)
         self.assertNotIn("better than", alternatives.lower())
 
-    def test_star_floor_blocks_weak_launch_forecast_and_requires_iteration(
+    def test_star_floor_is_post_release_goal_and_requires_iteration(
         self,
     ) -> None:
         checklist = RELEASE_CHECKLIST.read_text(encoding="utf-8")
         listing = GITHUB_LISTING.read_text(encoding="utf-8")
         evidence = EVIDENCE_README.read_text(encoding="utf-8")
-        self.assertIn("pessimistic forecast", checklist)
-        self.assertIn("below `100 net-new GitHub Stars`", checklist)
-        self.assertIn("blocks the formal launch", checklist)
+        playbook = LAUNCH_PLAYBOOK.read_text(encoding="utf-8")
+        self.assertIn("post-release adoption goal", checklist)
+        self.assertIn("does not block publication", checklist)
+        self.assertNotIn("blocks the formal launch", checklist)
+        self.assertNotIn("blocks the formal launch", listing)
+        self.assertNotIn("blocks the formal launch", playbook)
         self.assertIn("Post-release adoption measurement", checklist)
         self.assertIn("100 net-new GitHub Stars", checklist)
         self.assertIn(
@@ -350,7 +354,7 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("does not retract the Release", checklist)
         self.assertIn("minimum acceptable first-month outcome", listing)
         self.assertIn("planning floor", listing)
-        self.assertIn("below 100 blocks the formal launch", listing)
+        self.assertIn("does not block publication", listing)
         self.assertIn("not a guarantee", listing)
         for required in (
             "docs/evidence/adoption/<campaign_id>/campaign.json",
@@ -490,7 +494,7 @@ class PublicDocumentationTests(unittest.TestCase):
     def test_github_listing_bounds_the_workflow_offer(self) -> None:
         listing = GITHUB_LISTING.read_text(encoding="utf-8")
         self.assertIn(
-            "v0.8.3 Preview - Run supported ComfyUI workflows from your Agent",
+            "Title: `Local GPU Imagegen v0.8.3`",
             listing,
         )
 
@@ -737,7 +741,7 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertEqual(plugin["version"], "0.8.3")
         self.assertIn('"version": "0.8.3"', readme)
         self.assertEqual(active_version_findings(active_documents), [])
-        self.assertIn("## [0.8.3] - Unreleased", changelog)
+        self.assertIn("## [0.8.3] - 2026-08-03", changelog)
         self.assertIn("## [0.8.2] - 2026-08-03", changelog)
         self.assertIn("public clean-cache acquisition", changelog)
         self.assertIn("Claude Code tool-catalog ingestion", changelog)

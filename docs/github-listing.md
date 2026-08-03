@@ -12,9 +12,9 @@ Topics:
 
 `mcp-server`, `local-ai`, `image-generation`, `comfyui`, `automatic1111`, `stable-diffusion`, `agent-tools`, `python`
 
-## Preview release
+## GitHub Release
 
-Title: `v0.8.3 Preview - Run supported ComfyUI workflows from your Agent`
+Title: `Local GPU Imagegen v0.8.3`
 
 Summary:
 
@@ -26,9 +26,9 @@ A current-v0.8 Codex managed-MCP live gate completed exact-file verification, im
 
 One installed Codex session produced a validated ordinary `sdxl-txt2img` SDXL/ComfyUI result retained as its original 1024x1024 finalized PNG with a sanitized MCP result, full-resolution review, exact hashes, and public rights. Its disclosed limitations are a red-purple palette rather than clear blue hour, no distinct directional beacon beam, one extra navigation beacon, and minor railing/cliff-ladder artifacts. Regional and two-stage composition remain experimental, are not part of the golden path, and provide no fallback; their retained negative evidence does not establish a visual-quality improvement.
 
-Publication still requires a retained Claude Code generation session, a publishable current-v0.8 named-client generation artifact, four green public CI jobs at the exact release commit, the exact PyPI artifact, the MCP Registry record, reviewed social-preview metadata, synchronized release copy, and later explicit authority for every remote-publication action. `100 net-new GitHub Stars` is the minimum acceptable first-month outcome and planning floor, not the target; the operating target is higher. A written pessimistic forecast below 100 blocks the formal launch, while the floor remains an adoption threshold, not a guarantee. Publication-dependent URLs remain pending. Zero-GPU real-client onboarding evidence is retained, but the release does not claim complete 9+3 acceptance, measured quality, latency, VRAM, concurrency, production readiness, or workflow-generated image evidence.
+Public `v0.8.3` is available from PyPI and as a non-prerelease GitHub Release at `https://github.com/zc4578980-tech/local-gpu-imagegen/releases/tag/v0.8.3`; its exact release commit passed the four-job Windows/Ubuntu and Python 3.11/3.12 matrix. MCP Registry publication, repository topics, social-preview metadata, and directory submissions remain pending. `100 net-new GitHub Stars` is the minimum acceptable first-month outcome and planning floor, not the target; it is a post-release adoption goal and does not block publication. The threshold is not a guarantee, and a miss does not retract the Release. Zero-GPU real-client onboarding evidence is retained, but the release does not claim complete 9+3 acceptance, measured quality, latency, VRAM, concurrency, production readiness, or workflow-generated image evidence.
 
-Install after PyPI publication:
+Install:
 
 ```shell
 uvx local-gpu-imagegen verify

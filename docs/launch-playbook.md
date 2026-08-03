@@ -3,7 +3,8 @@
 `100 net-new GitHub Stars` is the minimum acceptable first-month outcome and
 the planning floor, not the target. The operating target is to exceed that
 floor. This threshold is not a guarantee and not a substitute for release
-correctness.
+correctness. It is a post-release adoption goal and planning floor; it
+does not block publication or replace engineering and evidence gates.
 
 ## Local Readiness
 
@@ -23,16 +24,20 @@ Before any remote action:
 - Keep ComfyUI's role and the product boundary explicit: ComfyUI generates the
   pixels; Local GPU Imagegen controls authority, reproducibility, review, and
   recovery.
-- Write a pessimistic first-month forecast from named launch channels,
-  documented conversion assumptions, and available response capacity. A
-  forecast below 100 blocks the formal launch; improve the product,
-  positioning, evidence, or distribution plan before recalculating it.
+- Retain forecasts as planning evidence for channel and response-capacity
+  decisions. Do not treat an unmeasured forecast as release proof or as a
+  substitute for the post-release observation campaign.
 
-## Publication Sequence
+## Publication Status
 
 Each remote mutation needs separate approval unless the user explicitly bundles
-named actions. Preserve this order so every public record points to the same
-verified state:
+named actions. For `v0.8.3`, the exact release commit passed four green CI jobs,
+the exact verified wheel reached PyPI, and tag `v0.8.3` plus the public GitHub
+Release were published. The MCP Registry record, repository topics,
+social-preview metadata, `awesome-mcp-servers`, and Glama remain pending.
+
+For subsequent releases, preserve this order so every public record points to
+the same verified state:
 
 1. Push the exact release commit and require four green CI jobs across Windows,
    Ubuntu, Python 3.11, and Python 3.12.
