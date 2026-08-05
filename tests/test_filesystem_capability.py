@@ -22,6 +22,7 @@ from local_gpu_imagegen._filesystem_capability import (  # noqa: E402
 
 
 class FilesystemCapabilityTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows handle-bound promotion semantics")
     def test_promotion_moves_owned_file_into_captured_parent_without_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
@@ -40,6 +41,7 @@ class FilesystemCapabilityTests(unittest.TestCase):
             self.assertFalse(source.exists())
             self.assertEqual(destination.read_bytes(), b"owned")
 
+    @unittest.skipUnless(os.name == "nt", "Windows handle-bound promotion semantics")
     def test_promotion_moves_owned_directory_into_captured_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
@@ -59,6 +61,7 @@ class FilesystemCapabilityTests(unittest.TestCase):
             self.assertFalse(source.exists())
             self.assertEqual((destination / "marker.txt").read_bytes(), b"owned")
 
+    @unittest.skipUnless(os.name == "nt", "Windows handle-bound promotion semantics")
     def test_promotion_collision_preserves_owned_source_and_destination(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
@@ -79,21 +82,51 @@ class FilesystemCapabilityTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), b"owned")
             self.assertEqual(destination.read_bytes(), b"existing")
 
-    def test_posix_promotion_fails_closed_when_renameat2_is_unavailable(self) -> None:
+    @unittest.skipUnless(os.name == "posix", "POSIX descriptor promotion semantics")
+    def test_posix_promotion_retains_replacement_inserted_after_source_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            source = root / "owned.staging"
+            replacement = root / "replacement.tmp"
+            displaced = root / "displaced.tmp"
+            destination = root / "installed.bin"
+            source.write_bytes(b"owned")
+            replacement.write_bytes(b"replacement")
+            source_identity = source.lstat()
+            original_promote = _filesystem_capability._promote_descriptor_no_replace
+
+            def replace_source_after_open(*args: object) -> None:
+                source.rename(displaced)
+                replacement.rename(source)
+                original_promote(*args)
+
+            with mock.patch.object(
+                _filesystem_capability,
+                "_promote_descriptor_no_replace",
+                side_effect=replace_source_after_open,
+            ), self.assertRaises(OSError) as raised:
+                promote_owned_path_no_replace(
+                    source,
+                    source_identity,
+                    destination,
+                    root.lstat(),
+                    directory=False,
+                )
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(raised.exception.errno, errno.ENOTSUP)
+            self.assertEqual(source.read_bytes(), b"replacement")
+            self.assertEqual(displaced.read_bytes(), b"owned")
+
+    def test_posix_promotion_is_unconditionally_unsupported(self) -> None:
         with mock.patch.object(
             _filesystem_capability.os,
             "name",
             "posix",
-        ), mock.patch.object(
-            _filesystem_capability,
-            "_RENAMEAT2",
-            None,
-            create=True,
         ), self.assertRaises(OSError) as raised:
             _filesystem_capability._promote_descriptor_no_replace(
                 1,
                 2,
-                "owned.staging",
                 "installed.bin",
             )
 

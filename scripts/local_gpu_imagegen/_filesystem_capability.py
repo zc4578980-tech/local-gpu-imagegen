@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import errno
 import os
 import stat
@@ -14,6 +13,7 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 if os.name == "nt":
+    import ctypes
     import msvcrt
     from ctypes import wintypes
 
@@ -88,21 +88,6 @@ if os.name == "nt":
         ctypes.c_int,
     ]
     _NT_SET_INFORMATION_FILE.restype = wintypes.LONG
-else:
-    _LIBC = ctypes.CDLL(None, use_errno=True)
-    _RENAMEAT2 = getattr(_LIBC, "renameat2", None)
-    if _RENAMEAT2 is not None:
-        _RENAMEAT2.argtypes = [
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        ]
-        _RENAMEAT2.restype = ctypes.c_int
-
-
-_RENAME_NOREPLACE = 1
 
 
 def _safe_kind(path_stat: os.stat_result, *, directory: bool) -> bool:
@@ -244,7 +229,6 @@ def _open_promotion_source(
 def _promote_descriptor_no_replace(
     source_descriptor: int,
     parent_descriptor: int,
-    source_name: str,
     destination_name: str,
 ) -> None:
     if os.name == "nt":
@@ -287,22 +271,7 @@ def _promote_descriptor_no_replace(
             )
         return
 
-    if _RENAMEAT2 is None:
-        raise OSError(errno.ENOTSUP, "renameat2 no-replace promotion is unavailable")
-    ctypes.set_errno(0)
-    result = _RENAMEAT2(
-        parent_descriptor,
-        os.fsencode(source_name),
-        parent_descriptor,
-        os.fsencode(destination_name),
-        _RENAME_NOREPLACE,
-    )
-    if result == 0:
-        return
-    error_number = ctypes.get_errno()
-    if error_number == errno.EEXIST:
-        raise FileExistsError(error_number, os.strerror(error_number), destination_name)
-    raise OSError(error_number or errno.ENOTSUP, "renameat2 no-replace promotion failed")
+    raise OSError(errno.ENOTSUP, "handle-bound promotion is unavailable on POSIX")
 
 
 def promote_owned_path_no_replace(
@@ -340,7 +309,6 @@ def promote_owned_path_no_replace(
         _promote_descriptor_no_replace(
             source_descriptor,
             parent.descriptor,
-            source.name,
             destination.name,
         )
         promoted_stat = os.fstat(source_descriptor)
