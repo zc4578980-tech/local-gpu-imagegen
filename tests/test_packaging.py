@@ -112,6 +112,7 @@ class PackagingTests(unittest.TestCase):
         required_suffixes = {
             "local_gpu_imagegen/backend_lifecycle.py",
             "local_gpu_imagegen/bootstrap_catalog.py",
+            "local_gpu_imagegen/bootstrap_download.py",
             "local_gpu_imagegen/two_stage_layout.py",
             "local_gpu_imagegen/workflow_onboarding.py",
             "mcp_server.py",
