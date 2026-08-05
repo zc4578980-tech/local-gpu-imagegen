@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.metadata
 import os
 import re
+import shutil
 import socket
 import stat
 import urllib.error
@@ -22,6 +25,7 @@ MAX_DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_DOWNLOAD_TIMEOUT_SECONDS = 300.0
 MAX_ARCHIVE_ENTRIES = 200_000
 MAX_ARCHIVE_EXPANDED_BYTES = 20 * 1024 * 1024 * 1024
+PY7ZR_VERSION = "1.1.3"
 APPROVED_REDIRECT_HOSTS_BY_SOURCE = {
     "github.com": frozenset({
         "release-assets.githubusercontent.com",
@@ -35,6 +39,7 @@ APPROVED_REDIRECT_HOSTS_BY_SOURCE = {
     }),
 }
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_PLAN_ID = re.compile(r"[0-9a-f]{24}\Z")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _WINDOWS_DEVICE_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
@@ -160,6 +165,260 @@ def validate_portable_archive_inventory(
             {"missing": missing},
         )
     return inventory
+
+
+def safe_extract_portable(
+    archive_path: Path,
+    install_root: Path,
+    *,
+    expected_root: str,
+    plan_id: str,
+) -> Path:
+    try:
+        archive = _absolute_without_resolving_links(archive_path)
+        root = _absolute_without_resolving_links(install_root)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise ArtifactError(
+            "invalid_extraction_options",
+            "Portable archive and install root paths are invalid.",
+        ) from error
+    root_key = _archive_destination_key(expected_root)
+    if "/" in root_key or not isinstance(plan_id, str) or _PLAN_ID.fullmatch(plan_id) is None:
+        raise ArtifactError(
+            "invalid_extraction_options",
+            "Portable extraction requires one safe root and a 24-character plan ID.",
+        )
+    if not _is_regular_non_reparse_file(archive):
+        raise ArtifactError(
+            "invalid_archive_path",
+            "Portable archive must be an existing regular non-reparse file.",
+        )
+
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise ArtifactError(
+            "invalid_install_root",
+            "Portable install root could not be created safely.",
+        ) from error
+    if not _is_directory_non_reparse(root):
+        raise ArtifactError(
+            "invalid_install_root",
+            "Portable install root must be a directory and not a reparse point.",
+        )
+    destination = root / expected_root
+    staging = root / f".local-gpu-imagegen-{plan_id}.staging"
+    if _path_lexists(destination):
+        raise ArtifactError(
+            "portable_destination_conflict",
+            "Portable destination already exists and will not be overwritten.",
+            {"path": str(destination)},
+        )
+    if _path_lexists(staging):
+        raise ArtifactError(
+            "portable_staging_conflict",
+            "Plan-owned extraction staging path already exists.",
+            {"path": str(staging)},
+        )
+
+    py7zr = _load_py7zr()
+    staging.mkdir()
+    try:
+        with py7zr.SevenZipFile(
+            archive,
+            "r",
+            max_extract_size=MAX_ARCHIVE_EXPANDED_BYTES,
+        ) as archive_reader:
+            inventory = validate_archive_entries(
+                _py7zr_archive_entries(archive_reader.list())
+            )
+            validate_portable_archive_inventory(
+                inventory,
+                expected_root=expected_root,
+            )
+            archive_reader.extractall(path=staging)
+
+        actual_inventory = _validate_post_extraction(
+            inventory,
+            staging,
+            expected_root=expected_root,
+        )
+        extracted_root_name = next(
+            entry.name
+            for entry in actual_inventory.entries
+            if _archive_destination_key(entry.name) == root_key
+        )
+        extracted_root = staging.joinpath(*PurePosixPath(extracted_root_name).parts)
+        extracted_root.rename(destination)
+        try:
+            staging.rmdir()
+        except OSError:
+            shutil.rmtree(staging, ignore_errors=True)
+    except Exception as error:
+        shutil.rmtree(staging, ignore_errors=True)
+        if isinstance(error, ArtifactError):
+            raise
+        raise ArtifactError(
+            "archive_extract_failed",
+            "Portable archive extraction failed before destination promotion.",
+            {"error_type": type(error).__name__},
+        ) from error
+    return destination
+
+
+def _load_py7zr() -> object:
+    try:
+        installed_version = importlib.metadata.version("py7zr")
+        module = importlib.import_module("py7zr")
+    except (ImportError, importlib.metadata.PackageNotFoundError) as error:
+        raise ArtifactError(
+            "extractor_dependency_unavailable",
+            f"Portable extraction requires py7zr=={PY7ZR_VERSION}.",
+        ) from error
+    if installed_version != PY7ZR_VERSION or getattr(module, "__version__", None) != PY7ZR_VERSION:
+        raise ArtifactError(
+            "extractor_dependency_mismatch",
+            f"Portable extraction requires py7zr=={PY7ZR_VERSION}.",
+            {"installed_version": installed_version},
+        )
+    return module
+
+
+def _py7zr_archive_entries(file_infos: Iterable[object]) -> tuple[ArchiveEntry, ...]:
+    entries: list[ArchiveEntry] = []
+    for info in file_infos:
+        is_symlink = getattr(info, "is_symlink", None)
+        is_directory = getattr(info, "is_directory", None)
+        is_file = getattr(info, "is_file", None)
+        if is_symlink is True:
+            kind = "symlink"
+        elif is_directory is True and is_file is False:
+            kind = "directory"
+        elif is_file is True and is_directory is False:
+            kind = "file"
+        else:
+            kind = "unknown"
+        entries.append(
+            ArchiveEntry(
+                name=getattr(info, "filename", None),
+                kind=kind,
+                uncompressed_bytes=(
+                    0 if kind == "directory" else getattr(info, "uncompressed", None)
+                ),
+            )
+        )
+    return tuple(entries)
+
+
+def _filesystem_archive_entries(root: Path) -> tuple[ArchiveEntry, ...]:
+    entries: list[ArchiveEntry] = []
+    pending = [root]
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as children:
+            for child in children:
+                relative_name = Path(child.path).relative_to(root).as_posix()
+                child_stat = child.stat(follow_symlinks=False)
+                if stat.S_ISLNK(child_stat.st_mode):
+                    kind = "symlink"
+                elif bool(getattr(child_stat, "st_file_attributes", 0) & reparse_flag):
+                    kind = "reparse"
+                elif stat.S_ISDIR(child_stat.st_mode):
+                    kind = "directory"
+                    pending.append(Path(child.path))
+                elif stat.S_ISREG(child_stat.st_mode):
+                    kind = "file"
+                else:
+                    kind = "special"
+                entries.append(
+                    ArchiveEntry(
+                        name=relative_name,
+                        kind=kind,
+                        uncompressed_bytes=child_stat.st_size if kind == "file" else 0,
+                    )
+                )
+    return tuple(entries)
+
+
+def _validate_extracted_inventory(
+    expected: ArchiveInventory,
+    actual: ArchiveInventory,
+) -> None:
+    expected_entries = _expanded_inventory_contract(expected)
+    actual_entries = {
+        _archive_destination_key(entry.name): (entry.kind, entry.uncompressed_bytes)
+        for entry in actual.entries
+    }
+    if actual_entries != expected_entries:
+        raise ArtifactError(
+            "archive_postcheck_failed",
+            "Extracted files do not match the preflight archive inventory.",
+        )
+
+
+def _validate_post_extraction(
+    expected: ArchiveInventory,
+    staging: Path,
+    *,
+    expected_root: str,
+) -> ArchiveInventory:
+    try:
+        actual = validate_archive_entries(_filesystem_archive_entries(staging))
+        validate_portable_archive_inventory(actual, expected_root=expected_root)
+        _validate_extracted_inventory(expected, actual)
+    except ArtifactError as error:
+        if error.code == "archive_postcheck_failed":
+            raise
+        raise ArtifactError(
+            "archive_postcheck_failed",
+            "Extracted filesystem objects violate the portable archive contract.",
+            {"cause": error.code},
+        ) from error
+    return actual
+
+
+def _expanded_inventory_contract(
+    inventory: ArchiveInventory,
+) -> dict[str, tuple[str, int]]:
+    contract: dict[str, tuple[str, int]] = {}
+    for entry in inventory.entries:
+        destination = _archive_destination_key(entry.name)
+        parts = destination.split("/")
+        for length in range(1, len(parts)):
+            contract.setdefault("/".join(parts[:length]), ("directory", 0))
+        contract[destination] = (entry.kind, entry.uncompressed_bytes)
+    return contract
+
+
+def _is_regular_non_reparse_file(path: Path) -> bool:
+    try:
+        path_stat = path.lstat()
+    except OSError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISREG(path_stat.st_mode) and not bool(
+        getattr(path_stat, "st_file_attributes", 0) & reparse_flag
+    )
+
+
+def _is_directory_non_reparse(path: Path) -> bool:
+    try:
+        path_stat = path.lstat()
+    except OSError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISDIR(path_stat.st_mode) and not bool(
+        getattr(path_stat, "st_file_attributes", 0) & reparse_flag
+    )
+
+
+def _absolute_without_resolving_links(path: Path) -> Path:
+    return Path(os.path.abspath(Path(path).expanduser()))
+
+
+def _path_lexists(path: Path) -> bool:
+    return os.path.lexists(path)
 
 
 def _archive_destination_key(name: object) -> str:

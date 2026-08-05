@@ -10,6 +10,9 @@ import urllib.request
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
+
+import py7zr
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +24,7 @@ from local_gpu_imagegen.bootstrap_download import (  # noqa: E402
     _PolicyRedirectHandler,
     download_part_path,
     download_verified,
+    safe_extract_portable,
     validate_archive_entries,
     validate_portable_archive_inventory,
 )
@@ -476,6 +480,246 @@ class ArchiveBoundaryTests(unittest.TestCase):
         for entry in invalid_entries:
             with self.subTest(entry=entry):
                 self.assert_unsafe([entry], "invalid_entry_metadata")
+
+
+class PortableExtractionTests(unittest.TestCase):
+    @staticmethod
+    def write_portable_archive(
+        root: Path,
+        *,
+        include_main: bool = True,
+        python_is_directory: bool = False,
+    ) -> Path:
+        source = root / "source" / "ComfyUI_windows_portable"
+        (source / "python_embeded").mkdir(parents=True)
+        (source / "ComfyUI").mkdir()
+        python_marker = source / "python_embeded" / "python.exe"
+        if python_is_directory:
+            python_marker.mkdir()
+        else:
+            python_marker.write_bytes(b"python")
+        if include_main:
+            (source / "ComfyUI" / "main.py").write_bytes(b"main")
+        archive_path = root / "portable.7z"
+        with py7zr.SevenZipFile(archive_path, "w") as archive:
+            archive.writeall(source, arcname="ComfyUI_windows_portable")
+        return archive_path
+
+    def test_safe_archive_is_staged_validated_and_atomically_placed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = self.write_portable_archive(root)
+            destination = safe_extract_portable(
+                archive_path,
+                root / "install",
+                expected_root="ComfyUI_windows_portable",
+                plan_id="a" * 24,
+            )
+
+            self.assertEqual(
+                destination.resolve(),
+                (root / "install" / "ComfyUI_windows_portable").resolve(),
+            )
+            self.assertEqual((destination / "python_embeded" / "python.exe").read_bytes(), b"python")
+            self.assertEqual((destination / "ComfyUI" / "main.py").read_bytes(), b"main")
+            self.assertEqual(
+                list((root / "install").glob(".local-gpu-imagegen-*.staging")),
+                [],
+            )
+
+    def test_missing_or_wrong_type_portable_markers_fail_before_promotion(self) -> None:
+        cases = (
+            {"include_main": False},
+            {"python_is_directory": True},
+        )
+        for index, options in enumerate(cases):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                archive_path = self.write_portable_archive(root, **options)
+
+                with self.assertRaises(ArtifactError) as raised:
+                    safe_extract_portable(
+                        archive_path,
+                        root / "install",
+                        expected_root="ComfyUI_windows_portable",
+                        plan_id=f"{index + 1:024x}",
+                    )
+
+                self.assertEqual(raised.exception.code, "invalid_portable_layout")
+                self.assertFalse((root / "install" / "ComfyUI_windows_portable").exists())
+                self.assertEqual(
+                    list((root / "install").glob(".local-gpu-imagegen-*.staging")),
+                    [],
+                )
+
+    def test_extractor_failure_cleans_only_current_plan_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            archive_path = self.write_portable_archive(root)
+            install_root = root / "install"
+            other_staging = install_root / f".local-gpu-imagegen-{'c' * 24}.staging"
+            other_staging.mkdir(parents=True)
+            sentinel = other_staging / "owner.txt"
+            sentinel.write_text("keep", encoding="utf-8")
+
+            def fail_after_partial_write(_archive, path, **_kwargs):
+                partial = Path(path) / "ComfyUI_windows_portable"
+                partial.mkdir(parents=True)
+                (partial / "partial.bin").write_bytes(b"partial")
+                raise RuntimeError("fixture extraction failure")
+
+            with mock.patch.object(
+                py7zr.SevenZipFile,
+                "extractall",
+                autospec=True,
+                side_effect=fail_after_partial_write,
+            ), self.assertRaises(ArtifactError) as raised:
+                safe_extract_portable(
+                    archive_path,
+                    install_root,
+                    expected_root="ComfyUI_windows_portable",
+                    plan_id="d" * 24,
+                )
+
+            self.assertEqual(raised.exception.code, "archive_extract_failed")
+            self.assertFalse(
+                (install_root / f".local-gpu-imagegen-{'d' * 24}.staging").exists()
+            )
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+            self.assertFalse((install_root / "ComfyUI_windows_portable").exists())
+
+    def test_post_extraction_inventory_drift_is_rejected_and_cleaned(self) -> None:
+        original_extractall = py7zr.SevenZipFile.extractall
+        for index, mutation in enumerate(("unexpected_file", "type_drift")):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                archive_path = self.write_portable_archive(root)
+                install_root = root / "install"
+
+                def extract_and_mutate(archive, path, **kwargs):
+                    original_extractall(archive, path, **kwargs)
+                    portable = Path(path) / "ComfyUI_windows_portable"
+                    if mutation == "unexpected_file":
+                        (portable / "unexpected.bin").write_bytes(b"unexpected")
+                    else:
+                        marker = portable / "python_embeded" / "python.exe"
+                        marker.unlink()
+                        marker.mkdir()
+
+                with mock.patch.object(
+                    py7zr.SevenZipFile,
+                    "extractall",
+                    autospec=True,
+                    side_effect=extract_and_mutate,
+                ), self.assertRaises(ArtifactError) as raised:
+                    safe_extract_portable(
+                        archive_path,
+                        install_root,
+                        expected_root="ComfyUI_windows_portable",
+                        plan_id=f"{index + 14:024x}",
+                    )
+
+                self.assertEqual(raised.exception.code, "archive_postcheck_failed")
+                self.assertFalse((install_root / "ComfyUI_windows_portable").exists())
+                self.assertEqual(
+                    list(install_root.glob(".local-gpu-imagegen-*.staging")),
+                    [],
+                )
+
+    def test_exact_py7zr_version_is_required_before_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = self.write_portable_archive(root)
+            install_root = root / "install"
+
+            with mock.patch(
+                "local_gpu_imagegen.bootstrap_download.importlib.metadata.version",
+                return_value="1.1.4",
+            ), self.assertRaises(ArtifactError) as raised:
+                safe_extract_portable(
+                    archive_path,
+                    install_root,
+                    expected_root="ComfyUI_windows_portable",
+                    plan_id="f" * 24,
+                )
+
+            self.assertEqual(raised.exception.code, "extractor_dependency_mismatch")
+            self.assertFalse((install_root / "ComfyUI_windows_portable").exists())
+            self.assertEqual(
+                list(install_root.glob(".local-gpu-imagegen-*.staging")),
+                [],
+            )
+
+    def test_successful_promotion_is_not_reported_failed_when_staging_cleanup_races(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            archive_path = self.write_portable_archive(root)
+            install_root = root / "install"
+            plan_id = "1" * 24
+            staging = install_root / f".local-gpu-imagegen-{plan_id}.staging"
+            original_rmdir = Path.rmdir
+
+            def fail_once_for_staging(path: Path) -> None:
+                if path == staging:
+                    raise OSError("fixture cleanup race")
+                original_rmdir(path)
+
+            with mock.patch.object(Path, "rmdir", new=fail_once_for_staging):
+                destination = safe_extract_portable(
+                    archive_path,
+                    install_root,
+                    expected_root="ComfyUI_windows_portable",
+                    plan_id=plan_id,
+                )
+
+            self.assertEqual(destination, install_root / "ComfyUI_windows_portable")
+            self.assertTrue((destination / "ComfyUI" / "main.py").is_file())
+            self.assertFalse(staging.exists())
+
+    def test_archive_symlink_is_rejected_before_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            archive_path = self.write_portable_archive(root)
+            archive_link = root / "portable-link.7z"
+            try:
+                archive_link.symlink_to(archive_path)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {type(error).__name__}")
+
+            with self.assertRaises(ArtifactError) as raised:
+                safe_extract_portable(
+                    archive_link,
+                    root / "install",
+                    expected_root="ComfyUI_windows_portable",
+                    plan_id="2" * 24,
+                )
+
+            self.assertEqual(raised.exception.code, "invalid_archive_path")
+            self.assertFalse((root / "install" / "ComfyUI_windows_portable").exists())
+
+    def test_existing_destination_is_preserved_without_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = self.write_portable_archive(root)
+            destination = root / "install" / "ComfyUI_windows_portable"
+            destination.mkdir(parents=True)
+            sentinel = destination / "owner.txt"
+            sentinel.write_text("keep", encoding="utf-8")
+
+            with self.assertRaises(ArtifactError) as raised:
+                safe_extract_portable(
+                    archive_path,
+                    root / "install",
+                    expected_root="ComfyUI_windows_portable",
+                    plan_id="b" * 24,
+                )
+
+            self.assertEqual(raised.exception.code, "portable_destination_conflict")
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+            self.assertEqual(
+                list((root / "install").glob(".local-gpu-imagegen-*.staging")),
+                [],
+            )
 
 
 if __name__ == "__main__":

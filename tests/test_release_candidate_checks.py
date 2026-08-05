@@ -233,7 +233,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         wheel = root / "local_gpu_imagegen-0.8.3-py3-none-any.whl"
         metadata = metadata or (
             "Metadata-Version: 2.4\nName: local-gpu-imagegen\nVersion: 0.8.3\n"
-            "Requires-Python: >=3.11\n\n"
+            "Requires-Python: >=3.11\nRequires-Dist: py7zr==1.1.3\n\n"
         )
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr("local_gpu_imagegen/__init__.py", '__version__ = "0.8.3"\n')

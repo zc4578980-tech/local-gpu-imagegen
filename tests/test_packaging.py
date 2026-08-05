@@ -44,6 +44,23 @@ def write_fake_client(directory: Path, name: str, marker: Path) -> None:
     script.chmod(0o755)
 
 
+def write_py7zr_fixture_wheel(directory: Path) -> Path:
+    wheel = directory / "py7zr-1.1.3-py3-none-any.whl"
+    dist_info = "py7zr-1.1.3.dist-info"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("py7zr/__init__.py", '__version__ = "1.1.3"\n')
+        archive.writestr(
+            f"{dist_info}/METADATA",
+            "Metadata-Version: 2.1\nName: py7zr\nVersion: 1.1.3\n\n",
+        )
+        archive.writestr(
+            f"{dist_info}/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        archive.writestr(f"{dist_info}/RECORD", "")
+    return wheel
+
+
 class PackagingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -100,6 +117,7 @@ class PackagingTests(unittest.TestCase):
         project = document["project"]
         self.assertEqual(project["version"], "0.8.3")
         self.assertEqual(project["license"], "MIT")
+        self.assertEqual(project["dependencies"], ["py7zr==1.1.3"])
         self.assertEqual(
             project["scripts"]["local-gpu-imagegen"],
             "local_gpu_imagegen.cli:main",
@@ -234,6 +252,10 @@ class PackagingTests(unittest.TestCase):
         environment["UV_OFFLINE"] = "1"
         environment["UV_NO_INDEX"] = "1"
         environment["UV_CACHE_DIR"] = str(self.temp / "uv-cache")
+        wheelhouse = self.temp / "wheelhouse"
+        wheelhouse.mkdir()
+        write_py7zr_fixture_wheel(wheelhouse)
+        environment["UV_FIND_LINKS"] = str(wheelhouse)
 
         completed = subprocess.run(
             [

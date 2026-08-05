@@ -29,6 +29,7 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 EXPECTED_WHEEL = "local_gpu_imagegen-0.8.3-py3-none-any.whl"
 EXPECTED_VERSION = "0.8.3"
 EXPECTED_REQUIRES_PYTHON = ">=3.11"
+EXPECTED_DEPENDENCIES = ("py7zr==1.1.3",)
 EXPECTED_DIST_INFO = "local_gpu_imagegen-0.8.3.dist-info"
 EXPECTED_PROTOCOL = "2024-11-05"
 PUBLIC_MODEL_DESCRIPTOR_PARENT = PurePosixPath(
@@ -783,7 +784,7 @@ def _project_matches(root: Path) -> bool:
         and project.get("name") == "local-gpu-imagegen"
         and project.get("version") == EXPECTED_VERSION
         and project.get("requires-python") == EXPECTED_REQUIRES_PYTHON
-        and project.get("dependencies") == []
+        and project.get("dependencies") == list(EXPECTED_DEPENDENCIES)
     )
 
 
@@ -911,7 +912,7 @@ def inspect_wheel(
                     or metadata.get_all("Name") != ["local-gpu-imagegen"]
                     or metadata.get_all("Version") != [EXPECTED_VERSION]
                     or metadata.get_all("Requires-Python") != [EXPECTED_REQUIRES_PYTHON]
-                    or metadata.get_all("Requires-Dist")
+                    or metadata.get_all("Requires-Dist") != list(EXPECTED_DEPENDENCIES)
                     or wheel_metadata.get_all("Wheel-Version") != ["1.0"]
                     or wheel_metadata.get_all("Tag") != ["py3-none-any"]
                 ):

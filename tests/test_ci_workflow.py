@@ -28,6 +28,16 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn(install, workflow)
         self.assertLess(workflow.index(install), workflow.index(suite))
 
+    def test_pinned_py7zr_is_installed_before_archive_tests(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(
+            encoding="utf-8"
+        )
+        install = '"py7zr==1.1.3"'
+        suite = "python -m unittest discover -s tests -v"
+
+        self.assertIn(install, workflow)
+        self.assertLess(workflow.index(install), workflow.index(suite))
+
     def test_public_matrix_keeps_four_required_jobs(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(
             encoding="utf-8"
