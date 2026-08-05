@@ -5,14 +5,16 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 from pathlib import Path, PurePosixPath
 from typing import Callable
 from urllib.parse import urlsplit
 
 from .bootstrap_catalog import MAX_ARTIFACT_BYTES, BootstrapArtifact
-from .bootstrap_download import download_verified
-from .errors import StateError, ValidationError
+from .bootstrap_download import download_verified, safe_extract_portable
+from .client_setup import managed_comfyui_server_command
+from .errors import ArtifactError, StateError, ValidationError
 
 
 _PLAN_ID = re.compile(r"[0-9a-f]{24}\Z")
@@ -26,6 +28,9 @@ _TRANSACTION_FIELDS = frozenset({
     "confirmation_sha256",
     "status",
     "downloaded_artifacts",
+    "failure_code",
+    "retained_state",
+    "recoverable_next_actions",
 })
 _SCOPE_FIELDS = frozenset({
     "schema_version",
@@ -177,11 +182,25 @@ def apply_bootstrap_plan(
     _validate_action_contract(scope)
     normalized_artifacts = _normalize_artifacts(scope)
     _validate_scope_byte_contract(scope, normalized_artifacts)
+    install_root = Path(scope["install_root"])
+    portable_root = install_root / normalized_artifacts["comfyui"].install_relative_path
+    model_path = install_root.joinpath(
+        *PurePosixPath(normalized_artifacts["model"].install_relative_path).parts
+    )
+    portable_pre_existing = os.path.lexists(portable_root)
+    model_pre_existing = os.path.lexists(model_path)
     expected_downloaded_artifacts = tuple(
         normalized_artifacts[action["kind"].removeprefix("download_")].artifact_id
         for action in scope["actions"]
         if action["kind"] in {"download_comfyui", "download_model"}
     )
+    expected_completed_retained_state = {
+        "portable": (
+            "installed" if scope["facts"]["portable_status"] == "missing" else "pre_existing"
+        ),
+        "model": "installed" if scope["facts"]["model_status"] == "missing" else "pre_existing",
+        "verified_cache_artifacts": list(expected_downloaded_artifacts),
+    }
 
     transaction_path = root / f"{plan_id}.transaction.json"
     existing_result = _existing_transaction_result(
@@ -190,6 +209,10 @@ def apply_bootstrap_plan(
         scope_sha256,
         confirmation,
         expected_downloaded_artifacts,
+        expected_completed_retained_state,
+        portable_root,
+        model_path,
+        normalized_artifacts["model"],
     )
     if existing_result is not None:
         return existing_result
@@ -204,6 +227,10 @@ def apply_bootstrap_plan(
             scope_sha256,
             confirmation,
             expected_downloaded_artifacts,
+            expected_completed_retained_state,
+            portable_root,
+            model_path,
+            normalized_artifacts["model"],
         )
         if existing_result is not None:
             return existing_result
@@ -224,6 +251,10 @@ def apply_bootstrap_plan(
             scope_sha256,
             confirmation,
             expected_downloaded_artifacts,
+            expected_completed_retained_state,
+            portable_root,
+            model_path,
+            normalized_artifacts["model"],
         )
         if existing_result is not None:
             return existing_result
@@ -234,30 +265,98 @@ def apply_bootstrap_plan(
             "confirmation_sha256": _sha256_text(confirmation),
             "status": "in_progress",
             "downloaded_artifacts": [],
+            "failure_code": None,
+            "retained_state": {
+                "portable": "pre_existing" if portable_pre_existing else "missing",
+                "model": "pre_existing" if model_pre_existing else "missing",
+                "verified_cache_artifacts": [],
+            },
+            "recoverable_next_actions": [],
         }
         _atomic_write_state(transaction_path, transaction, root, root_stat)
 
         downloaded: list[str] = []
+        downloaded_paths: dict[str, Path] = {}
+        managed_command: tuple[str, ...] | None = None
         actions = scope["actions"]
         try:
             for action in actions:
                 kind = action["kind"]
-                if kind not in {"download_comfyui", "download_model"}:
-                    continue
-                artifact_kind = kind.removeprefix("download_")
-                artifact = normalized_artifacts[artifact_kind]
-                downloader(artifact, root.parent / "cache")
-                downloaded.append(artifact.artifact_id)
-        except Exception:
+                if kind in {"download_comfyui", "download_model"}:
+                    artifact_kind = kind.removeprefix("download_")
+                    artifact = normalized_artifacts[artifact_kind]
+                    downloaded_path = downloader(artifact, root.parent / "cache")
+                    downloaded_paths[artifact_kind] = _require_exact_artifact_file(
+                        downloaded_path,
+                        artifact,
+                    )
+                    downloaded.append(artifact.artifact_id)
+                elif kind == "extract_comfyui":
+                    portable_root = safe_extract_portable(
+                        downloaded_paths["comfyui"],
+                        install_root,
+                        expected_root=normalized_artifacts["comfyui"].install_relative_path,
+                        plan_id=plan_id,
+                    )
+                elif kind == "install_model":
+                    model_path = _place_model_no_overwrite(
+                        downloaded_paths["model"],
+                        model_path,
+                        portable_root,
+                        normalized_artifacts["model"],
+                        plan_id=plan_id,
+                    )
+                elif kind == "verify_install":
+                    _require_exact_artifact_file(model_path, normalized_artifacts["model"])
+                    managed_command = managed_comfyui_server_command(portable_root)
+        except Exception as error:
+            retained_state = _retained_install_state(
+                portable_root,
+                model_path,
+                downloaded,
+                portable_pre_existing=portable_pre_existing,
+                model_pre_existing=model_pre_existing,
+            )
+            recoverable_next_actions = _recoverable_next_actions(retained_state)
+            failure_code = getattr(error, "code", "bootstrap_execution_failed")
+            if not _nonempty_string(failure_code):
+                failure_code = "bootstrap_execution_failed"
             transaction["status"] = "failed"
             transaction["downloaded_artifacts"] = downloaded
+            transaction["failure_code"] = failure_code
+            transaction["retained_state"] = retained_state
+            transaction["recoverable_next_actions"] = recoverable_next_actions
             _atomic_write_state(transaction_path, transaction, root, root_stat)
-            raise
+            failed = _result("recoverable_failure", plan_id, scope_sha256)
+            failed.update(
+                ok=False,
+                error={"code": transaction["failure_code"]},
+                retained_state=retained_state,
+                recoverable_next_actions=recoverable_next_actions,
+            )
+            return failed
 
         transaction["status"] = "completed"
         transaction["downloaded_artifacts"] = downloaded
+        transaction["failure_code"] = None
+        transaction["retained_state"] = _retained_install_state(
+            portable_root,
+            model_path,
+            downloaded,
+            portable_pre_existing=portable_pre_existing,
+            model_pre_existing=model_pre_existing,
+        )
+        transaction["recoverable_next_actions"] = []
         _atomic_write_state(transaction_path, transaction, root, root_stat)
-        return _result("installed", plan_id, scope_sha256)
+        return _installed_result(
+            "installed",
+            plan_id,
+            scope_sha256,
+            portable_root,
+            model_path,
+            normalized_artifacts["model"],
+            managed_command=managed_command,
+        )
     finally:
         try:
             claim_path.rmdir()
@@ -271,6 +370,10 @@ def _existing_transaction_result(
     scope_sha256: str,
     confirmation: str,
     expected_downloaded_artifacts: tuple[str, ...],
+    expected_completed_retained_state: dict[str, object],
+    portable_root: Path,
+    model_path: Path,
+    model_artifact: BootstrapArtifact,
 ) -> dict[str, object] | None:
     if not os.path.lexists(transaction_path):
         return None
@@ -281,9 +384,17 @@ def _existing_transaction_result(
         scope_sha256,
         confirmation,
         expected_downloaded_artifacts,
+        expected_completed_retained_state,
     )
     if transaction["status"] == "completed":
-        return _result("already_installed", plan_id, scope_sha256)
+        return _installed_result(
+            "already_installed",
+            plan_id,
+            scope_sha256,
+            portable_root,
+            model_path,
+            model_artifact,
+        )
     raise StateError(
         "bootstrap_confirmation_consumed",
         "Bootstrap confirmation has already been consumed by another transaction state.",
@@ -344,6 +455,204 @@ def _atomic_write_state(
                     temp_path.unlink()
         except OSError:
             pass
+
+
+def _require_exact_artifact_file(
+    value: object,
+    artifact: BootstrapArtifact,
+) -> Path:
+    try:
+        path = Path(value)
+        path_stat = path.lstat()
+    except (OSError, TypeError, ValueError) as error:
+        raise ArtifactError(
+            "downloaded_artifact_invalid",
+            "Downloader output must be one exact verified artifact file.",
+        ) from error
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if (
+        not path.is_absolute()
+        or not stat.S_ISREG(path_stat.st_mode)
+        or stat.S_ISLNK(path_stat.st_mode)
+        or bool(getattr(path_stat, "st_file_attributes", 0) & reparse_flag)
+        or path_stat.st_nlink != 1
+        or path_stat.st_size != artifact.byte_size
+    ):
+        raise ArtifactError(
+            "downloaded_artifact_invalid",
+            "Downloader output must be one exact verified artifact file.",
+        )
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            opened_stat = os.fstat(stream.fileno())
+            if not os.path.samestat(path_stat, opened_stat):
+                raise OSError("artifact identity changed while opening")
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        if not os.path.samestat(path_stat, path.lstat()):
+            raise OSError("artifact identity changed while reading")
+    except OSError as error:
+        raise ArtifactError(
+            "downloaded_artifact_invalid",
+            "Downloader output could not be verified safely.",
+        ) from error
+    if digest.hexdigest() != artifact.sha256:
+        raise ArtifactError(
+            "downloaded_artifact_invalid",
+            "Downloader output size or digest does not match the frozen artifact.",
+        )
+    return path
+
+
+def _place_model_no_overwrite(
+    source: Path,
+    destination: Path,
+    portable_root: Path,
+    artifact: BootstrapArtifact,
+    *,
+    plan_id: str,
+) -> Path:
+    if os.path.lexists(destination):
+        raise ArtifactError(
+            "model_destination_conflict",
+            "Model destination already exists and will not be overwritten.",
+            {"path": str(destination)},
+        )
+    created_directories = _prepare_safe_model_parent(destination, portable_root)
+    staging = destination.with_name(f".{destination.name}.{plan_id}.staging")
+    try:
+        with source.open("rb") as input_stream, staging.open("xb") as output_stream:
+            shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+        _require_exact_artifact_file(staging, artifact)
+        os.link(staging, destination)
+        staging.unlink()
+        return _require_exact_artifact_file(destination, artifact)
+    except Exception:
+        try:
+            staging.unlink()
+        except OSError:
+            pass
+        for directory in reversed(created_directories):
+            try:
+                directory.rmdir()
+            except OSError:
+                break
+        raise
+
+
+def _prepare_safe_model_parent(destination: Path, portable_root: Path) -> list[Path]:
+    try:
+        destination.relative_to(portable_root)
+    except ValueError as error:
+        raise ArtifactError(
+            "unsafe_model_destination",
+            "Model destination is outside the fixed portable root.",
+        ) from error
+    lineage: list[Path] = []
+    current = destination.parent
+    while True:
+        lineage.append(current)
+        if current == portable_root:
+            break
+        parent = current.parent
+        if parent == current:
+            raise ArtifactError(
+                "unsafe_model_destination",
+                "Model destination does not descend from the fixed portable root.",
+            )
+        current = parent
+
+    created: list[Path] = []
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    try:
+        for directory in reversed(lineage):
+            if not os.path.lexists(directory):
+                directory.mkdir()
+                created.append(directory)
+            directory_stat = directory.lstat()
+            if (
+                not stat.S_ISDIR(directory_stat.st_mode)
+                or stat.S_ISLNK(directory_stat.st_mode)
+                or bool(getattr(directory_stat, "st_file_attributes", 0) & reparse_flag)
+            ):
+                raise OSError("model destination parent is link-like or not a directory")
+    except OSError as error:
+        for directory in reversed(created):
+            try:
+                directory.rmdir()
+            except OSError:
+                break
+        raise ArtifactError(
+            "unsafe_model_destination",
+            "Model destination parents must be fixed non-reparse directories.",
+        ) from error
+    return created
+
+
+def _retained_install_state(
+    portable_root: Path,
+    model_path: Path,
+    downloaded_artifacts: list[str],
+    *,
+    portable_pre_existing: bool,
+    model_pre_existing: bool,
+) -> dict[str, object]:
+    portable = "pre_existing" if portable_pre_existing else "missing"
+    model = "pre_existing" if model_pre_existing else "missing"
+    try:
+        if portable == "missing" and portable_root.is_dir() and any(portable_root.iterdir()):
+            portable = "installed"
+    except OSError:
+        pass
+    try:
+        if model == "missing" and model_path.is_file():
+            model = "installed"
+    except OSError:
+        pass
+    return {
+        "portable": portable,
+        "model": model,
+        "verified_cache_artifacts": list(downloaded_artifacts),
+    }
+
+
+def _recoverable_next_actions(retained_state: dict[str, object]) -> list[str]:
+    if retained_state.get("portable") in {"installed", "pre_existing"}:
+        return ["create_new_plan_reusing_portable"]
+    return ["create_new_bootstrap_plan"]
+
+
+def _installed_result(
+    status: str,
+    plan_id: str,
+    scope_sha256: str,
+    portable_root: Path,
+    model_path: Path,
+    model_artifact: BootstrapArtifact,
+    *,
+    managed_command: tuple[str, ...] | None = None,
+) -> dict[str, object]:
+    _require_exact_artifact_file(model_path, model_artifact)
+    if managed_command is None:
+        managed_command = managed_comfyui_server_command(portable_root)
+    result = _result(status, plan_id, scope_sha256)
+    result.update(
+        portable_root=str(portable_root.resolve()),
+        model_path=str(model_path.resolve()),
+        rediscovery={
+            "status": "deferred",
+            "mode": "api_only",
+            "next_action": "start_managed_comfyui_then_rediscover",
+        },
+        setup={
+            "status": "ready",
+            "managed_comfyui_server_command": list(managed_command),
+        },
+    )
+    return result
 
 
 def _require_same_state_root(path: Path, expected: os.stat_result) -> None:
@@ -476,25 +785,61 @@ def _validate_transaction(
     scope_sha256: str,
     confirmation: str,
     expected_downloaded_artifacts: tuple[str, ...],
+    expected_completed_retained_state: dict[str, object],
 ) -> None:
     downloaded = transaction.get("downloaded_artifacts")
+    retained_state = transaction.get("retained_state")
+    recoverable_next_actions = transaction.get("recoverable_next_actions")
+    status_value = transaction.get("status")
+    retained_valid = (
+        isinstance(retained_state, dict)
+        and set(retained_state) == {"portable", "model", "verified_cache_artifacts"}
+        and retained_state.get("portable") in {"missing", "pre_existing", "installed"}
+        and retained_state.get("model") in {"missing", "pre_existing", "installed"}
+        and retained_state.get("verified_cache_artifacts") == downloaded
+    )
     if (
         set(transaction) != _TRANSACTION_FIELDS
         or transaction.get("schema_version") != 1
         or transaction.get("plan_id") != plan_id
         or transaction.get("scope_sha256") != scope_sha256
         or transaction.get("confirmation_sha256") != _sha256_text(confirmation)
-        or transaction.get("status") not in {"in_progress", "failed", "completed"}
+        or status_value not in {"in_progress", "failed", "completed"}
         or not isinstance(downloaded, list)
         or any(not isinstance(item, str) or not item for item in downloaded)
         or len(downloaded) != len(set(downloaded))
         or (
-            transaction.get("status") == "completed"
+            status_value == "completed"
             and tuple(downloaded) != expected_downloaded_artifacts
         )
         or (
-            transaction.get("status") in {"in_progress", "failed"}
+            status_value in {"in_progress", "failed"}
             and tuple(downloaded) != expected_downloaded_artifacts[:len(downloaded)]
+        )
+        or not retained_valid
+        or not isinstance(recoverable_next_actions, list)
+        or any(not isinstance(item, str) or not item for item in recoverable_next_actions)
+        or (
+            status_value == "completed"
+            and (
+                transaction.get("failure_code") is not None
+                or retained_state != expected_completed_retained_state
+                or recoverable_next_actions != []
+            )
+        )
+        or (
+            status_value == "in_progress"
+            and (
+                transaction.get("failure_code") is not None
+                or recoverable_next_actions != []
+            )
+        )
+        or (
+            status_value == "failed"
+            and (
+                not _nonempty_string(transaction.get("failure_code"))
+                or recoverable_next_actions != _recoverable_next_actions(retained_state)
+            )
         )
     ):
         raise StateError(

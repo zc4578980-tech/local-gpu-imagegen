@@ -101,6 +101,33 @@ class RecordingRunner:
 
 
 class ClientSetupTests(unittest.TestCase):
+    def test_managed_command_revalidates_a_successful_bootstrap_result(self) -> None:
+        from local_gpu_imagegen.client_setup import managed_comfyui_server_command
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "ComfyUI_windows_portable"
+            python = root / "python_embeded" / "python.exe"
+            main = root / "ComfyUI" / "main.py"
+            python.parent.mkdir(parents=True)
+            main.parent.mkdir(parents=True)
+            python.write_bytes(b"python")
+            main.write_bytes(b"main")
+            install_result = {
+                "ok": True,
+                "status": "installed",
+                "portable_root": str(root),
+                "setup": {
+                    "status": "ready",
+                    "managed_comfyui_server_command": ["untrusted", "command"],
+                },
+            }
+
+            command = managed_comfyui_server_command(install_result)
+
+        self.assertNotIn("untrusted", command)
+        self.assertIn(str(root.resolve()), command)
+        self.assertIn("--auto-start-comfyui", command)
+
     def test_managed_comfyui_plan_pins_the_explicit_portable_root(self) -> None:
         from local_gpu_imagegen import __version__
         from local_gpu_imagegen.client_setup import (

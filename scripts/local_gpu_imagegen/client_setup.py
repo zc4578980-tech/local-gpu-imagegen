@@ -6,7 +6,7 @@ import re
 import shlex
 import shutil
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from local_gpu_imagegen import __version__
 from local_gpu_imagegen.backend_lifecycle import (
@@ -55,11 +55,20 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def managed_comfyui_server_command(
-    root: str | os.PathLike[str],
+    root: str | os.PathLike[str] | Mapping[str, object],
     *,
     base_url: str = DEFAULT_COMFYUI_URL,
     timeout_seconds: float = DEFAULT_START_TIMEOUT_SECONDS,
 ) -> tuple[str, ...]:
+    if isinstance(root, Mapping):
+        if (
+            root.get("ok") is not True
+            or root.get("status") not in {"installed", "already_installed"}
+            or not isinstance(root.get("portable_root"), str)
+            or not root["portable_root"]
+        ):
+            raise RuntimeError("invalid_bootstrap_install_result")
+        root = root["portable_root"]
     config = build_comfyui_start_config(
         root,
         base_url=base_url,
