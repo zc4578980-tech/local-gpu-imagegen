@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import sys
@@ -15,11 +16,89 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from local_gpu_imagegen import _filesystem_capability  # noqa: E402
 from local_gpu_imagegen._filesystem_capability import (  # noqa: E402
     open_exclusive_output,
+    promote_owned_path_no_replace,
     remove_owned_path,
 )
 
 
 class FilesystemCapabilityTests(unittest.TestCase):
+    def test_promotion_moves_owned_file_into_captured_parent_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            source = root / "owned.staging"
+            destination = root / "installed.bin"
+            source.write_bytes(b"owned")
+
+            promote_owned_path_no_replace(
+                source,
+                source.lstat(),
+                destination,
+                root.lstat(),
+                directory=False,
+            )
+
+            self.assertFalse(source.exists())
+            self.assertEqual(destination.read_bytes(), b"owned")
+
+    def test_promotion_moves_owned_directory_into_captured_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            source = root / "owned.staging"
+            destination = root / "installed"
+            source.mkdir()
+            (source / "marker.txt").write_bytes(b"owned")
+
+            promote_owned_path_no_replace(
+                source,
+                source.lstat(),
+                destination,
+                root.lstat(),
+                directory=True,
+            )
+
+            self.assertFalse(source.exists())
+            self.assertEqual((destination / "marker.txt").read_bytes(), b"owned")
+
+    def test_promotion_collision_preserves_owned_source_and_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            source = root / "owned.staging"
+            destination = root / "installed.bin"
+            source.write_bytes(b"owned")
+            destination.write_bytes(b"existing")
+
+            with self.assertRaises(FileExistsError):
+                promote_owned_path_no_replace(
+                    source,
+                    source.lstat(),
+                    destination,
+                    root.lstat(),
+                    directory=False,
+                )
+
+            self.assertEqual(source.read_bytes(), b"owned")
+            self.assertEqual(destination.read_bytes(), b"existing")
+
+    def test_posix_promotion_fails_closed_when_renameat2_is_unavailable(self) -> None:
+        with mock.patch.object(
+            _filesystem_capability.os,
+            "name",
+            "posix",
+        ), mock.patch.object(
+            _filesystem_capability,
+            "_RENAMEAT2",
+            None,
+            create=True,
+        ), self.assertRaises(OSError) as raised:
+            _filesystem_capability._promote_descriptor_no_replace(
+                1,
+                2,
+                "owned.staging",
+                "installed.bin",
+            )
+
+        self.assertEqual(raised.exception.errno, errno.ENOTSUP)
+
     def test_final_handle_path_mismatch_fails_before_nonempty_write(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
@@ -44,6 +123,38 @@ class FilesystemCapabilityTests(unittest.TestCase):
 
             self.assertTrue(not destination.exists() or destination.read_bytes() == b"")
 
+    def test_posix_fdopen_base_exception_closes_raw_output_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            destination = root / "owned.tmp"
+            parent = mock.Mock(descriptor=123)
+
+            with mock.patch.object(
+                _filesystem_capability.os,
+                "name",
+                "posix",
+            ), mock.patch.object(
+                _filesystem_capability._DirectoryCapability,
+                "capture",
+                return_value=parent,
+            ), mock.patch.object(
+                _filesystem_capability.os,
+                "open",
+                return_value=456,
+            ), mock.patch.object(
+                _filesystem_capability.os,
+                "fdopen",
+                side_effect=KeyboardInterrupt("fdopen interrupted"),
+            ), mock.patch.object(
+                _filesystem_capability.os,
+                "close",
+            ) as close_descriptor, self.assertRaises(KeyboardInterrupt):
+                open_exclusive_output(destination, root.lstat())
+
+            close_descriptor.assert_called_once_with(456)
+            parent.close.assert_called_once_with()
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle-bound disposition semantics")
     def test_capability_cleanup_deletes_exact_owned_file_and_empty_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -75,6 +186,41 @@ class FilesystemCapabilityTests(unittest.TestCase):
             self.assertFalse(removed)
             self.assertEqual(owned_file.read_bytes(), b"owned")
 
+    def test_posix_cleanup_retains_owned_path_without_delete_primitives(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            owned_file = Path(temporary_directory) / "owned.tmp"
+            owned_file.write_bytes(b"owned")
+
+            with mock.patch.object(
+                _filesystem_capability.os,
+                "name",
+                "posix",
+            ), mock.patch.object(
+                _filesystem_capability,
+                "_open_delete_descriptor",
+                side_effect=AssertionError("delete capability opened"),
+            ) as open_delete, mock.patch.object(
+                _filesystem_capability.os,
+                "unlink",
+                side_effect=AssertionError("unlink called"),
+            ) as unlink, mock.patch.object(
+                _filesystem_capability.os,
+                "rmdir",
+                side_effect=AssertionError("rmdir called"),
+            ) as rmdir:
+                removed = remove_owned_path(
+                    owned_file,
+                    owned_file.lstat(),
+                    directory=False,
+                )
+
+            self.assertFalse(removed)
+            self.assertEqual(owned_file.read_bytes(), b"owned")
+            open_delete.assert_not_called()
+            unlink.assert_not_called()
+            rmdir.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle-bound disposition semantics")
     def test_cleanup_rejects_a_replacement_opened_for_deletion(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

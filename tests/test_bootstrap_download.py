@@ -887,12 +887,12 @@ class PortableExtractionTests(unittest.TestCase):
 
                 self.assertEqual(raised.exception.code, "invalid_portable_layout")
                 self.assertFalse((root / "install" / "ComfyUI_windows_portable").exists())
-                self.assertEqual(
-                    list((root / "install").glob(".local-gpu-imagegen-*.staging")),
-                    [],
+                retained_staging = list(
+                    (root / "install").glob(".local-gpu-imagegen-*.staging")
                 )
+                self.assertEqual(len(retained_staging), 0 if os.name == "nt" else 1)
 
-    def test_extractor_failure_cleans_only_current_plan_staging(self) -> None:
+    def test_extractor_failure_preserves_other_plan_and_uses_platform_cleanup_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
             archive_path = self.write_portable_archive(root)
@@ -921,12 +921,11 @@ class PortableExtractionTests(unittest.TestCase):
                     install_root,
                     expected_root="ComfyUI_windows_portable",
                     plan_id="d" * 24,
-                )
+            )
 
             self.assertEqual(raised.exception.code, "archive_extract_failed")
-            self.assertFalse(
-                (install_root / f".local-gpu-imagegen-{'d' * 24}.staging").exists()
-            )
+            current_staging = install_root / f".local-gpu-imagegen-{'d' * 24}.staging"
+            self.assertEqual(current_staging.exists(), os.name != "nt")
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
             self.assertFalse((install_root / "ComfyUI_windows_portable").exists())
 
@@ -1033,7 +1032,70 @@ class PortableExtractionTests(unittest.TestCase):
             self.assertTrue((destination / "ComfyUI" / "main.py").is_file())
             self.assertFalse(staging.exists())
 
+    @unittest.skipUnless(os.name == "nt", "Windows handle-relative promotion semantics")
+    def test_promotion_time_swap_back_returns_portable_to_captured_root(self) -> None:
+        import local_gpu_imagegen._filesystem_capability as filesystem_capability
+        import local_gpu_imagegen.bootstrap_download as bootstrap_download
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            archive_path = self.write_portable_archive(root / "archive")
+            install_root = root / "install"
+            external = root / "external"
+            external.mkdir()
+            displaced_root = root / "captured-install"
+            plan_id = "7" * 24
+            staging = install_root / f".local-gpu-imagegen-{plan_id}.staging"
+            destination = install_root / "ComfyUI_windows_portable"
+            external_staging = external / staging.name
+            original_descriptor_promote = filesystem_capability._promote_descriptor_no_replace
+            original_promote = bootstrap_download.promote_owned_path_no_replace
+            swapped = False
+            restored = False
+
+            def swap_during_descriptor_promotion(*args, **kwargs) -> None:
+                nonlocal swapped
+                staging.replace(external_staging)
+                install_root.replace(displaced_root)
+                create_directory_alias(install_root, external)
+                swapped = True
+                original_descriptor_promote(*args, **kwargs)
+
+            def restore_after_capability_closes(*args, **kwargs):
+                nonlocal restored
+                try:
+                    return original_promote(*args, **kwargs)
+                finally:
+                    if swapped:
+                        os.rmdir(install_root)
+                        displaced_root.replace(install_root)
+                        restored = True
+
+            with mock.patch.object(
+                filesystem_capability,
+                "_promote_descriptor_no_replace",
+                side_effect=swap_during_descriptor_promotion,
+            ), mock.patch.object(
+                bootstrap_download,
+                "promote_owned_path_no_replace",
+                side_effect=restore_after_capability_closes,
+            ):
+                result = safe_extract_portable(
+                    archive_path,
+                    install_root,
+                    expected_root="ComfyUI_windows_portable",
+                    plan_id=plan_id,
+                )
+
+            self.assertTrue(swapped)
+            self.assertTrue(restored)
+            self.assertEqual(result, destination)
+            self.assertTrue((destination / "ComfyUI" / "main.py").is_file())
+            self.assertEqual(list(external.rglob("*")), [])
+
     def test_post_promotion_parent_swap_never_cleans_external_paths(self) -> None:
+        import local_gpu_imagegen.bootstrap_download as bootstrap_download
+
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
             archive_path = self.write_portable_archive(root / "archive")
@@ -1055,28 +1117,28 @@ class PortableExtractionTests(unittest.TestCase):
                 / f".local-gpu-imagegen-{plan_id}.staging"
                 / "owner.txt"
             )
-            original_rename = Path.rename
+            original_promote = bootstrap_download.promote_owned_path_no_replace
             alias_error: OSError | None = None
 
-            def promote_then_swap_parent(path: Path, target: Path) -> Path:
+            def promote_then_swap_parent(*args, **kwargs) -> None:
                 nonlocal alias_error
-                result = original_rename(path, target)
-                if Path(target) == destination:
-                    planned_parent.replace(displaced_parent)
-                    try:
-                        create_directory_alias(planned_parent, external_parent)
-                    except OSError as error:
-                        alias_error = error
-                    else:
-                        external_destination_sentinel.parent.mkdir()
-                        external_destination_sentinel.write_text("keep", encoding="utf-8")
-                        external_staging_sentinel.parent.mkdir()
-                        external_staging_sentinel.write_text("keep", encoding="utf-8")
-                return result
+                original_promote(*args, **kwargs)
+                planned_parent.replace(displaced_parent)
+                try:
+                    create_directory_alias(planned_parent, external_parent)
+                except OSError as error:
+                    alias_error = error
+                else:
+                    external_destination_sentinel.parent.mkdir()
+                    external_destination_sentinel.write_text("keep", encoding="utf-8")
+                    external_staging_sentinel.parent.mkdir()
+                    external_staging_sentinel.write_text("keep", encoding="utf-8")
 
-            with mock.patch.object(Path, "rename", new=promote_then_swap_parent), self.assertRaises(
-                ArtifactError
-            ) as raised:
+            with mock.patch.object(
+                bootstrap_download,
+                "promote_owned_path_no_replace",
+                side_effect=promote_then_swap_parent,
+            ), self.assertRaises(ArtifactError) as raised:
                 safe_extract_portable(
                     archive_path,
                     install_root,

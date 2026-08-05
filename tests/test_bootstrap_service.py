@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -289,6 +290,122 @@ class BootstrapServiceTests(unittest.TestCase):
                     downloader=fail_model_download,
                 )
             self.assertEqual(replayed.exception.code, "bootstrap_confirmation_consumed")
+
+    def test_disappeared_valid_portable_persists_missing_and_replays_as_consumed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            portable_root = self.write_portable_root(root)
+            plan = build_bootstrap_plan(
+                self.manifest,
+                self.facts(),
+                install_root=root / "install",
+                plan_root=state_dir,
+            )
+            shutil.rmtree(portable_root)
+            downloader = mock.Mock(side_effect=AssertionError("download called"))
+
+            first = apply_bootstrap_plan(
+                plan.plan_id,
+                plan.confirmation,
+                state_dir=state_dir,
+                downloader=downloader,
+            )
+            with self.assertRaises(StateError) as replayed:
+                apply_bootstrap_plan(
+                    plan.plan_id,
+                    plan.confirmation,
+                    state_dir=state_dir,
+                    downloader=downloader,
+                )
+
+            self.assertEqual(first["status"], "recoverable_failure")
+            self.assertEqual(first["retained_state"]["portable"], "missing")
+            self.assertEqual(replayed.exception.code, "bootstrap_confirmation_consumed")
+            self.assertEqual(
+                replayed.exception.details["retained_state"]["portable"],
+                "missing",
+            )
+            downloader.assert_not_called()
+
+    def test_disappeared_valid_model_persists_missing_and_replays_as_consumed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            portable_archive = self.write_portable_archive(root)
+            model_path = (
+                root
+                / "install"
+                / "ComfyUI_windows_portable"
+                / "ComfyUI"
+                / "models"
+                / "checkpoints"
+                / "sd_xl_base_1.0.safetensors"
+            )
+            model_path.parent.mkdir(parents=True)
+            model_path.write_bytes(b"synthetic-model")
+            base_facts = self.facts()
+            facts = BootstrapFacts(
+                platform=base_facts.platform,
+                architecture=base_facts.architecture,
+                gpu_vendor=base_facts.gpu_vendor,
+                gpu_generation=base_facts.gpu_generation,
+                vram_bytes=base_facts.vram_bytes,
+                windows_build=base_facts.windows_build,
+                free_disk_bytes=base_facts.free_disk_bytes,
+                network_allowed=base_facts.network_allowed,
+                endpoint_ready=base_facts.endpoint_ready,
+                portable_status="missing",
+                model_status="valid",
+            )
+            plan = build_bootstrap_plan(
+                self.manifest,
+                facts,
+                install_root=root / "install",
+                plan_root=state_dir,
+            )
+            plan_path = state_dir / f"{plan.plan_id}.json"
+            record = json.loads(plan_path.read_text(encoding="utf-8"))
+            portable_payload = portable_archive.read_bytes()
+            model_payload = model_path.read_bytes()
+            record["scope"]["artifacts"]["comfyui"]["byte_size"] = len(portable_payload)
+            record["scope"]["artifacts"]["comfyui"]["sha256"] = hashlib.sha256(
+                portable_payload
+            ).hexdigest()
+            record["scope"]["artifacts"]["model"]["byte_size"] = len(model_payload)
+            record["scope"]["artifacts"]["model"]["sha256"] = hashlib.sha256(
+                model_payload
+            ).hexdigest()
+            record["scope"]["required_download_bytes"] = len(portable_payload)
+            record["scope"]["required_disk_bytes"] = len(portable_payload)
+            plan_path.unlink()
+            plan_id, confirmation = write_rebound_plan(state_dir, record)
+            shutil.rmtree(root / "install")
+            downloader = mock.Mock(return_value=portable_archive)
+
+            first = apply_bootstrap_plan(
+                plan_id,
+                confirmation,
+                state_dir=state_dir,
+                downloader=downloader,
+            )
+            with self.assertRaises(StateError) as replayed:
+                apply_bootstrap_plan(
+                    plan_id,
+                    confirmation,
+                    state_dir=state_dir,
+                    downloader=downloader,
+                )
+
+            self.assertEqual(first["status"], "recoverable_failure")
+            self.assertEqual(first["retained_state"]["portable"], "installed")
+            self.assertEqual(first["retained_state"]["model"], "missing")
+            self.assertEqual(replayed.exception.code, "bootstrap_confirmation_consumed")
+            self.assertEqual(
+                replayed.exception.details["retained_state"]["model"],
+                "missing",
+            )
+            self.assertEqual(downloader.call_count, 1)
 
     def test_unowned_portable_appearing_after_snapshot_is_never_reported_reusable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -930,6 +1047,7 @@ class BootstrapServiceTests(unittest.TestCase):
                 not copied_read_sizes or max(copied_read_sizes) <= original_size + 1
             )
 
+    @unittest.skipUnless(os.name == "nt", "Windows Path.open staging injection")
     def test_replaced_empty_model_parent_is_never_removed_by_failure_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1099,7 +1217,9 @@ class BootstrapServiceTests(unittest.TestCase):
             self.assertEqual(result["error"], {"code": "unsafe_model_destination"})
             self.assertEqual(list(external.rglob("*.safetensors")), [])
 
-    def test_model_parent_swap_inside_atomic_link_is_detected_and_external_link_removed(self) -> None:
+    def test_model_parent_swap_after_handle_promotion_never_writes_external_model(self) -> None:
+        import local_gpu_imagegen.bootstrap_service as bootstrap_service
+
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             state_dir = root / "plans"
@@ -1112,23 +1232,20 @@ class BootstrapServiceTests(unittest.TestCase):
             displaced = root / "displaced-models"
             external = root / "external-models"
             (external / "checkpoints").mkdir(parents=True)
-            original_link = os.link
+            original_promote = bootstrap_service.promote_owned_path_no_replace
             swapped = False
 
-            def swap_parent_during_link(source, destination, *args, **kwargs):
+            def swap_parent_after_promotion(*args, **kwargs) -> None:
                 nonlocal swapped
-                if not swapped:
-                    models.replace(displaced)
-                    create_directory_alias(models, external)
-                    moved_staging = displaced / "checkpoints" / Path(source).name
-                    external_staging = external / "checkpoints" / Path(source).name
-                    original_link(moved_staging, external_staging)
-                    swapped = True
-                return original_link(source, destination, *args, **kwargs)
+                original_promote(*args, **kwargs)
+                models.replace(displaced)
+                create_directory_alias(models, external)
+                swapped = True
 
-            with mock.patch(
-                "local_gpu_imagegen.bootstrap_service.os.link",
-                side_effect=swap_parent_during_link,
+            with mock.patch.object(
+                bootstrap_service,
+                "promote_owned_path_no_replace",
+                side_effect=swap_parent_after_promotion,
             ):
                 result = apply_bootstrap_plan(
                     plan_id,
@@ -1140,6 +1257,85 @@ class BootstrapServiceTests(unittest.TestCase):
             self.assertEqual(result["status"], "recoverable_failure")
             self.assertEqual(result["error"], {"code": "unsafe_model_destination"})
             self.assertEqual(list(external.rglob("*.safetensors")), [])
+            self.assertEqual(
+                (
+                    displaced
+                    / "checkpoints"
+                    / "sd_xl_base_1.0.safetensors"
+                ).read_bytes(),
+                model_file.read_bytes(),
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle-relative promotion semantics")
+    def test_promotion_time_swap_back_returns_model_to_captured_parent(self) -> None:
+        import local_gpu_imagegen._filesystem_capability as filesystem_capability
+        import local_gpu_imagegen.bootstrap_service as bootstrap_service
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            state_dir = root / "plans"
+            plan_id, confirmation, _scope_sha256, model_file = self.synthetic_model_only_plan(
+                root,
+                state_dir,
+            )
+            checkpoints = (
+                root
+                / "install"
+                / "ComfyUI_windows_portable"
+                / "ComfyUI"
+                / "models"
+                / "checkpoints"
+            )
+            destination = checkpoints / "sd_xl_base_1.0.safetensors"
+            staging = destination.with_name(f".{destination.name}.{plan_id}.staging")
+            displaced = root / "captured-checkpoints"
+            external = root / "external-checkpoints"
+            external.mkdir()
+            external_staging = external / staging.name
+            original_descriptor_promote = filesystem_capability._promote_descriptor_no_replace
+            original_promote = bootstrap_service.promote_owned_path_no_replace
+            swapped = False
+            restored = False
+
+            def swap_during_descriptor_promotion(*args, **kwargs) -> None:
+                nonlocal swapped
+                staging.replace(external_staging)
+                checkpoints.replace(displaced)
+                create_directory_alias(checkpoints, external)
+                swapped = True
+                original_descriptor_promote(*args, **kwargs)
+
+            def restore_after_capability_closes(*args, **kwargs):
+                nonlocal restored
+                try:
+                    return original_promote(*args, **kwargs)
+                finally:
+                    if swapped:
+                        os.rmdir(checkpoints)
+                        displaced.replace(checkpoints)
+                        restored = True
+
+            with mock.patch.object(
+                filesystem_capability,
+                "_promote_descriptor_no_replace",
+                side_effect=swap_during_descriptor_promotion,
+            ), mock.patch.object(
+                bootstrap_service,
+                "promote_owned_path_no_replace",
+                side_effect=restore_after_capability_closes,
+            ):
+                result = apply_bootstrap_plan(
+                    plan_id,
+                    confirmation,
+                    state_dir=state_dir,
+                    downloader=lambda _artifact, _cache: model_file,
+                )
+
+            self.assertEqual(result["status"], "installed")
+            self.assertTrue(swapped)
+            self.assertTrue(restored)
+            self.assertEqual(destination.read_bytes(), model_file.read_bytes())
+            self.assertEqual(list(external.rglob("*")), [])
 
     def test_install_root_parent_swap_during_staging_creation_never_promotes_external_portable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1185,7 +1381,12 @@ class BootstrapServiceTests(unittest.TestCase):
             self.assertEqual(result["status"], "recoverable_failure")
             self.assertEqual(result["error"], {"code": "invalid_install_root"})
             self.assertFalse((external / "install" / "ComfyUI_windows_portable").exists())
-            self.assertEqual(list((external / "install").glob(".local-gpu-imagegen-*.staging")), [])
+            retained_staging = list(
+                (external / "install").glob(".local-gpu-imagegen-*.staging")
+            )
+            self.assertEqual(len(retained_staging), 0 if os.name == "nt" else 1)
+            if retained_staging:
+                self.assertEqual(list(retained_staging[0].iterdir()), [])
 
     def test_exact_confirmation_executes_once_and_then_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

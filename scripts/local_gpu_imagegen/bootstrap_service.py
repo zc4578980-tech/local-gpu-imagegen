@@ -16,7 +16,11 @@ from .bootstrap_download import download_cache_path, download_verified, safe_ext
 from .backend_lifecycle import build_comfyui_start_config
 from .client_setup import managed_comfyui_server_command
 from .errors import ArtifactError, StateError, ValidationError
-from ._filesystem_capability import open_exclusive_output, remove_owned_path
+from ._filesystem_capability import (
+    open_exclusive_output,
+    promote_owned_path_no_replace,
+    remove_owned_path,
+)
 
 
 _PLAN_ID = re.compile(r"[0-9a-f]{24}\Z")
@@ -758,7 +762,13 @@ def _place_model_no_overwrite(
                 output_stream.close()
         _require_exact_artifact_file(staging, artifact)
         _require_model_parent_guard(parent_guard)
-        os.link(staging, destination)
+        promote_owned_path_no_replace(
+            staging,
+            staging_identity,
+            destination,
+            parent_guard[0][1],
+            directory=False,
+        )
         try:
             _require_model_parent_guard(parent_guard)
             if not os.path.samestat(staging_identity, destination.lstat()):
@@ -769,7 +779,6 @@ def _place_model_no_overwrite(
         except BaseException:
             _unlink_owned_file(destination, staging_identity)
             raise
-        _unlink_owned_file(staging, staging_identity)
         return _require_exact_artifact_file(destination, artifact).path
     except BaseException:
         _unlink_owned_file(staging, staging_identity)
@@ -1212,7 +1221,12 @@ def _retained_transition_is_valid(
             if state == "installed" and required_download not in downloaded:
                 return False
         elif completed_state == "verified_pre_existing":
-            if state not in {"pre_existing", "verified_pre_existing", "unsafe_drift"}:
+            if state not in {
+                "missing",
+                "pre_existing",
+                "verified_pre_existing",
+                "unsafe_drift",
+            }:
                 return False
         else:
             return False

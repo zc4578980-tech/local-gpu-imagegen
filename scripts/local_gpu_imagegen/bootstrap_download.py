@@ -22,6 +22,7 @@ from .errors import ArtifactError
 from ._filesystem_capability import (
     open_bound_temporary,
     open_exclusive_output,
+    promote_owned_path_no_replace,
     remove_owned_path,
 )
 
@@ -453,7 +454,13 @@ def safe_extract_portable(
             )
             _require_directory_chain(root, root_guard)
             _require_owned_directory(staging, staging_identity)
-            staging.rename(destination)
+            promote_owned_path_no_replace(
+                staging,
+                staging_identity,
+                destination,
+                root_guard[0][1],
+                directory=True,
+            )
             if not os.path.samestat(staging_identity, destination.lstat()):
                 raise OSError("portable destination identity changed during promotion")
             _require_directory_chain(root, root_guard)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import errno
 import os
 import stat
 import tempfile
@@ -12,7 +14,6 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 if os.name == "nt":
-    import ctypes
     import msvcrt
     from ctypes import wintypes
 
@@ -55,10 +56,53 @@ if os.name == "nt":
     _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
     _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
     _FILE_DISPOSITION_INFO_CLASS = 4
+    _FILE_RENAME_INFORMATION_CLASS = 10
     _INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+    _STATUS_OBJECT_NAME_COLLISION = 0xC0000035
 
     class _FileDispositionInfo(ctypes.Structure):
         _fields_ = [("DeleteFile", wintypes.BOOL)]
+
+    class _IoStatusValue(ctypes.Union):
+        _fields_ = [("Status", wintypes.LONG), ("Pointer", ctypes.c_void_p)]
+
+    class _IoStatusBlock(ctypes.Structure):
+        _anonymous_ = ("value",)
+        _fields_ = [("value", _IoStatusValue), ("Information", ctypes.c_size_t)]
+
+    class _FileRenameInformation(ctypes.Structure):
+        _fields_ = [
+            ("ReplaceIfExists", ctypes.c_ubyte),
+            ("RootDirectory", wintypes.HANDLE),
+            ("FileNameLength", wintypes.ULONG),
+            ("FileName", wintypes.WCHAR * 1),
+        ]
+
+    _NTDLL = ctypes.WinDLL("ntdll")
+    _NT_SET_INFORMATION_FILE = _NTDLL.NtSetInformationFile
+    _NT_SET_INFORMATION_FILE.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_IoStatusBlock),
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        ctypes.c_int,
+    ]
+    _NT_SET_INFORMATION_FILE.restype = wintypes.LONG
+else:
+    _LIBC = ctypes.CDLL(None, use_errno=True)
+    _RENAMEAT2 = getattr(_LIBC, "renameat2", None)
+    if _RENAMEAT2 is not None:
+        _RENAMEAT2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        _RENAMEAT2.restype = ctypes.c_int
+
+
+_RENAME_NOREPLACE = 1
 
 
 def _safe_kind(path_stat: os.stat_result, *, directory: bool) -> bool:
@@ -179,6 +223,140 @@ class _DirectoryCapability:
         os.close(self.descriptor)
 
 
+def _open_promotion_source(
+    parent: _DirectoryCapability,
+    source: Path,
+    *,
+    directory: bool,
+) -> int:
+    if os.name == "nt":
+        return _windows_descriptor(
+            source,
+            access=_DELETE | _FILE_READ_ATTRIBUTES,
+            directory=directory,
+        )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    if directory:
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    return os.open(source.name, flags, dir_fd=parent.descriptor)
+
+
+def _promote_descriptor_no_replace(
+    source_descriptor: int,
+    parent_descriptor: int,
+    source_name: str,
+    destination_name: str,
+) -> None:
+    if os.name == "nt":
+        encoded_name = destination_name.encode("utf-16-le")
+        buffer_size = _FileRenameInformation.FileName.offset + len(encoded_name)
+        buffer = ctypes.create_string_buffer(buffer_size)
+        information = _FileRenameInformation.from_buffer(buffer)
+        information.ReplaceIfExists = 0
+        information.RootDirectory = wintypes.HANDLE(
+            msvcrt.get_osfhandle(parent_descriptor)
+        )
+        information.FileNameLength = len(encoded_name)
+        ctypes.memmove(
+            ctypes.addressof(buffer) + _FileRenameInformation.FileName.offset,
+            encoded_name,
+            len(encoded_name),
+        )
+        io_status = _IoStatusBlock()
+        status = int(
+            _NT_SET_INFORMATION_FILE(
+                wintypes.HANDLE(msvcrt.get_osfhandle(source_descriptor)),
+                ctypes.byref(io_status),
+                buffer,
+                buffer_size,
+                _FILE_RENAME_INFORMATION_CLASS,
+            )
+        )
+        if status < 0:
+            unsigned_status = ctypes.c_ulong(status).value
+            if unsigned_status == _STATUS_OBJECT_NAME_COLLISION:
+                raise FileExistsError(
+                    errno.EEXIST,
+                    "promotion destination already exists",
+                    destination_name,
+                )
+            raise OSError(
+                errno.ENOTSUP,
+                f"handle-relative promotion failed with NTSTATUS 0x{unsigned_status:08x}",
+                destination_name,
+            )
+        return
+
+    if _RENAMEAT2 is None:
+        raise OSError(errno.ENOTSUP, "renameat2 no-replace promotion is unavailable")
+    ctypes.set_errno(0)
+    result = _RENAMEAT2(
+        parent_descriptor,
+        os.fsencode(source_name),
+        parent_descriptor,
+        os.fsencode(destination_name),
+        _RENAME_NOREPLACE,
+    )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise FileExistsError(error_number, os.strerror(error_number), destination_name)
+    raise OSError(error_number or errno.ENOTSUP, "renameat2 no-replace promotion failed")
+
+
+def promote_owned_path_no_replace(
+    source: Path,
+    source_identity: os.stat_result,
+    destination: Path,
+    destination_parent_identity: os.stat_result,
+    *,
+    directory: bool,
+) -> os.stat_result:
+    """Promote one owned sibling through open handles without replacing a target."""
+    if (
+        not source.is_absolute()
+        or not destination.is_absolute()
+        or source.parent != destination.parent
+        or source.name == destination.name
+    ):
+        raise OSError("promotion requires distinct absolute sibling paths")
+
+    parent = _DirectoryCapability.capture(
+        destination.parent,
+        destination_parent_identity,
+    )
+    source_descriptor: int | None = None
+    try:
+        source_descriptor = _open_promotion_source(parent, source, directory=directory)
+        opened_stat = os.fstat(source_descriptor)
+        if (
+            not _safe_kind(opened_stat, directory=directory)
+            or not os.path.samestat(source_identity, opened_stat)
+            or (not directory and opened_stat.st_nlink != 1)
+        ):
+            raise OSError("promotion source capability identity mismatch")
+        parent.require_direct_child(source_descriptor, source.name)
+        _promote_descriptor_no_replace(
+            source_descriptor,
+            parent.descriptor,
+            source.name,
+            destination.name,
+        )
+        promoted_stat = os.fstat(source_descriptor)
+        if not _safe_kind(promoted_stat, directory=directory) or not os.path.samestat(
+            source_identity,
+            promoted_stat,
+        ):
+            raise OSError("promotion source identity changed")
+        parent.require_direct_child(source_descriptor, destination.name)
+        return promoted_stat
+    finally:
+        if source_descriptor is not None:
+            os.close(source_descriptor)
+        parent.close()
+
+
 def open_exclusive_output(
     path: Path,
     parent_identity: os.stat_result,
@@ -186,6 +364,7 @@ def open_exclusive_output(
     """Open one new file and prove its descriptor is a child of the captured parent."""
     parent = _DirectoryCapability.capture(path.parent, parent_identity)
     stream: BinaryIO | None = None
+    descriptor: int | None = None
     opened_stat: os.stat_result | None = None
     try:
         if os.name == "nt":
@@ -200,6 +379,7 @@ def open_exclusive_output(
             )
             descriptor = os.open(path.name, flags, 0o600, dir_fd=parent.descriptor)
             stream = os.fdopen(descriptor, "w+b")
+            descriptor = None
         opened_stat = os.fstat(stream.fileno())
         current_stat = path.lstat()
         if (
@@ -213,6 +393,8 @@ def open_exclusive_output(
     except BaseException:
         if stream is not None:
             stream.close()
+        if descriptor is not None:
+            os.close(descriptor)
         if opened_stat is not None:
             remove_owned_path(path, opened_stat, directory=False)
         raise
@@ -243,41 +425,20 @@ def open_bound_temporary(
 @dataclass(slots=True)
 class _DeleteCapability:
     descriptor: int
-    parent_descriptor: int | None = None
-    name: str | None = None
-    directory: bool = False
 
     def close(self) -> None:
         os.close(self.descriptor)
-        if self.parent_descriptor is not None:
-            os.close(self.parent_descriptor)
 
 
 def _open_delete_descriptor(path: Path, *, directory: bool) -> _DeleteCapability:
-    if os.name == "nt":
-        return _DeleteCapability(
-            descriptor=_windows_descriptor(
-                path,
-                access=_DELETE | _FILE_READ_ATTRIBUTES,
-                directory=directory,
-            ),
-            directory=directory,
-        )
-
-    parent_descriptor = _open_directory_descriptor(path.parent)
-    try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        if directory:
-            flags |= getattr(os, "O_DIRECTORY", 0)
-        descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
-    except BaseException:
-        os.close(parent_descriptor)
-        raise
+    if os.name != "nt":
+        raise OSError(errno.ENOTSUP, "handle-bound cleanup is unavailable")
     return _DeleteCapability(
-        descriptor=descriptor,
-        parent_descriptor=parent_descriptor,
-        name=path.name,
-        directory=directory,
+        descriptor=_windows_descriptor(
+            path,
+            access=_DELETE | _FILE_READ_ATTRIBUTES,
+            directory=directory,
+        ),
     )
 
 
@@ -294,23 +455,7 @@ def _delete_open_descriptor(capability: _DeleteCapability) -> bool:
             )
         )
 
-    if capability.parent_descriptor is None or capability.name is None:
-        return False
-    try:
-        current_stat = os.stat(
-            capability.name,
-            dir_fd=capability.parent_descriptor,
-            follow_symlinks=False,
-        )
-        if not os.path.samestat(current_stat, os.fstat(capability.descriptor)):
-            return False
-        if capability.directory:
-            os.rmdir(capability.name, dir_fd=capability.parent_descriptor)
-        else:
-            os.unlink(capability.name, dir_fd=capability.parent_descriptor)
-        return True
-    except OSError:
-        return False
+    return False
 
 
 def remove_owned_path(
@@ -320,6 +465,8 @@ def remove_owned_path(
     directory: bool,
 ) -> bool:
     """Delete only the object bound to an opened capability; otherwise retain it."""
+    if os.name != "nt":
+        return False
     try:
         capability = _open_delete_descriptor(path, directory=directory)
     except OSError:
