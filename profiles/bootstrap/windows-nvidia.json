@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "windows-nvidia-default",
+  "platform": "win32",
+  "architecture": "amd64",
+  "gpu_vendor": "nvidia",
+  "minimum_windows_build": 19045,
+  "minimum_free_disk_bytes": 32212254720,
+  "minimum_nvidia_gpu_generation": "rtx-20-series",
+  "cuda_runtime": "13.0",
+  "comfyui": {
+    "id": "comfyui-windows-portable-nvidia",
+    "version": "0.30.0",
+    "source_url": "https://github.com/Comfy-Org/ComfyUI/releases/download/v0.30.0/ComfyUI_windows_portable_nvidia.7z",
+    "source_host": "github.com",
+    "license_id": "GPL-3.0",
+    "license_url": "https://github.com/Comfy-Org/ComfyUI/blob/v0.30.0/LICENSE",
+    "byte_size": 2110797220,
+    "sha256": "f4353d069dd7342e3bef421f07f003cca53ca84168102705cfc83f66449f5ae5",
+    "archive_format": "7z",
+    "install_relative_path": "ComfyUI_windows_portable"
+  },
+  "model": {
+    "id": "stabilityai/stable-diffusion-xl-base-1.0",
+    "version": "1.0",
+    "source_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/462165984030d82259a11f4367a4eed129e94a7b/sd_xl_base_1.0.safetensors",
+    "source_host": "huggingface.co",
+    "license_id": "CreativeML-Open-RAIL++-M",
+    "license_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/462165984030d82259a11f4367a4eed129e94a7b/LICENSE.md",
+    "byte_size": 6938078334,
+    "sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+    "minimum_vram_gb": 10,
+    "install_relative_path": "ComfyUI_windows_portable/ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors",
+    "archive_format": null
+  },
+  "workflow": {
+    "backend": "comfyui",
+    "template_id": "sdxl-txt2img",
+    "template_version": 1,
+    "operation": "txt2img"
+  }
+}

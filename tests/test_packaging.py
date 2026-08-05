@@ -111,6 +111,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("local_gpu_imagegen/regional_layout.py", names)
         required_suffixes = {
             "local_gpu_imagegen/backend_lifecycle.py",
+            "local_gpu_imagegen/bootstrap_catalog.py",
             "local_gpu_imagegen/two_stage_layout.py",
             "local_gpu_imagegen/workflow_onboarding.py",
             "mcp_server.py",
@@ -122,6 +123,7 @@ class PackagingTests(unittest.TestCase):
             "check_gpu.py",
             "generate_image.py",
             "share/local-gpu-imagegen/profiles/base.json",
+            "share/local-gpu-imagegen/profiles/bootstrap/windows-nvidia.json",
             "share/local-gpu-imagegen/profiles/use-cases/standalone-illustration.json",
             "share/local-gpu-imagegen/workflows/comfyui/sdxl-txt2img-v1.json",
             "share/local-gpu-imagegen/workflows/comfyui/sdxl-regional-txt2img-v1.json",
