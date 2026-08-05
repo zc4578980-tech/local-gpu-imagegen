@@ -8,13 +8,14 @@ import re
 import shutil
 import socket
 import stat
+import tempfile
 import urllib.error
 import urllib.request
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
-from typing import Callable, Iterable
+from typing import BinaryIO, Callable, Iterable
 from urllib.parse import urlsplit
 
 from .bootstrap_catalog import MAX_ARTIFACT_BYTES, BootstrapArtifact
@@ -173,6 +174,8 @@ def safe_extract_portable(
     *,
     expected_root: str,
     plan_id: str,
+    expected_byte_size: int | None = None,
+    expected_sha256: str | None = None,
 ) -> Path:
     try:
         archive = _absolute_without_resolving_links(archive_path)
@@ -193,77 +196,228 @@ def safe_extract_portable(
             "invalid_archive_path",
             "Portable archive must be an existing regular non-reparse file.",
         )
+    archive_stream = _open_verified_archive(
+        archive,
+        expected_byte_size=expected_byte_size,
+        expected_sha256=expected_sha256,
+    )
 
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        initial_root_guard = _capture_directory_chain(root)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise ArtifactError(
+                "invalid_install_root",
+                "Portable install root could not be created safely.",
+            ) from error
+        _require_directory_chain(root, initial_root_guard)
+        root_guard = _capture_directory_chain(root)
+        destination = root / expected_root
+        staging = root / f".local-gpu-imagegen-{plan_id}.staging"
+        if _path_lexists(destination):
+            raise ArtifactError(
+                "portable_destination_conflict",
+                "Portable destination already exists and will not be overwritten.",
+                {"path": str(destination)},
+            )
+        if _path_lexists(staging):
+            raise ArtifactError(
+                "portable_staging_conflict",
+                "Plan-owned extraction staging path already exists.",
+                {"path": str(staging)},
+            )
+
+        py7zr = _load_py7zr()
+        staging_identity: os.stat_result | None = None
+        try:
+            _require_directory_chain(root, root_guard)
+            staging.mkdir()
+            staging_identity = staging.lstat()
+            _require_directory_chain(root, root_guard)
+            with py7zr.SevenZipFile(
+                archive_stream,
+                "r",
+                max_extract_size=MAX_ARCHIVE_EXPANDED_BYTES,
+            ) as archive_reader:
+                inventory = validate_archive_entries(
+                    _py7zr_archive_entries(archive_reader.list())
+                )
+                validate_portable_archive_inventory(
+                    inventory,
+                    expected_root=expected_root,
+                )
+                _require_directory_chain(root, root_guard)
+                archive_reader.extractall(path=staging)
+                _require_directory_chain(root, root_guard)
+
+            actual_inventory = _validate_post_extraction(
+                inventory,
+                staging,
+                expected_root=expected_root,
+            )
+            extracted_root_name = next(
+                entry.name
+                for entry in actual_inventory.entries
+                if _archive_destination_key(entry.name) == root_key
+            )
+            extracted_root = staging.joinpath(*PurePosixPath(extracted_root_name).parts)
+            extracted_identity = extracted_root.lstat()
+            _require_directory_chain(root, root_guard)
+            extracted_root.rename(destination)
+            if not os.path.samestat(extracted_identity, destination.lstat()):
+                raise OSError("portable destination identity changed during promotion")
+            _require_directory_chain(root, root_guard)
+            try:
+                staging.rmdir()
+            except OSError:
+                _remove_owned_directory(staging, staging_identity)
+        except BaseException as error:
+            _remove_owned_directory(staging, staging_identity)
+            if not isinstance(error, Exception):
+                raise
+            if isinstance(error, ArtifactError):
+                raise
+            raise ArtifactError(
+                "archive_extract_failed",
+                "Portable archive extraction failed before destination promotion.",
+                {"error_type": type(error).__name__},
+            ) from error
+        return destination
+    finally:
+        archive_stream.close()
+
+
+def _capture_directory_chain(root: Path) -> tuple[tuple[Path, os.stat_result], ...]:
+    identities: list[tuple[Path, os.stat_result]] = []
+    current = root
+    while True:
+        if os.path.lexists(current):
+            try:
+                current_stat = current.lstat()
+            except OSError as error:
+                raise ArtifactError(
+                    "invalid_install_root",
+                    "Portable install root ancestry cannot be inspected safely.",
+                ) from error
+            if not _safe_directory_stat(current_stat):
+                raise ArtifactError(
+                    "invalid_install_root",
+                    "Portable install root ancestry must contain only fixed directories.",
+                )
+            identities.append((current, current_stat))
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return tuple(identities)
+
+
+def _require_directory_chain(
+    root: Path,
+    expected: tuple[tuple[Path, os.stat_result], ...],
+) -> None:
+    try:
+        for path, expected_stat in expected:
+            current_stat = path.lstat()
+            if not _safe_directory_stat(current_stat) or not os.path.samestat(
+                expected_stat,
+                current_stat,
+            ):
+                raise OSError("install root ancestry identity changed")
+        current = root
+        while True:
+            if not _safe_directory_stat(current.lstat()):
+                raise OSError("install root ancestry became link-like")
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
     except OSError as error:
         raise ArtifactError(
             "invalid_install_root",
-            "Portable install root could not be created safely.",
+            "Portable install root identity changed at a write boundary.",
         ) from error
-    if not _is_directory_non_reparse(root):
-        raise ArtifactError(
-            "invalid_install_root",
-            "Portable install root must be a directory and not a reparse point.",
-        )
-    destination = root / expected_root
-    staging = root / f".local-gpu-imagegen-{plan_id}.staging"
-    if _path_lexists(destination):
-        raise ArtifactError(
-            "portable_destination_conflict",
-            "Portable destination already exists and will not be overwritten.",
-            {"path": str(destination)},
-        )
-    if _path_lexists(staging):
-        raise ArtifactError(
-            "portable_staging_conflict",
-            "Plan-owned extraction staging path already exists.",
-            {"path": str(staging)},
-        )
 
-    py7zr = _load_py7zr()
-    staging.mkdir()
+
+def _safe_directory_stat(path_stat: os.stat_result) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return (
+        stat.S_ISDIR(path_stat.st_mode)
+        and not stat.S_ISLNK(path_stat.st_mode)
+        and not bool(getattr(path_stat, "st_file_attributes", 0) & reparse_flag)
+    )
+
+
+def _remove_owned_directory(path: Path, identity: os.stat_result | None) -> None:
+    if identity is None:
+        return
     try:
-        with py7zr.SevenZipFile(
-            archive,
-            "r",
-            max_extract_size=MAX_ARCHIVE_EXPANDED_BYTES,
-        ) as archive_reader:
-            inventory = validate_archive_entries(
-                _py7zr_archive_entries(archive_reader.list())
-            )
-            validate_portable_archive_inventory(
-                inventory,
-                expected_root=expected_root,
-            )
-            archive_reader.extractall(path=staging)
+        current_stat = path.lstat()
+        if _safe_directory_stat(current_stat) and os.path.samestat(identity, current_stat):
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
 
-        actual_inventory = _validate_post_extraction(
-            inventory,
-            staging,
-            expected_root=expected_root,
+
+def _open_verified_archive(
+    archive: Path,
+    *,
+    expected_byte_size: int | None,
+    expected_sha256: str | None,
+) -> BinaryIO:
+    if (expected_byte_size is None) != (expected_sha256 is None) or (
+        expected_byte_size is not None
+        and (
+            type(expected_byte_size) is not int
+            or expected_byte_size <= 0
+            or not isinstance(expected_sha256, str)
+            or _SHA256.fullmatch(expected_sha256) is None
         )
-        extracted_root_name = next(
-            entry.name
-            for entry in actual_inventory.entries
-            if _archive_destination_key(entry.name) == root_key
-        )
-        extracted_root = staging.joinpath(*PurePosixPath(extracted_root_name).parts)
-        extracted_root.rename(destination)
-        try:
-            staging.rmdir()
-        except OSError:
-            shutil.rmtree(staging, ignore_errors=True)
-    except Exception as error:
-        shutil.rmtree(staging, ignore_errors=True)
-        if isinstance(error, ArtifactError):
-            raise
+    ):
         raise ArtifactError(
-            "archive_extract_failed",
-            "Portable archive extraction failed before destination promotion.",
-            {"error_type": type(error).__name__},
+            "invalid_extraction_options",
+            "Frozen archive size and digest must be supplied together.",
+        )
+    stream: BinaryIO | None = None
+    snapshot: BinaryIO | None = None
+    try:
+        path_stat = archive.lstat()
+        stream = archive.open("rb")
+        opened_stat = os.fstat(stream.fileno())
+        if (
+            not os.path.samestat(path_stat, opened_stat)
+            or not stat.S_ISREG(opened_stat.st_mode)
+            or opened_stat.st_nlink != 1
+            or (expected_byte_size is not None and opened_stat.st_size != expected_byte_size)
+        ):
+            raise OSError("archive identity or size changed while opening")
+        digest = hashlib.sha256()
+        snapshot = tempfile.SpooledTemporaryFile(max_size=1, mode="w+b")
+        copied = 0
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            copied += len(block)
+            digest.update(block)
+            snapshot.write(block)
+        if expected_byte_size is not None and copied != expected_byte_size:
+            raise OSError("archive byte count does not match frozen artifact")
+        if expected_sha256 is not None and digest.hexdigest() != expected_sha256:
+            raise OSError("archive digest does not match frozen artifact")
+        snapshot.flush()
+        snapshot.seek(0)
+        stream.close()
+        return snapshot
+    except OSError as error:
+        for owned_stream in (stream, snapshot):
+            if owned_stream is not None:
+                try:
+                    owned_stream.close()
+                except OSError:
+                    pass
+        raise ArtifactError(
+            "invalid_archive_path",
+            "Portable archive identity does not match the frozen artifact.",
         ) from error
-    return destination
 
 
 def _load_py7zr() -> object:

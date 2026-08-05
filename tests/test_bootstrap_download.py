@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import socket
 import sys
 import tempfile
@@ -29,6 +30,15 @@ from local_gpu_imagegen.bootstrap_download import (  # noqa: E402
     validate_portable_archive_inventory,
 )
 from local_gpu_imagegen.errors import ArtifactError  # noqa: E402
+
+
+def create_directory_alias(alias: Path, target: Path) -> None:
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(alias))
+    else:
+        alias.symlink_to(target, target_is_directory=True)
 
 
 class DownloadFixtureServer(ThreadingHTTPServer):
@@ -489,6 +499,7 @@ class PortableExtractionTests(unittest.TestCase):
         *,
         include_main: bool = True,
         python_is_directory: bool = False,
+        python_bytes: bytes = b"python",
     ) -> Path:
         source = root / "source" / "ComfyUI_windows_portable"
         (source / "python_embeded").mkdir(parents=True)
@@ -497,13 +508,47 @@ class PortableExtractionTests(unittest.TestCase):
         if python_is_directory:
             python_marker.mkdir()
         else:
-            python_marker.write_bytes(b"python")
+            python_marker.write_bytes(python_bytes)
         if include_main:
             (source / "ComfyUI" / "main.py").write_bytes(b"main")
         archive_path = root / "portable.7z"
         with py7zr.SevenZipFile(archive_path, "w") as archive:
             archive.writeall(source, arcname="ComfyUI_windows_portable")
         return archive_path
+
+    def test_extraction_uses_the_exact_verified_archive_handle_after_path_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive_path = self.write_portable_archive(root / "approved", python_bytes=b"approved")
+            replacement = self.write_portable_archive(root / "replacement", python_bytes=b"unapproved")
+            approved_bytes = archive_path.read_bytes()
+            approved_sha256 = hashlib.sha256(approved_bytes).hexdigest()
+            displaced = root / "approved-original.7z"
+            original_seven_zip = py7zr.SevenZipFile
+
+            def replace_path_before_reader(file, *args, **kwargs):
+                if (args and args[0] == "r") or kwargs.get("mode") == "r":
+                    try:
+                        archive_path.replace(displaced)
+                        replacement.replace(archive_path)
+                    except PermissionError:
+                        archive_path.write_bytes(replacement.read_bytes())
+                return original_seven_zip(file, *args, **kwargs)
+
+            with mock.patch.object(py7zr, "SevenZipFile", side_effect=replace_path_before_reader):
+                destination = safe_extract_portable(
+                    archive_path,
+                    root / "install",
+                    expected_root="ComfyUI_windows_portable",
+                    plan_id="3" * 24,
+                    expected_byte_size=len(approved_bytes),
+                    expected_sha256=approved_sha256,
+                )
+
+            self.assertEqual(
+                (destination / "python_embeded" / "python.exe").read_bytes(),
+                b"approved",
+            )
 
     def test_safe_archive_is_staged_validated_and_atomically_placed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -675,6 +720,73 @@ class PortableExtractionTests(unittest.TestCase):
             self.assertEqual(destination, install_root / "ComfyUI_windows_portable")
             self.assertTrue((destination / "ComfyUI" / "main.py").is_file())
             self.assertFalse(staging.exists())
+
+    def test_post_promotion_parent_swap_never_cleans_external_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            archive_path = self.write_portable_archive(root / "archive")
+            planned_parent = root / "planned-parent"
+            install_root = planned_parent / "install"
+            install_root.mkdir(parents=True)
+            displaced_parent = root / "displaced-parent"
+            external_parent = root / "external-parent"
+            (external_parent / "install").mkdir(parents=True)
+            plan_id = "4" * 24
+            destination = install_root / "ComfyUI_windows_portable"
+            staging = install_root / f".local-gpu-imagegen-{plan_id}.staging"
+            external_destination_sentinel = (
+                external_parent / "install" / "ComfyUI_windows_portable" / "owner.txt"
+            )
+            external_staging_sentinel = (
+                external_parent
+                / "install"
+                / f".local-gpu-imagegen-{plan_id}.staging"
+                / "owner.txt"
+            )
+            original_rename = Path.rename
+            alias_error: OSError | None = None
+
+            def promote_then_swap_parent(path: Path, target: Path) -> Path:
+                nonlocal alias_error
+                result = original_rename(path, target)
+                if Path(target) == destination:
+                    planned_parent.replace(displaced_parent)
+                    try:
+                        create_directory_alias(planned_parent, external_parent)
+                    except OSError as error:
+                        alias_error = error
+                    else:
+                        external_destination_sentinel.parent.mkdir()
+                        external_destination_sentinel.write_text("keep", encoding="utf-8")
+                        external_staging_sentinel.parent.mkdir()
+                        external_staging_sentinel.write_text("keep", encoding="utf-8")
+                return result
+
+            with mock.patch.object(Path, "rename", new=promote_then_swap_parent), self.assertRaises(
+                ArtifactError
+            ) as raised:
+                safe_extract_portable(
+                    archive_path,
+                    install_root,
+                    expected_root="ComfyUI_windows_portable",
+                    plan_id=plan_id,
+                )
+
+            if alias_error is not None:
+                self.skipTest(f"directory alias creation unavailable: {type(alias_error).__name__}")
+            self.assertEqual(raised.exception.code, "archive_extract_failed")
+            self.assertEqual(external_destination_sentinel.read_text(encoding="utf-8"), "keep")
+            self.assertEqual(external_staging_sentinel.read_text(encoding="utf-8"), "keep")
+            self.assertTrue(
+                (
+                    displaced_parent
+                    / "install"
+                    / "ComfyUI_windows_portable"
+                    / "ComfyUI"
+                    / "main.py"
+                ).is_file()
+            )
+            self.assertTrue((displaced_parent / "install" / staging.name).is_dir())
 
     def test_archive_symlink_is_rejected_before_extraction(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -22,7 +22,7 @@ from local_gpu_imagegen.bootstrap_catalog import (  # noqa: E402
     load_bootstrap_manifest,
 )
 from local_gpu_imagegen.bootstrap_service import apply_bootstrap_plan  # noqa: E402
-from local_gpu_imagegen.errors import StateError, ValidationError  # noqa: E402
+from local_gpu_imagegen.errors import ArtifactError, StateError, ValidationError  # noqa: E402
 
 
 def create_directory_alias(alias: Path, target: Path) -> None:
@@ -135,6 +135,8 @@ class BootstrapServiceTests(unittest.TestCase):
         state_dir: Path,
         portable_archive: Path,
         model_file: Path,
+        *,
+        install_root: Path | None = None,
     ) -> tuple[str, str]:
         facts = self.facts()
         facts = BootstrapFacts(
@@ -153,7 +155,7 @@ class BootstrapServiceTests(unittest.TestCase):
         plan = build_bootstrap_plan(
             self.manifest,
             facts,
-            install_root=root / "install",
+            install_root=root / "install" if install_root is None else install_root,
             plan_root=state_dir,
         )
         plan_path = state_dir / f"{plan.plan_id}.json"
@@ -288,6 +290,214 @@ class BootstrapServiceTests(unittest.TestCase):
                 )
             self.assertEqual(replayed.exception.code, "bootstrap_confirmation_consumed")
 
+    def test_unowned_portable_appearing_after_snapshot_is_never_reported_reusable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            portable_archive = self.write_portable_archive(root)
+            model_file = root / "model.safetensors"
+            model_file.write_bytes(b"synthetic-model")
+            plan_id, confirmation = self.synthetic_plan(
+                root,
+                state_dir,
+                portable_archive,
+                model_file,
+            )
+            portable_root = root / "install" / "ComfyUI_windows_portable"
+
+            def create_unowned_portable_then_fail(_artifact, _cache):
+                portable_root.mkdir(parents=True)
+                (portable_root / "unowned.txt").write_text("keep", encoding="utf-8")
+                raise RuntimeError("synthetic failure after drift")
+
+            result = apply_bootstrap_plan(
+                plan_id,
+                confirmation,
+                state_dir=state_dir,
+                downloader=create_unowned_portable_then_fail,
+            )
+
+            self.assertEqual(result["status"], "recoverable_failure")
+            self.assertEqual(result["retained_state"]["portable"], "unsafe_drift")
+            self.assertEqual(result["recoverable_next_actions"], ["create_new_bootstrap_plan"])
+            self.assertEqual(
+                (portable_root / "unowned.txt").read_text(encoding="utf-8"),
+                "keep",
+            )
+
+    def test_unowned_model_appearing_after_snapshot_is_never_reported_installed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            plan_id, confirmation, _scope_sha256, _model_file = self.synthetic_model_only_plan(
+                root,
+                state_dir,
+            )
+            destination = (
+                root
+                / "install"
+                / "ComfyUI_windows_portable"
+                / "ComfyUI"
+                / "models"
+                / "checkpoints"
+                / "sd_xl_base_1.0.safetensors"
+            )
+
+            def create_unowned_model_then_fail(_artifact, _cache):
+                destination.parent.mkdir(parents=True)
+                destination.write_bytes(b"unowned-model")
+                raise RuntimeError("synthetic failure after drift")
+
+            result = apply_bootstrap_plan(
+                plan_id,
+                confirmation,
+                state_dir=state_dir,
+                downloader=create_unowned_model_then_fail,
+            )
+
+            self.assertEqual(result["status"], "recoverable_failure")
+            self.assertEqual(result["retained_state"]["model"], "unsafe_drift")
+            self.assertEqual(
+                result["recoverable_next_actions"],
+                ["create_new_plan_reusing_portable"],
+            )
+            self.assertEqual(destination.read_bytes(), b"unowned-model")
+
+    def test_keyboard_interrupt_after_portable_commit_leaves_truthful_resumable_journal(self) -> None:
+        import local_gpu_imagegen.bootstrap_service as bootstrap_service
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            portable_archive = self.write_portable_archive(root)
+            model_file = root / "model.safetensors"
+            model_file.write_bytes(b"synthetic-model")
+            plan_id, confirmation = self.synthetic_plan(
+                root,
+                state_dir,
+                portable_archive,
+                model_file,
+            )
+            original_write = bootstrap_service._atomic_write_state
+            interrupted = False
+
+            def interrupt_after_portable_write(path, value, state_root, expected_root_stat):
+                nonlocal interrupted
+                original_write(path, value, state_root, expected_root_stat)
+                retained = value.get("retained_state", {})
+                if (
+                    not interrupted
+                    and value.get("status") == "in_progress"
+                    and retained.get("portable") == "installed"
+                    and retained.get("model") == "missing"
+                ):
+                    interrupted = True
+                    raise KeyboardInterrupt("after portable commit")
+
+            with mock.patch.object(
+                bootstrap_service,
+                "_atomic_write_state",
+                side_effect=interrupt_after_portable_write,
+            ), self.assertRaises(KeyboardInterrupt):
+                apply_bootstrap_plan(
+                    plan_id,
+                    confirmation,
+                    state_dir=state_dir,
+                    downloader=lambda artifact, _cache: {
+                        "comfyui": portable_archive,
+                        "model": model_file,
+                    }[artifact.kind],
+                )
+
+            transaction = json.loads(
+                (state_dir / f"{plan_id}.transaction.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(transaction["status"], "in_progress")
+            self.assertEqual(transaction["retained_state"]["portable"], "installed")
+            self.assertEqual(transaction["retained_state"]["model"], "missing")
+            self.assertEqual(
+                transaction["recoverable_next_actions"],
+                ["create_new_plan_reusing_portable"],
+            )
+            self.assertFalse((state_dir / f".{plan_id}.apply.lock").exists())
+            with self.assertRaises(StateError) as replayed:
+                apply_bootstrap_plan(
+                    plan_id,
+                    confirmation,
+                    state_dir=state_dir,
+                    downloader=lambda _artifact, _cache: model_file,
+                )
+            self.assertEqual(
+                replayed.exception.details["retained_state"],
+                transaction["retained_state"],
+            )
+            self.assertEqual(
+                replayed.exception.details["recoverable_next_actions"],
+                transaction["recoverable_next_actions"],
+            )
+
+    def test_system_exit_after_model_commit_leaves_complete_retained_install_journal(self) -> None:
+        import local_gpu_imagegen.bootstrap_service as bootstrap_service
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            portable_archive = self.write_portable_archive(root)
+            model_file = root / "model.safetensors"
+            model_file.write_bytes(b"synthetic-model")
+            plan_id, confirmation = self.synthetic_plan(
+                root,
+                state_dir,
+                portable_archive,
+                model_file,
+            )
+            original_write = bootstrap_service._atomic_write_state
+            interrupted = False
+
+            def interrupt_after_model_write(path, value, state_root, expected_root_stat):
+                nonlocal interrupted
+                original_write(path, value, state_root, expected_root_stat)
+                retained = value.get("retained_state", {})
+                if (
+                    not interrupted
+                    and value.get("status") == "in_progress"
+                    and retained.get("portable") == "installed"
+                    and retained.get("model") == "installed"
+                ):
+                    interrupted = True
+                    raise SystemExit("after model commit")
+
+            with mock.patch.object(
+                bootstrap_service,
+                "_atomic_write_state",
+                side_effect=interrupt_after_model_write,
+            ), self.assertRaises(SystemExit):
+                apply_bootstrap_plan(
+                    plan_id,
+                    confirmation,
+                    state_dir=state_dir,
+                    downloader=lambda artifact, _cache: {
+                        "comfyui": portable_archive,
+                        "model": model_file,
+                    }[artifact.kind],
+                )
+
+            transaction = json.loads(
+                (state_dir / f"{plan_id}.transaction.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(transaction["status"], "in_progress")
+            self.assertEqual(transaction["retained_state"]["portable"], "installed")
+            self.assertEqual(transaction["retained_state"]["model"], "installed")
+            self.assertEqual(
+                transaction["recoverable_next_actions"],
+                ["create_new_plan_reusing_retained_install"],
+            )
+            self.assertFalse((state_dir / f".{plan_id}.apply.lock").exists())
+            self.assertEqual(
+                list((root / "install").rglob("*.staging")),
+                [],
+            )
+
     def test_model_destination_drift_is_preserved_and_reported_pre_existing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -352,6 +562,42 @@ class BootstrapServiceTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertTrue(untrusted_file.is_file())
 
+    def test_downloader_source_equal_to_model_staging_is_never_unlinked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            plan_id, confirmation, _scope_sha256, model_file = self.synthetic_model_only_plan(
+                root,
+                state_dir,
+            )
+            destination = (
+                root
+                / "install"
+                / "ComfyUI_windows_portable"
+                / "ComfyUI"
+                / "models"
+                / "checkpoints"
+                / "sd_xl_base_1.0.safetensors"
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            staging = destination.with_name(f".{destination.name}.{plan_id}.staging")
+            staging.write_bytes(model_file.read_bytes())
+
+            result = apply_bootstrap_plan(
+                plan_id,
+                confirmation,
+                state_dir=state_dir,
+                downloader=lambda _artifact, _cache: staging,
+            )
+
+            self.assertEqual(result["status"], "recoverable_failure")
+            self.assertTrue(staging.is_file())
+            self.assertEqual(staging.read_bytes(), model_file.read_bytes())
+            self.assertEqual(
+                result["retained_state"]["verified_cache_artifacts"],
+                [self.manifest.model.artifact_id],
+            )
+
     def test_model_placement_rejects_a_link_like_parent_without_external_write(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -378,6 +624,94 @@ class BootstrapServiceTests(unittest.TestCase):
             self.assertEqual(result["status"], "recoverable_failure")
             self.assertEqual(result["error"], {"code": "unsafe_model_destination"})
             self.assertEqual(list(external.rglob("*.safetensors")), [])
+
+    def test_model_parent_swap_inside_atomic_link_is_detected_and_external_link_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            plan_id, confirmation, _scope_sha256, model_file = self.synthetic_model_only_plan(
+                root,
+                state_dir,
+            )
+            portable_root = root / "install" / "ComfyUI_windows_portable"
+            models = portable_root / "ComfyUI" / "models"
+            displaced = root / "displaced-models"
+            external = root / "external-models"
+            (external / "checkpoints").mkdir(parents=True)
+            original_link = os.link
+            swapped = False
+
+            def swap_parent_during_link(source, destination, *args, **kwargs):
+                nonlocal swapped
+                if not swapped:
+                    models.replace(displaced)
+                    create_directory_alias(models, external)
+                    moved_staging = displaced / "checkpoints" / Path(source).name
+                    external_staging = external / "checkpoints" / Path(source).name
+                    original_link(moved_staging, external_staging)
+                    swapped = True
+                return original_link(source, destination, *args, **kwargs)
+
+            with mock.patch(
+                "local_gpu_imagegen.bootstrap_service.os.link",
+                side_effect=swap_parent_during_link,
+            ):
+                result = apply_bootstrap_plan(
+                    plan_id,
+                    confirmation,
+                    state_dir=state_dir,
+                    downloader=lambda _artifact, _cache: model_file,
+                )
+
+            self.assertEqual(result["status"], "recoverable_failure")
+            self.assertEqual(result["error"], {"code": "unsafe_model_destination"})
+            self.assertEqual(list(external.rglob("*.safetensors")), [])
+
+    def test_install_root_parent_swap_during_staging_creation_never_promotes_external_portable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            planned_parent = root / "planned-parent"
+            install_root = planned_parent / "install"
+            portable_archive = self.write_portable_archive(root)
+            model_file = root / "model.safetensors"
+            model_file.write_bytes(b"synthetic-model")
+            plan_id, confirmation = self.synthetic_plan(
+                root,
+                state_dir,
+                portable_archive,
+                model_file,
+                install_root=install_root,
+            )
+            displaced = root / "displaced-parent"
+            external = root / "external-parent"
+            (external / "install").mkdir(parents=True)
+            original_mkdir = Path.mkdir
+            swapped = False
+
+            def swap_parent_before_staging(path: Path, *args, **kwargs):
+                nonlocal swapped
+                if path.name == f".local-gpu-imagegen-{plan_id}.staging" and not swapped:
+                    planned_parent.replace(displaced)
+                    create_directory_alias(planned_parent, external)
+                    swapped = True
+                return original_mkdir(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "mkdir", new=swap_parent_before_staging):
+                result = apply_bootstrap_plan(
+                    plan_id,
+                    confirmation,
+                    state_dir=state_dir,
+                    downloader=lambda artifact, _cache: {
+                        "comfyui": portable_archive,
+                        "model": model_file,
+                    }[artifact.kind],
+                )
+
+            self.assertEqual(result["status"], "recoverable_failure")
+            self.assertEqual(result["error"], {"code": "invalid_install_root"})
+            self.assertFalse((external / "install" / "ComfyUI_windows_portable").exists())
+            self.assertEqual(list((external / "install").glob(".local-gpu-imagegen-*.staging")), [])
 
     def test_exact_confirmation_executes_once_and_then_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -971,6 +1305,7 @@ class BootstrapServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             state_dir = root / "plans"
+            self.write_portable_root(root)
             plan = build_bootstrap_plan(
                 self.manifest,
                 self.facts(),
@@ -997,6 +1332,84 @@ class BootstrapServiceTests(unittest.TestCase):
         self.assertEqual(failed["error"], {"code": "bootstrap_execution_failed"})
         self.assertEqual(raised.exception.code, "bootstrap_confirmation_consumed")
         self.assertEqual(downloader.call_count, 1)
+
+    def test_untrusted_exception_code_is_never_persisted_or_returned(self) -> None:
+        class UntrustedFailure(RuntimeError):
+            code = "C:\\private\\model\n" + "secret" * 200
+
+        secret_code = "C:\\private\\model\n" + "secret" * 200
+        failures = (
+            UntrustedFailure("do not persist"),
+            ArtifactError(secret_code, "do not persist"),
+        )
+        for failure in failures:
+            with (
+                self.subTest(error_type=type(failure).__name__),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                root = Path(temporary_directory)
+                state_dir = root / "plans"
+                self.write_portable_root(root)
+                plan = build_bootstrap_plan(
+                    self.manifest,
+                    self.facts(),
+                    install_root=root / "install",
+                    plan_root=state_dir,
+                )
+
+                downloader = mock.Mock(side_effect=failure)
+                result = apply_bootstrap_plan(
+                    plan.plan_id,
+                    plan.confirmation,
+                    state_dir=state_dir,
+                    downloader=downloader,
+                )
+
+                transaction = json.loads(
+                    (state_dir / f"{plan.plan_id}.transaction.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(result["error"], {"code": "bootstrap_execution_failed"})
+                self.assertEqual(transaction["failure_code"], "bootstrap_execution_failed")
+                self.assertNotIn("private", json.dumps(transaction))
+                self.assertNotIn("secret", json.dumps(result))
+                downloader.assert_called_once()
+
+    def test_edited_failed_transaction_with_unknown_code_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            self.write_portable_root(root)
+            plan = build_bootstrap_plan(
+                self.manifest,
+                self.facts(),
+                install_root=root / "install",
+                plan_root=state_dir,
+            )
+            downloader = mock.Mock(side_effect=RuntimeError("synthetic failure"))
+            result = apply_bootstrap_plan(
+                plan.plan_id,
+                plan.confirmation,
+                state_dir=state_dir,
+                downloader=downloader,
+            )
+            transaction_path = state_dir / f"{plan.plan_id}.transaction.json"
+            transaction = json.loads(transaction_path.read_text(encoding="utf-8"))
+            transaction["failure_code"] = "C:\\private\\model\nsecret"
+            transaction_path.write_text(json.dumps(transaction), encoding="utf-8")
+
+            with self.assertRaises(StateError) as raised:
+                apply_bootstrap_plan(
+                    plan.plan_id,
+                    plan.confirmation,
+                    state_dir=state_dir,
+                    downloader=downloader,
+                )
+
+            self.assertEqual(result["error"], {"code": "bootstrap_execution_failed"})
+            self.assertEqual(raised.exception.code, "invalid_bootstrap_transaction")
+            downloader.assert_called_once()
 
     def test_different_confirmation_cannot_replay_completed_transaction(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
