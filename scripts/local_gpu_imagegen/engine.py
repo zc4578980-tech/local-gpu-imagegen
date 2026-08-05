@@ -113,7 +113,7 @@ class AssetRunEngine:
         if not isinstance(capabilities, dict) or not isinstance(capabilities.get("available_backends"), list):
             raise ValidationError("invalid_capabilities", "Capability provider must advertise available_backends.")
         available_backends = capabilities["available_backends"]
-        route = self.router.confirm(route_token, model_choice)
+        route = self.router.validate_confirmation(route_token, model_choice)
         if not isinstance(route, dict):
             raise ValidationError("invalid_route", "Confirmed model route must be an object.")
         _validate_start_route(route, arguments, merged, authorization_scope)
@@ -135,6 +135,7 @@ class AssetRunEngine:
             "prompt_compiler_version": route.get("prompt_compiler_version"),
         }
         request = validate_confirmed_run_request(request)
+        self.router.confirm(route_token, model_choice)
         manifest = self.store.create(request)
         return {
             "ok": True,

@@ -303,7 +303,7 @@ class ModelRouterTests(unittest.TestCase):
         boundary = {
             key: copy.deepcopy(value)
             for key, value in route.items()
-            if key not in {"route_token", "expires_at"}
+            if key not in {"route_token", "expires_at", "start_run_boundary"}
         }
         encoded = json.dumps(
             boundary,
@@ -465,9 +465,14 @@ class ModelRouterTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ConflictError, "route_confirmation_expired"):
             self.router.confirm(route["route_token"], "wrong-model")
+        validated = self.router.validate_confirmation(
+            route["route_token"],
+            route["model_id"],
+        )
+        self.assertEqual(validated["route_token"], route["route_token"])
         confirmed = self.router.confirm(route["route_token"], route["model_id"])
         self.assertEqual(confirmed["route_token"], route["route_token"])
-        self.assertEqual(len(self.catalog.verified), 1)
+        self.assertEqual(len(self.catalog.verified), 2)
         with self.assertRaisesRegex(ConflictError, "route_confirmation_expired"):
             self.router.confirm(route["route_token"], route["model_id"])
 
@@ -482,6 +487,67 @@ class ModelRouterTests(unittest.TestCase):
         self.catalog.drifted = True
         with self.assertRaisesRegex(ConflictError, "model_identity_drifted"):
             self.router.confirm(drifted["route_token"], drifted["model_id"])
+
+    def test_backend_filename_cannot_be_used_as_preferred_catalog_id(self) -> None:
+        backend_filename = str(self.catalog.models[0]["backend_model_id"])
+
+        with self.assertRaises(ValidationError) as raised:
+            self.router.recommend(requirements(preferred_model_id=backend_filename))
+
+        self.assertEqual(raised.exception.code, "preferred_model_not_found")
+        self.assertEqual(
+            raised.exception.details["preferred_model_id"],
+            backend_filename,
+        )
+
+    def test_unknown_catalog_preference_is_rejected_instead_of_falling_back(self) -> None:
+        preferred_model_id = "local:" + "9" * 24
+
+        with self.assertRaises(ValidationError) as raised:
+            self.router.recommend(requirements(preferred_model_id=preferred_model_id))
+
+        self.assertEqual(raised.exception.code, "preferred_model_not_found")
+        self.assertEqual(
+            raised.exception.details["preferred_model_id"],
+            preferred_model_id,
+        )
+
+    def test_ineligible_catalog_preference_is_rejected_instead_of_falling_back(self) -> None:
+        preferred_model_id = "local:" + "a" * 24
+        preferred = model(preferred_model_id, "observed")
+        preferred["capabilities"]["operations"] = ["txt2img"]
+        alternative = model("local:" + "b" * 24, "benchmarked")
+        self.catalog.models = [preferred, alternative]
+
+        with self.assertRaises(ValidationError) as raised:
+            self.router.recommend(requirements(
+                operation="inpaint",
+                preferred_model_id=preferred_model_id,
+            ))
+
+        self.assertEqual(raised.exception.code, "preferred_model_ineligible")
+        self.assertEqual(
+            raised.exception.details["preferred_model_id"],
+            preferred_model_id,
+        )
+
+    def test_recommendation_exposes_copyable_start_boundary_and_wait_action(self) -> None:
+        result = self.router.recommend(requirements())
+        route = result["routes"][0]
+
+        self.assertEqual(result["next_action"], "display_and_wait")
+        self.assertEqual(route["start_run_boundary"], {
+            "profile": route["profile"],
+            "style": route["style"],
+            "constraints": {
+                "width": route["width"],
+                "height": route["height"],
+            },
+            "model_choice": route["model_id"],
+            "backend": route["backend"],
+            "authorization_scope": route["authorization_scope"],
+            "route_token": route["route_token"],
+        })
 
     def test_invalid_requirements_fail_before_catalog_access(self) -> None:
         invalid = (

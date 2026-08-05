@@ -331,7 +331,7 @@ def tool_schema() -> list[dict[str, Any]]:
         },
         {
             "name": "local_gpu_generate_image",
-            "description": "Generate or transform an image using local Stable Diffusion through WebUI or diffusers on the local GPU.",
+            "description": "Compatibility tool for WebUI or Diffusers image generation; not for ComfyUI routes and never a bypass for the confirmed high-level run workflow.",
             "inputSchema": {
                 "type": "object",
                 "required": ["prompt"],
@@ -454,6 +454,35 @@ def tool_schema() -> list[dict[str, Any]]:
         "mode", "canvas", "copy_protected_rect", "subject_mask_rect",
         "feather_pixels", "vae_grow_mask_by",
     ])
+    start_run_boundary = _object_schema({
+        "profile": {"type": "string", "enum": _registered_profile_ids()},
+        "style": {"type": ["string", "null"], "enum": [None, *_registered_style_ids()]},
+        "constraints": _object_schema({
+            "width": {
+                "type": "integer", "minimum": 256, "maximum": 1536,
+                "multipleOf": 8,
+            },
+            "height": {
+                "type": "integer", "minimum": 256, "maximum": 1536,
+                "multipleOf": 8,
+            },
+        }, ["width", "height"]),
+        "model_choice": {"type": "string", "minLength": 1},
+        "backend": {"type": "string", "enum": ["webui", "diffusers", "comfyui"]},
+        "authorization_scope": {
+            "type": "string", "enum": ["private", "public_evidence"],
+        },
+        "route_token": {"type": "string", "pattern": "^route:[0-9a-f]{64}$"},
+    }, [
+        "profile", "style", "constraints", "model_choice", "backend",
+        "authorization_scope", "route_token",
+    ])
+    recommendation_route = {
+        "type": "object",
+        "properties": {"start_run_boundary": start_run_boundary},
+        "required": ["start_run_boundary"],
+        "additionalProperties": True,
+    }
     visual_check = _object_schema({
         "status": {
             "type": "string",
@@ -589,7 +618,7 @@ def tool_schema() -> list[dict[str, Any]]:
         },
         {
             "name": "local_gpu_set_model_trust",
-            "description": "Approve or revoke one exact current local model identity after explicit confirmation.",
+            "description": "Inspect, approve, or revoke one exact current local model identity. A trust mutation requires the exact confirmation previously returned for the same mutation boundary, displayed to the user, and repeated in a later user message.",
             "inputSchema": _object_schema({
                 "action": {"type": "string", "enum": ["inspect_workflow_binding", "approve_private", "approve_public_candidate", "revoke"]},
                 "identity_token": {"type": "string", "minLength": 1},
@@ -648,7 +677,7 @@ def tool_schema() -> list[dict[str, Any]]:
         },
         {
             "name": "local_gpu_recommend_models",
-            "description": "Recommend one exact confirmed-capability route and at most two alternatives.",
+            "description": "Recommend one exact confirmed-capability route and at most two alternatives. preferred_model_id must be an exact catalog ID. Display the selected route and start_run_boundary, then wait for later user confirmation before local_gpu_start_run.",
             "inputSchema": _object_schema({
                 "authorization_scope": {"type": "string", "enum": ["private", "public_evidence"]},
                 "operation": {"type": "string", "enum": ["txt2img", "img2img", "inpaint"]},
@@ -658,7 +687,10 @@ def tool_schema() -> list[dict[str, Any]]:
                 "height": {"type": "integer", "minimum": 256, "maximum": 1536},
                 "affinity_tags": {"type": "array", "items": {"type": "string"}},
                 "required_vram_gb": {"type": ["number", "null"]},
-                "preferred_model_id": {"type": ["string", "null"]},
+                "preferred_model_id": {
+                    "type": ["string", "null"],
+                    "pattern": "^local:[0-9a-f]{24}$",
+                },
                 "regional_layout": {"type": "object"},
                 "two_stage_layout": {"type": "object"},
             }, [
@@ -667,9 +699,10 @@ def tool_schema() -> list[dict[str, Any]]:
             ]),
             "outputSchema": _output_schema({
                 "requirements": json_object,
-                "routes": json_array,
+                "routes": {"type": "array", "items": recommendation_route},
                 "reason": {"type": ["string", "null"]},
-            }, ["requirements", "routes", "reason"]),
+                "next_action": {"type": "string", "enum": ["display_and_wait"]},
+            }, ["requirements", "routes", "reason", "next_action"]),
         },
         {
             "name": "local_gpu_list_profiles",
@@ -686,7 +719,7 @@ def tool_schema() -> list[dict[str, Any]]:
         },
         {
             "name": "local_gpu_start_run",
-            "description": "Create a confirmed visual-asset run.",
+            "description": "Create a visual-asset run only after later user confirmation; copy start_run_boundary exactly from the previously displayed recommendation and add the remaining run fields.",
             "inputSchema": _object_schema({
                 "intent": {"type": "string", "minLength": 1},
                 "profile": {"type": "string", "enum": _registered_profile_ids()},

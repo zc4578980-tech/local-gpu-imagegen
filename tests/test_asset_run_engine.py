@@ -297,6 +297,7 @@ class FakeRouter:
     def __init__(self, catalog: FakeCatalog) -> None:
         self.catalog = catalog
         self.routes: dict[str, dict[str, object]] = {}
+        self.consumed: set[str] = set()
         self.counter = 0
 
     def issue(self, arguments: dict[str, object]) -> dict[str, object]:
@@ -328,11 +329,20 @@ class FakeRouter:
         self.routes[token] = route
         return copy.deepcopy(route)
 
-    def confirm(self, route_token: str, model_id: str) -> dict[str, object]:
+    def validate_confirmation(self, route_token: str, model_id: str) -> dict[str, object]:
         route = self.routes.get(route_token)
-        if route is None or route["model_id"] != model_id:
+        if (
+            route is None
+            or route_token in self.consumed
+            or route["model_id"] != model_id
+        ):
             raise ConflictError("route_confirmation_expired", "Route changed or expired.")
         return copy.deepcopy(route)
+
+    def confirm(self, route_token: str, model_id: str) -> dict[str, object]:
+        route = self.validate_confirmation(route_token, model_id)
+        self.consumed.add(route_token)
+        return route
 
 
 class FakePostprocessor:
@@ -1358,6 +1368,21 @@ class AssetRunEngineTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "route_confirmation_expired")
         self.assertEqual(self.runner.calls, [])
         self.assertFalse((output_root / "runs").exists())
+
+    def test_start_boundary_failure_does_not_consume_route_token(self) -> None:
+        arguments = self.start_arguments()
+        wrong_boundary = copy.deepcopy(arguments)
+        wrong_boundary["constraints"]["width"] += 8
+
+        with self.assertRaises(ConflictError) as raised:
+            self.engine.start_run(wrong_boundary)
+
+        self.assertEqual(raised.exception.code, "route_confirmation_mismatch")
+        started = self.engine.start_run(arguments)
+        self.assertTrue(started["ok"])
+        with self.assertRaises(ConflictError) as replayed:
+            self.engine.start_run(arguments)
+        self.assertEqual(replayed.exception.code, "route_confirmation_expired")
 
     def test_start_rejects_invalid_confirmed_requests_before_creating_run(self) -> None:
         invalid_changes: dict[str, dict[str, object]] = {

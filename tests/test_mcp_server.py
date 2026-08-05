@@ -134,6 +134,47 @@ class McpServerUnitTests(unittest.TestCase):
                 self.assertEqual(set(error_value["required"]), {"code", "category", "message"})
                 self.assertFalse(error_value["additionalProperties"])
 
+    def test_schema_exposes_safe_recommendation_and_mutation_guidance(self) -> None:
+        tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
+        recommend = tools["local_gpu_recommend_models"]
+        preferred = recommend["inputSchema"]["properties"]["preferred_model_id"]
+        success = recommend["outputSchema"]["oneOf"][0]
+        route_item = success["properties"]["routes"]["items"]
+        start_boundary = route_item["properties"]["start_run_boundary"]
+
+        self.assertEqual(preferred["pattern"], r"^local:[0-9a-f]{24}$")
+        self.assertIn("next_action", success["required"])
+        self.assertEqual(
+            success["properties"]["next_action"]["enum"],
+            ["display_and_wait"],
+        )
+        self.assertEqual(route_item["required"], ["start_run_boundary"])
+        self.assertEqual(
+            set(start_boundary["required"]),
+            {
+                "profile", "style", "constraints", "model_choice", "backend",
+                "authorization_scope", "route_token",
+            },
+        )
+        self.assertEqual(
+            set(start_boundary["properties"]["constraints"]["required"]),
+            {"width", "height"},
+        )
+
+        self.assertIn("display", recommend["description"].lower())
+        self.assertIn("later user confirmation", recommend["description"].lower())
+        self.assertIn(
+            "copy start_run_boundary exactly",
+            tools["local_gpu_start_run"]["description"].lower(),
+        )
+        self.assertIn(
+            "not for comfyui",
+            tools["local_gpu_generate_image"]["description"].lower(),
+        )
+        trust_description = tools["local_gpu_set_model_trust"]["description"].lower()
+        self.assertIn("exact confirmation", trust_description)
+        self.assertIn("later user message", trust_description)
+
     def test_every_output_schema_declares_an_object_root(self) -> None:
         tools = mcp_server.tool_schema()
 

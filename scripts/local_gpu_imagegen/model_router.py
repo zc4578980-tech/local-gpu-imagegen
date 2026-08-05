@@ -118,8 +118,27 @@ class CapabilityRouter:
                     "requirements": normalized,
                     "routes": [],
                     "reason": LAYOUT_REQUIREMENTS[layout_key]["unavailable_reason"],
+                    "next_action": "display_and_wait",
                 }
         available = self.catalog.list_models(normalized["authorization_scope"])
+        preferred_model_id = normalized["preferred_model_id"]
+        preferred_available = None
+        if preferred_model_id is not None:
+            preferred_available = next(
+                (
+                    model
+                    for model in available
+                    if isinstance(model, dict)
+                    and model.get("id") == preferred_model_id
+                ),
+                None,
+            )
+            if preferred_available is None:
+                raise ValidationError(
+                    "preferred_model_not_found",
+                    "preferred_model_id must exactly match a current catalog model ID.",
+                    {"preferred_model_id": preferred_model_id},
+                )
         eligible = [
             model
             for model in available
@@ -130,6 +149,19 @@ class CapabilityRouter:
                 layout_capability,
             )
         ]
+        if (
+            preferred_model_id is not None
+            and not any(
+                isinstance(model, dict)
+                and model.get("id") == preferred_model_id
+                for model in eligible
+            )
+        ):
+            raise ValidationError(
+                "preferred_model_ineligible",
+                "The preferred catalog model does not satisfy the requested route boundary.",
+                {"preferred_model_id": preferred_model_id},
+            )
         ranked = sorted(
             (_score_model(model, normalized) for model in eligible),
             key=lambda item: (
@@ -144,6 +176,7 @@ class CapabilityRouter:
             "requirements": normalized,
             "routes": routes,
             "reason": None if routes else "no_eligible_model",
+            "next_action": "display_and_wait",
         }
 
     def _layout_capability(self, mode: str) -> dict[str, object]:
@@ -192,7 +225,11 @@ class CapabilityRouter:
             }
         return copy.deepcopy(result)
 
-    def confirm(self, route_token: str, model_id: str) -> dict[str, object]:
+    def validate_confirmation(
+        self,
+        route_token: str,
+        model_id: str,
+    ) -> dict[str, object]:
         route = self._issued.get(route_token)
         if (
             route is None
@@ -206,8 +243,12 @@ class CapabilityRouter:
                 "The displayed route changed or expired; recommend and confirm again.",
             )
         self.catalog.verify_locked_route(route)
-        del self._issued[route_token]
         return copy.deepcopy(route)
+
+    def confirm(self, route_token: str, model_id: str) -> dict[str, object]:
+        route = self.validate_confirmation(route_token, model_id)
+        del self._issued[route_token]
+        return route
 
     def _issue_route(
         self,
@@ -256,6 +297,18 @@ class CapabilityRouter:
             **boundary,
             "route_token": token,
             "expires_at": self.clock() + self.ttl_seconds,
+        }
+        route["start_run_boundary"] = {
+            "profile": route["profile"],
+            "style": route["style"],
+            "constraints": {
+                "width": route["width"],
+                "height": route["height"],
+            },
+            "model_choice": route["model_id"],
+            "backend": route["backend"],
+            "authorization_scope": route["authorization_scope"],
+            "route_token": route["route_token"],
         }
         self._issued[token] = copy.deepcopy(route)
         return route
