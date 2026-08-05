@@ -16,6 +16,7 @@ from .bootstrap_download import download_cache_path, download_verified, safe_ext
 from .backend_lifecycle import build_comfyui_start_config
 from .client_setup import managed_comfyui_server_command
 from .errors import ArtifactError, StateError, ValidationError
+from ._filesystem_capability import open_exclusive_output, remove_owned_path
 
 
 _PLAN_ID = re.compile(r"[0-9a-f]{24}\Z")
@@ -538,8 +539,6 @@ def _existing_transaction_result(
         )
     reconciled_retained_state = _reconcile_retained_state(
         transaction,
-        expected_downloaded_artifacts,
-        expected_completed_retained_state,
         portable_root,
         model_path,
         artifacts,
@@ -724,13 +723,17 @@ def _place_model_no_overwrite(
                     "downloaded_artifact_invalid",
                     "Verified model source identity changed before placement.",
                 )
-            with staging.open("xb") as output_stream:
-                staging_identity = os.fstat(output_stream.fileno())
-                if not os.path.samestat(staging_identity, staging.lstat()):
-                    raise ArtifactError(
-                        "unsafe_model_destination",
-                        "Model staging identity changed during creation.",
-                    )
+            try:
+                output_stream, staging_identity = open_exclusive_output(
+                    staging,
+                    parent_guard[0][1],
+                )
+            except OSError as error:
+                raise ArtifactError(
+                    "unsafe_model_destination",
+                    "Model staging escaped its fixed invocation-owned parent.",
+                ) from error
+            try:
                 _require_model_parent_guard(parent_guard)
                 digest = hashlib.sha256()
                 remaining = artifact.byte_size
@@ -751,6 +754,8 @@ def _place_model_no_overwrite(
                     )
                 output_stream.flush()
                 os.fsync(output_stream.fileno())
+            finally:
+                output_stream.close()
         _require_exact_artifact_file(staging, artifact)
         _require_model_parent_guard(parent_guard)
         os.link(staging, destination)
@@ -777,11 +782,7 @@ def _place_model_no_overwrite(
 def _unlink_owned_file(path: Path, identity: os.stat_result | None) -> None:
     if identity is None:
         return
-    try:
-        if os.path.samestat(identity, path.lstat()):
-            path.unlink()
-    except OSError:
-        pass
+    remove_owned_path(path, identity, directory=False)
 
 
 def _prepare_safe_model_parent(
@@ -838,31 +839,7 @@ def _prepare_safe_model_parent(
 
 
 def _remove_owned_empty_directory(owned: _OwnedDirectory) -> bool:
-    quarantine = owned.path.with_name(
-        f".{owned.path.name}.{secrets.token_hex(12)}.cleanup"
-    )
-    try:
-        current_stat = owned.path.lstat()
-        if (
-            not _safe_model_directory_stat(current_stat)
-            or not os.path.samestat(owned.identity, current_stat)
-        ):
-            return False
-        os.replace(owned.path, quarantine)
-        moved_stat = quarantine.lstat()
-        if not os.path.samestat(owned.identity, moved_stat):
-            if not os.path.lexists(owned.path):
-                os.replace(quarantine, owned.path)
-            return False
-        quarantine.rmdir()
-        return True
-    except OSError:
-        if os.path.lexists(quarantine) and not os.path.lexists(owned.path):
-            try:
-                os.replace(quarantine, owned.path)
-            except OSError:
-                pass
-        return False
+    return remove_owned_path(owned.path, owned.identity, directory=True)
 
 
 def _capture_model_parent_guard(
@@ -1229,7 +1206,7 @@ def _retained_transition_is_valid(
         state = retained_state.get(component)
         completed_state = expected_completed_retained_state.get(component)
         if completed_state == "installed":
-            if state not in {"missing", "installed", "unsafe_drift"}:
+            if state not in {"missing", "pre_existing", "installed", "unsafe_drift"}:
                 return False
             required_download = required_downloads[component]
             if state == "installed" and required_download not in downloaded:
@@ -1259,8 +1236,6 @@ def _component_download_ids(
 
 def _reconcile_retained_state(
     transaction: dict[str, object],
-    expected_downloaded_artifacts: tuple[str, ...],
-    expected_completed_retained_state: dict[str, object],
     portable_root: Path,
     model_path: Path,
     artifacts: dict[str, BootstrapArtifact],
@@ -1268,42 +1243,36 @@ def _reconcile_retained_state(
 ) -> dict[str, object]:
     model_artifact = artifacts["model"]
     downloaded = list(transaction["downloaded_artifacts"])
-    required_downloads = _component_download_ids(
-        expected_downloaded_artifacts,
-        expected_completed_retained_state,
-    )
-
-    portable_target = expected_completed_retained_state["portable"]
-    if not os.path.lexists(portable_root):
-        portable_state = "missing" if portable_target == "installed" else "unsafe_drift"
+    stored_retained_state = transaction["retained_state"]
+    stored_portable = stored_retained_state["portable"]
+    if stored_portable == "missing":
+        portable_state = "unsafe_drift" if os.path.lexists(portable_root) else "missing"
+    elif stored_portable == "pre_existing":
+        portable_state = "pre_existing" if os.path.lexists(portable_root) else "unsafe_drift"
+    elif stored_portable == "unsafe_drift":
+        portable_state = "unsafe_drift"
     else:
         try:
             build_comfyui_start_config(portable_root)
         except Exception:
             portable_state = "unsafe_drift"
         else:
-            if portable_target == "verified_pre_existing":
-                portable_state = "verified_pre_existing"
-            elif required_downloads["portable"] in downloaded:
-                portable_state = "installed"
-            else:
-                portable_state = "unsafe_drift"
+            portable_state = stored_portable
 
-    model_target = expected_completed_retained_state["model"]
-    if not os.path.lexists(model_path):
-        model_state = "missing" if model_target == "installed" else "unsafe_drift"
+    stored_model = stored_retained_state["model"]
+    if stored_model == "missing":
+        model_state = "unsafe_drift" if os.path.lexists(model_path) else "missing"
+    elif stored_model == "pre_existing":
+        model_state = "pre_existing" if os.path.lexists(model_path) else "unsafe_drift"
+    elif stored_model == "unsafe_drift":
+        model_state = "unsafe_drift"
     else:
         try:
             _require_exact_artifact_file(model_path, model_artifact)
         except (OSError, ArtifactError):
             model_state = "unsafe_drift"
         else:
-            if model_target == "verified_pre_existing":
-                model_state = "verified_pre_existing"
-            elif required_downloads["model"] in downloaded:
-                model_state = "installed"
-            else:
-                model_state = "unsafe_drift"
+            model_state = stored_model
 
     artifact_by_id = {
         artifact.artifact_id: artifact

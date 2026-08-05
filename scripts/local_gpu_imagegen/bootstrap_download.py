@@ -5,11 +5,9 @@ import importlib
 import importlib.metadata
 import os
 import re
-import secrets
 import shutil
 import socket
 import stat
-import tempfile
 import urllib.error
 import urllib.request
 import unicodedata
@@ -21,6 +19,11 @@ from urllib.parse import urlsplit
 
 from .bootstrap_catalog import MAX_ARTIFACT_BYTES, BootstrapArtifact
 from .errors import ArtifactError
+from ._filesystem_capability import (
+    open_bound_temporary,
+    open_exclusive_output,
+    remove_owned_path,
+)
 
 
 MAX_DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
@@ -150,6 +153,7 @@ class _ControlledWriterFactory:
         inventory: ArchiveInventory,
         expected_root: str,
         owned_paths: list[_OwnedPath],
+        owned_directory_identities: dict[Path, os.stat_result],
     ) -> None:
         self.staging = staging
         self.staging_identity = staging_identity
@@ -164,6 +168,7 @@ class _ControlledWriterFactory:
             relative = _relative_member_path(key, self.root_key)
             self.expected_files[key] = (relative, entry.uncompressed_bytes)
         self.owned_paths = owned_paths
+        self.owned_directory_identities = owned_directory_identities
         self.writers: dict[str, _BoundedArchiveFile] = {}
 
     def create(self, filename: str) -> _BoundedArchiveFile:
@@ -185,46 +190,28 @@ class _ControlledWriterFactory:
             )
         relative, expected_size = self.expected_files[key]
         destination = self.staging.joinpath(*relative.parts)
-        parent_identity = next(
-            (
-                owned.identity
-                for owned in self.owned_paths
-                if owned.kind == "directory" and owned.path == destination.parent
-            ),
-            self.staging_identity if destination.parent == self.staging else None,
-        )
+        parent_identity = self.owned_directory_identities.get(destination.parent)
         if parent_identity is None:
             raise ArtifactError(
                 "archive_postcheck_failed",
                 "Controlled archive member parent was not invocation-owned.",
             )
         _require_owned_directory(destination.parent, parent_identity)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-        descriptor: int | None = None
         try:
-            descriptor = os.open(destination, flags, 0o600)
-            opened_stat = os.fstat(descriptor)
-            current_stat = destination.lstat()
+            stream, opened_stat = open_exclusive_output(destination, parent_identity)
             _require_directory_chain(self.root, self.root_guard)
             _require_owned_directory(self.staging, self.staging_identity)
             _require_owned_directory(destination.parent, parent_identity)
-            if (
-                not _safe_regular_stat(opened_stat)
-                or opened_stat.st_nlink != 1
-                or not os.path.samestat(opened_stat, current_stat)
-            ):
-                raise OSError("controlled archive file identity changed while opening")
-            stream = os.fdopen(descriptor, "w+b")
-            descriptor = None
             owned = _OwnedPath(destination, opened_stat, "file")
             writer = _BoundedArchiveFile(stream, owned, expected_size)
             self.owned_paths.append(owned)
             self.writers[key] = writer
             return writer
-        except BaseException:
-            if descriptor is not None:
-                os.close(descriptor)
-            raise
+        except OSError as error:
+            raise ArtifactError(
+                "archive_postcheck_failed",
+                "Controlled archive output escaped its invocation-owned parent.",
+            ) from error
 
     def finish(self) -> None:
         if set(self.writers) != set(self.expected_files):
@@ -386,6 +373,7 @@ def safe_extract_portable(
         archive_stream = _open_verified_archive(
             archive,
             snapshot_directory=initial_root_guard[0][0],
+            snapshot_directory_identity=initial_root_guard[0][1],
             expected_byte_size=expected_byte_size,
             expected_sha256=expected_sha256,
         )
@@ -408,11 +396,13 @@ def safe_extract_portable(
         py7zr = _load_py7zr()
         staging_identity: os.stat_result | None = None
         owned_paths: list[_OwnedPath] = []
+        owned_directory_identities: dict[Path, os.stat_result] = {}
         writer_factory: _ControlledWriterFactory | None = None
         try:
             _require_directory_chain(root, root_guard)
             staging.mkdir()
             staging_identity = staging.lstat()
+            owned_directory_identities[staging] = staging_identity
             _require_owned_directory(staging, staging_identity)
             _require_directory_chain(root, root_guard)
             with py7zr.SevenZipFile(
@@ -435,6 +425,7 @@ def safe_extract_portable(
                     inventory,
                     expected_root,
                     owned_paths,
+                    owned_directory_identities,
                 )
                 writer_factory = _ControlledWriterFactory(
                     staging,
@@ -444,6 +435,7 @@ def safe_extract_portable(
                     inventory,
                     expected_root,
                     owned_paths,
+                    owned_directory_identities,
                 )
                 _require_directory_chain(root, root_guard)
                 archive_reader.extract(path=staging, factory=writer_factory)
@@ -577,28 +569,11 @@ def _require_owned_directory(path: Path, identity: os.stat_result) -> None:
 def _remove_owned_path(owned: _OwnedPath | None) -> None:
     if owned is None:
         return
-    quarantine = owned.path.with_name(
-        f".{owned.path.name}.{secrets.token_hex(12)}.cleanup"
+    remove_owned_path(
+        owned.path,
+        owned.identity,
+        directory=owned.kind == "directory",
     )
-    try:
-        current_stat = owned.path.lstat()
-        safe_kind = (
-            _safe_directory_stat(current_stat)
-            if owned.kind == "directory"
-            else _safe_regular_stat(current_stat)
-        )
-        if not safe_kind or not os.path.samestat(owned.identity, current_stat):
-            return
-        os.replace(owned.path, quarantine)
-        moved_stat = quarantine.lstat()
-        if not os.path.samestat(owned.identity, moved_stat):
-            return
-        if owned.kind == "directory":
-            quarantine.rmdir()
-        else:
-            quarantine.unlink()
-    except OSError:
-        pass
 
 
 def _cleanup_owned_paths(owned_paths: list[_OwnedPath]) -> None:
@@ -629,6 +604,7 @@ def _create_controlled_directories(
     inventory: ArchiveInventory,
     expected_root: str,
     owned_paths: list[_OwnedPath],
+    owned_directory_identities: dict[Path, os.stat_result],
 ) -> None:
     root_key = _archive_destination_key(expected_root)
     directories = {
@@ -639,14 +615,7 @@ def _create_controlled_directories(
     for key in sorted(directories, key=lambda value: (value.count("/"), value)):
         relative = _relative_member_path(key, root_key)
         directory = staging.joinpath(*relative.parts)
-        parent_identity = next(
-            (
-                owned.identity
-                for owned in owned_paths
-                if owned.kind == "directory" and owned.path == directory.parent
-            ),
-            staging_identity if directory.parent == staging else None,
-        )
+        parent_identity = owned_directory_identities.get(directory.parent)
         if parent_identity is None:
             raise ArtifactError(
                 "archive_postcheck_failed",
@@ -662,12 +631,14 @@ def _create_controlled_directories(
         _require_owned_directory(directory.parent, parent_identity)
         _require_owned_directory(directory, directory_identity)
         owned_paths.append(_OwnedPath(directory, directory_identity, "directory"))
+        owned_directory_identities[directory] = directory_identity
 
 
 def _open_verified_archive(
     archive: Path,
     *,
     snapshot_directory: Path,
+    snapshot_directory_identity: os.stat_result,
     expected_byte_size: int | None,
     expected_sha256: str | None,
 ) -> BinaryIO:
@@ -704,10 +675,9 @@ def _open_verified_archive(
         ):
             raise OSError("archive identity or size changed while opening")
         digest = hashlib.sha256()
-        snapshot = tempfile.SpooledTemporaryFile(
-            max_size=1,
-            mode="w+b",
-            dir=snapshot_directory,
+        snapshot = open_bound_temporary(
+            snapshot_directory,
+            snapshot_directory_identity,
         )
         copied = 0
         while copied <= byte_limit:

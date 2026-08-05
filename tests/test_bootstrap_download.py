@@ -22,7 +22,11 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from local_gpu_imagegen.bootstrap_catalog import BootstrapArtifact  # noqa: E402
 from local_gpu_imagegen.bootstrap_download import (  # noqa: E402
     ArchiveEntry,
+    ArchiveInventory,
+    _ControlledWriterFactory,
+    _OwnedPath,
     _PolicyRedirectHandler,
+    _capture_directory_chain,
     download_part_path,
     download_verified,
     safe_extract_portable,
@@ -517,7 +521,7 @@ class PortableExtractionTests(unittest.TestCase):
         return archive_path
 
     def test_verified_archive_snapshot_uses_the_selected_install_volume(self) -> None:
-        import local_gpu_imagegen.bootstrap_download as bootstrap_download
+        import local_gpu_imagegen._filesystem_capability as filesystem_capability
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
@@ -536,7 +540,7 @@ class PortableExtractionTests(unittest.TestCase):
                 return original_temporary_file(*args, **kwargs)
 
             with mock.patch.object(
-                bootstrap_download.tempfile,
+                filesystem_capability.tempfile,
                 "TemporaryFile",
                 side_effect=capture_snapshot_directory,
             ):
@@ -548,6 +552,64 @@ class PortableExtractionTests(unittest.TestCase):
                 )
 
             self.assertEqual(snapshot_directories, [selected_volume.resolve()])
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction swap-back semantics")
+    def test_snapshot_ancestor_swap_back_never_receives_archive_bytes(self) -> None:
+        import local_gpu_imagegen._filesystem_capability as filesystem_capability
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            archive_path = self.write_portable_archive(root / "archive")
+            selected_volume = root / "selected-volume"
+            selected_volume.mkdir()
+            install_root = selected_volume / "install"
+            displaced = root / "displaced-volume"
+            external = root / "external-volume"
+            external.mkdir()
+            original_temporary_file = tempfile.TemporaryFile
+            external_write_bytes = 0
+            swapped = False
+
+            class RecordingTemporaryFile:
+                def __init__(self, stream) -> None:
+                    self.stream = stream
+
+                def __getattr__(self, name):
+                    return getattr(self.stream, name)
+
+                def write(self, value):
+                    nonlocal external_write_bytes
+                    external_write_bytes += len(value)
+                    return self.stream.write(value)
+
+            def swap_back_after_temporary_creation(*args, **kwargs):
+                nonlocal swapped
+                if swapped:
+                    return original_temporary_file(*args, **kwargs)
+                selected_volume.replace(displaced)
+                create_directory_alias(selected_volume, external)
+                try:
+                    stream = original_temporary_file(*args, **kwargs)
+                finally:
+                    os.rmdir(selected_volume)
+                    displaced.replace(selected_volume)
+                swapped = True
+                return RecordingTemporaryFile(stream)
+
+            with mock.patch.object(
+                filesystem_capability.tempfile,
+                "TemporaryFile",
+                side_effect=swap_back_after_temporary_creation,
+            ), self.assertRaises(ArtifactError):
+                safe_extract_portable(
+                    archive_path,
+                    install_root,
+                    expected_root="ComfyUI_windows_portable",
+                    plan_id="9" * 24,
+                )
+
+            self.assertTrue(swapped)
+            self.assertEqual(external_write_bytes, 0)
 
     def test_archive_snapshot_without_expected_size_is_bounded(self) -> None:
         import local_gpu_imagegen.bootstrap_download as bootstrap_download
@@ -688,6 +750,123 @@ class PortableExtractionTests(unittest.TestCase):
             self.assertEqual(list(external.rglob("*")), [])
             self.assertFalse((install_root / "ComfyUI_windows_portable").exists())
 
+    @unittest.skipUnless(os.name == "nt", "Windows junction swap-back semantics")
+    def test_portable_writer_swap_back_never_writes_nonempty_external_file(self) -> None:
+        import local_gpu_imagegen.bootstrap_download as bootstrap_download
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            archive_path = self.write_portable_archive(root / "archive")
+            install_root = root / "install"
+            plan_id = "d" * 24
+            staging = install_root / f".local-gpu-imagegen-{plan_id}.staging"
+            parent = staging / "python_embeded"
+            destination = parent / "python.exe"
+            displaced = root / "displaced-python-parent"
+            external = root / "external-python-parent"
+            external.mkdir()
+            original_open = os.open
+            original_path_open = Path.open
+            original_lstat = Path.lstat
+            swapped = False
+            restored = False
+
+            def swap_parent_for(candidate: Path) -> None:
+                nonlocal swapped
+                if candidate == destination and not swapped:
+                    parent.replace(displaced)
+                    create_directory_alias(parent, external)
+                    swapped = True
+
+            def redirect_open(path, flags, *args, **kwargs):
+                swap_parent_for(Path(path))
+                return original_open(path, flags, *args, **kwargs)
+
+            def redirect_path_open(path: Path, *args, **kwargs):
+                swap_parent_for(path)
+                return original_path_open(path, *args, **kwargs)
+
+            def restore_after_path_stat(path: Path, *args, **kwargs):
+                nonlocal restored
+                current = original_lstat(path, *args, **kwargs)
+                if path == destination and swapped and not restored:
+                    os.rmdir(parent)
+                    displaced.replace(parent)
+                    restored = True
+                return current
+
+            with mock.patch.object(
+                bootstrap_download.os,
+                "open",
+                side_effect=redirect_open,
+            ), mock.patch.object(
+                Path,
+                "open",
+                new=redirect_path_open,
+            ), mock.patch.object(Path, "lstat", new=restore_after_path_stat):
+                with self.assertRaises(ArtifactError):
+                    safe_extract_portable(
+                        archive_path,
+                        install_root,
+                        expected_root="ComfyUI_windows_portable",
+                        plan_id=plan_id,
+                    )
+
+            self.assertTrue(swapped)
+            self.assertTrue(restored)
+            external_file = external / "python.exe"
+            self.assertTrue(not external_file.exists() or external_file.read_bytes() == b"")
+
+    def test_controlled_writer_uses_constant_time_parent_identity_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            staging = root / ".local-gpu-imagegen-staging"
+            parent = staging / "python_embeded"
+            parent.mkdir(parents=True)
+            staging_identity = staging.lstat()
+            parent_identity = parent.lstat()
+            inventory = ArchiveInventory(
+                entries=(
+                    ArchiveEntry(
+                        "ComfyUI_windows_portable/python_embeded/python.exe",
+                        "file",
+                        1,
+                    ),
+                ),
+                entry_count=1,
+                file_count=1,
+                directory_count=0,
+                expanded_bytes=1,
+            )
+
+            class NonIterableOwnedPaths(list):
+                def __iter__(self):
+                    raise AssertionError("writer parent lookup scanned ordered cleanup records")
+
+            owned_paths = NonIterableOwnedPaths(
+                [_OwnedPath(parent, parent_identity, "directory")]
+            )
+            writer_factory = _ControlledWriterFactory(
+                staging,
+                staging_identity,
+                root,
+                _capture_directory_chain(root),
+                inventory,
+                "ComfyUI_windows_portable",
+                owned_paths,
+                {
+                    staging: staging_identity,
+                    parent: parent_identity,
+                },
+            )
+
+            writer = writer_factory.create(
+                str(staging / "ComfyUI_windows_portable" / "python_embeded" / "python.exe")
+            )
+            writer.write(b"x")
+            writer_factory.finish()
+            self.assertEqual((parent / "python.exe").read_bytes(), b"x")
+
     def test_missing_or_wrong_type_portable_markers_fail_before_promotion(self) -> None:
         cases = (
             {"include_main": False},
@@ -751,7 +930,7 @@ class PortableExtractionTests(unittest.TestCase):
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
             self.assertFalse((install_root / "ComfyUI_windows_portable").exists())
 
-    def test_post_extraction_inventory_drift_is_rejected_and_cleaned(self) -> None:
+    def test_post_extraction_inventory_drift_retains_unowned_residue(self) -> None:
         original_extract = py7zr.SevenZipFile.extract
         for index, mutation in enumerate(("unexpected_file", "type_drift")):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary_directory:
@@ -787,14 +966,22 @@ class PortableExtractionTests(unittest.TestCase):
                 retained_staging = (
                     install_root / f".local-gpu-imagegen-{index + 14:024x}.staging"
                 )
-                self.assertFalse(retained_staging.exists())
+                self.assertTrue(retained_staging.is_dir())
+                if mutation == "unexpected_file":
+                    self.assertEqual(
+                        (retained_staging / "unexpected.bin").read_bytes(),
+                        b"unexpected",
+                    )
+                else:
+                    self.assertTrue(
+                        (retained_staging / "python_embeded" / "python.exe").is_dir()
+                    )
                 quarantined = [
                     path
                     for path in install_root.iterdir()
                     if path.name.endswith(".cleanup")
                 ]
-                self.assertEqual(len(quarantined), 1)
-                self.assertTrue(quarantined[0].is_dir())
+                self.assertEqual(quarantined, [])
 
     def test_exact_py7zr_version_is_required_before_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

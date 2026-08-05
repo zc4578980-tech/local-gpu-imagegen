@@ -128,6 +128,7 @@ class PackagingTests(unittest.TestCase):
             names = set(archive.namelist())
         self.assertIn("local_gpu_imagegen/regional_layout.py", names)
         required_suffixes = {
+            "local_gpu_imagegen/_filesystem_capability.py",
             "local_gpu_imagegen/backend_lifecycle.py",
             "local_gpu_imagegen/bootstrap_catalog.py",
             "local_gpu_imagegen/bootstrap_download.py",
