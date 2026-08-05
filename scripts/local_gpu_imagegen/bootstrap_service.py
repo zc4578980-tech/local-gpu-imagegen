@@ -5,14 +5,14 @@ import json
 import os
 import re
 import secrets
-import shutil
 import stat
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
 from urllib.parse import urlsplit
 
 from .bootstrap_catalog import MAX_ARTIFACT_BYTES, BootstrapArtifact
-from .bootstrap_download import download_verified, safe_extract_portable
+from .bootstrap_download import download_cache_path, download_verified, safe_extract_portable
 from .backend_lifecycle import build_comfyui_start_config
 from .client_setup import managed_comfyui_server_command
 from .errors import ArtifactError, StateError, ValidationError
@@ -116,6 +116,18 @@ _MAX_STATE_BYTES = 512 * 1024
 
 class _DuplicateStateKey(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedArtifactFile:
+    path: Path
+    identity: os.stat_result
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnedDirectory:
+    path: Path
+    identity: os.stat_result
 
 
 def apply_bootstrap_plan(
@@ -249,7 +261,7 @@ def apply_bootstrap_plan(
         expected_completed_retained_state,
         portable_root,
         model_path,
-        normalized_artifacts["model"],
+        normalized_artifacts,
     )
     if existing_result is not None:
         return existing_result
@@ -267,7 +279,7 @@ def apply_bootstrap_plan(
             expected_completed_retained_state,
             portable_root,
             model_path,
-            normalized_artifacts["model"],
+            normalized_artifacts,
         )
         if existing_result is not None:
             return existing_result
@@ -291,7 +303,7 @@ def apply_bootstrap_plan(
             expected_completed_retained_state,
             portable_root,
             model_path,
-            normalized_artifacts["model"],
+            normalized_artifacts,
         )
         if existing_result is not None:
             return existing_result
@@ -314,7 +326,7 @@ def apply_bootstrap_plan(
         _atomic_write_state(transaction_path, transaction, root, root_stat)
 
         downloaded: list[str] = []
-        downloaded_paths: dict[str, Path] = {}
+        downloaded_paths: dict[str, _VerifiedArtifactFile] = {}
         managed_command: tuple[str, ...] | None = None
         portable_promoted = False
         model_promoted = False
@@ -333,9 +345,28 @@ def apply_bootstrap_plan(
                         artifact,
                     )
                     downloaded.append(artifact.artifact_id)
+                    _record_in_progress_boundary(
+                        transaction,
+                        transaction_path,
+                        root,
+                        root_stat,
+                        _retained_install_state(
+                            portable_root,
+                            model_path,
+                            downloaded,
+                            portable_pre_existing=portable_pre_existing,
+                            model_pre_existing=model_pre_existing,
+                            portable_promoted=portable_promoted,
+                            model_promoted=model_promoted,
+                            portable_reuse_verified=portable_reuse_verified,
+                            model_reuse_verified=model_reuse_verified,
+                            model_artifact=normalized_artifacts["model"],
+                        ),
+                        downloaded,
+                    )
                 elif kind == "extract_comfyui":
                     portable_root = safe_extract_portable(
-                        downloaded_paths["comfyui"],
+                        downloaded_paths["comfyui"].path,
                         install_root,
                         expected_root=normalized_artifacts["comfyui"].install_relative_path,
                         plan_id=plan_id,
@@ -464,7 +495,11 @@ def apply_bootstrap_plan(
 
 
 def _execution_failure_code(error: Exception) -> str:
-    if isinstance(error, ArtifactError) and error.code in _KNOWN_EXECUTION_FAILURE_CODES:
+    if (
+        isinstance(error, ArtifactError)
+        and isinstance(error.code, str)
+        and error.code in _KNOWN_EXECUTION_FAILURE_CODES
+    ):
         return error.code
     return "bootstrap_execution_failed"
 
@@ -478,8 +513,9 @@ def _existing_transaction_result(
     expected_completed_retained_state: dict[str, object],
     portable_root: Path,
     model_path: Path,
-    model_artifact: BootstrapArtifact,
+    artifacts: dict[str, BootstrapArtifact],
 ) -> dict[str, object] | None:
+    model_artifact = artifacts["model"]
     if not os.path.lexists(transaction_path):
         return None
     transaction = _read_json(transaction_path, "invalid_bootstrap_transaction")
@@ -500,13 +536,34 @@ def _existing_transaction_result(
             model_path,
             model_artifact,
         )
+    reconciled_retained_state = _reconcile_retained_state(
+        transaction,
+        expected_downloaded_artifacts,
+        expected_completed_retained_state,
+        portable_root,
+        model_path,
+        artifacts,
+        transaction_path.parent.parent / "cache",
+    )
+    stored_retained_state = transaction["retained_state"]
+    for component in ("portable", "model"):
+        if (
+            stored_retained_state[component]
+            in {"installed", "verified_pre_existing"}
+            and stored_retained_state[component] != reconciled_retained_state[component]
+        ):
+            raise StateError(
+                "invalid_bootstrap_transaction",
+                "Bootstrap transaction retained state does not match current evidence.",
+            )
+    reconciled_next_actions = _recoverable_next_actions(reconciled_retained_state)
     raise StateError(
         "bootstrap_confirmation_consumed",
         "Bootstrap confirmation has already been consumed by another transaction state.",
         {
             "transaction_status": transaction["status"],
-            "retained_state": transaction["retained_state"],
-            "recoverable_next_actions": transaction["recoverable_next_actions"],
+            "retained_state": reconciled_retained_state,
+            "recoverable_next_actions": reconciled_next_actions,
         },
     )
 
@@ -586,7 +643,7 @@ def _record_in_progress_boundary(
 def _require_exact_artifact_file(
     value: object,
     artifact: BootstrapArtifact,
-) -> Path:
+) -> _VerifiedArtifactFile:
     try:
         path = Path(value)
         path_stat = path.lstat()
@@ -595,14 +652,9 @@ def _require_exact_artifact_file(
             "downloaded_artifact_invalid",
             "Downloader output must be one exact verified artifact file.",
         ) from error
-    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     if (
         not path.is_absolute()
-        or not stat.S_ISREG(path_stat.st_mode)
-        or stat.S_ISLNK(path_stat.st_mode)
-        or bool(getattr(path_stat, "st_file_attributes", 0) & reparse_flag)
-        or path_stat.st_nlink != 1
-        or path_stat.st_size != artifact.byte_size
+        or not _safe_artifact_file_stat(path_stat, artifact.byte_size)
     ):
         raise ArtifactError(
             "downloaded_artifact_invalid",
@@ -612,10 +664,20 @@ def _require_exact_artifact_file(
     try:
         with path.open("rb") as stream:
             opened_stat = os.fstat(stream.fileno())
-            if not os.path.samestat(path_stat, opened_stat):
+            if (
+                not _safe_artifact_file_stat(opened_stat, artifact.byte_size)
+                or not os.path.samestat(path_stat, opened_stat)
+            ):
                 raise OSError("artifact identity changed while opening")
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
+            remaining = artifact.byte_size
+            while remaining:
+                block = stream.read(min(1024 * 1024, remaining))
+                if not block:
+                    raise OSError("artifact ended before its frozen byte size")
                 digest.update(block)
+                remaining -= len(block)
+            if stream.read(1):
+                raise OSError("artifact exceeds its frozen byte size")
         if not os.path.samestat(path_stat, path.lstat()):
             raise OSError("artifact identity changed while reading")
     except OSError as error:
@@ -628,11 +690,11 @@ def _require_exact_artifact_file(
             "downloaded_artifact_invalid",
             "Downloader output size or digest does not match the frozen artifact.",
         )
-    return path
+    return _VerifiedArtifactFile(path=path, identity=opened_stat)
 
 
 def _place_model_no_overwrite(
-    source: Path,
+    source: _VerifiedArtifactFile,
     destination: Path,
     portable_root: Path,
     artifact: BootstrapArtifact,
@@ -651,17 +713,44 @@ def _place_model_no_overwrite(
     staging_identity: os.stat_result | None = None
     try:
         _require_model_parent_guard(parent_guard)
-        with source.open("rb") as input_stream, staging.open("xb") as output_stream:
-            staging_identity = os.fstat(output_stream.fileno())
-            if not os.path.samestat(staging_identity, staging.lstat()):
+        with source.path.open("rb") as input_stream:
+            source_stat = os.fstat(input_stream.fileno())
+            if (
+                not _safe_artifact_file_stat(source_stat, artifact.byte_size)
+                or not os.path.samestat(source.identity, source_stat)
+                or not os.path.samestat(source.identity, source.path.lstat())
+            ):
                 raise ArtifactError(
-                    "unsafe_model_destination",
-                    "Model staging identity changed during creation.",
+                    "downloaded_artifact_invalid",
+                    "Verified model source identity changed before placement.",
                 )
-            _require_model_parent_guard(parent_guard)
-            shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
-            output_stream.flush()
-            os.fsync(output_stream.fileno())
+            with staging.open("xb") as output_stream:
+                staging_identity = os.fstat(output_stream.fileno())
+                if not os.path.samestat(staging_identity, staging.lstat()):
+                    raise ArtifactError(
+                        "unsafe_model_destination",
+                        "Model staging identity changed during creation.",
+                    )
+                _require_model_parent_guard(parent_guard)
+                digest = hashlib.sha256()
+                remaining = artifact.byte_size
+                while remaining:
+                    block = input_stream.read(min(1024 * 1024, remaining))
+                    if not block:
+                        raise ArtifactError(
+                            "downloaded_artifact_invalid",
+                            "Verified model source ended before its frozen byte size.",
+                        )
+                    output_stream.write(block)
+                    digest.update(block)
+                    remaining -= len(block)
+                if input_stream.read(1) or digest.hexdigest() != artifact.sha256:
+                    raise ArtifactError(
+                        "downloaded_artifact_invalid",
+                        "Verified model source changed during placement.",
+                    )
+                output_stream.flush()
+                os.fsync(output_stream.fileno())
         _require_exact_artifact_file(staging, artifact)
         _require_model_parent_guard(parent_guard)
         os.link(staging, destination)
@@ -676,13 +765,11 @@ def _place_model_no_overwrite(
             _unlink_owned_file(destination, staging_identity)
             raise
         _unlink_owned_file(staging, staging_identity)
-        return _require_exact_artifact_file(destination, artifact)
+        return _require_exact_artifact_file(destination, artifact).path
     except BaseException:
         _unlink_owned_file(staging, staging_identity)
         for directory in reversed(created_directories):
-            try:
-                directory.rmdir()
-            except OSError:
+            if not _remove_owned_empty_directory(directory):
                 break
         raise
 
@@ -697,7 +784,10 @@ def _unlink_owned_file(path: Path, identity: os.stat_result | None) -> None:
         pass
 
 
-def _prepare_safe_model_parent(destination: Path, portable_root: Path) -> list[Path]:
+def _prepare_safe_model_parent(
+    destination: Path,
+    portable_root: Path,
+) -> list[_OwnedDirectory]:
     try:
         destination.relative_to(portable_root)
     except ValueError as error:
@@ -719,13 +809,14 @@ def _prepare_safe_model_parent(destination: Path, portable_root: Path) -> list[P
             )
         current = parent
 
-    created: list[Path] = []
+    created: list[_OwnedDirectory] = []
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     try:
         for directory in reversed(lineage):
+            created_here = False
             if not os.path.lexists(directory):
                 directory.mkdir()
-                created.append(directory)
+                created_here = True
             directory_stat = directory.lstat()
             if (
                 not stat.S_ISDIR(directory_stat.st_mode)
@@ -733,17 +824,45 @@ def _prepare_safe_model_parent(destination: Path, portable_root: Path) -> list[P
                 or bool(getattr(directory_stat, "st_file_attributes", 0) & reparse_flag)
             ):
                 raise OSError("model destination parent is link-like or not a directory")
+            if created_here:
+                created.append(_OwnedDirectory(directory, directory_stat))
     except OSError as error:
         for directory in reversed(created):
-            try:
-                directory.rmdir()
-            except OSError:
+            if not _remove_owned_empty_directory(directory):
                 break
         raise ArtifactError(
             "unsafe_model_destination",
             "Model destination parents must be fixed non-reparse directories.",
         ) from error
     return created
+
+
+def _remove_owned_empty_directory(owned: _OwnedDirectory) -> bool:
+    quarantine = owned.path.with_name(
+        f".{owned.path.name}.{secrets.token_hex(12)}.cleanup"
+    )
+    try:
+        current_stat = owned.path.lstat()
+        if (
+            not _safe_model_directory_stat(current_stat)
+            or not os.path.samestat(owned.identity, current_stat)
+        ):
+            return False
+        os.replace(owned.path, quarantine)
+        moved_stat = quarantine.lstat()
+        if not os.path.samestat(owned.identity, moved_stat):
+            if not os.path.lexists(owned.path):
+                os.replace(quarantine, owned.path)
+            return False
+        quarantine.rmdir()
+        return True
+    except OSError:
+        if os.path.lexists(quarantine) and not os.path.lexists(owned.path):
+            try:
+                os.replace(quarantine, owned.path)
+            except OSError:
+                pass
+        return False
 
 
 def _capture_model_parent_guard(
@@ -793,6 +912,17 @@ def _safe_model_directory_stat(path_stat: os.stat_result) -> bool:
         stat.S_ISDIR(path_stat.st_mode)
         and not stat.S_ISLNK(path_stat.st_mode)
         and not bool(getattr(path_stat, "st_file_attributes", 0) & reparse_flag)
+    )
+
+
+def _safe_artifact_file_stat(path_stat: os.stat_result, expected_size: int) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return (
+        stat.S_ISREG(path_stat.st_mode)
+        and not stat.S_ISLNK(path_stat.st_mode)
+        and not bool(getattr(path_stat, "st_file_attributes", 0) & reparse_flag)
+        and path_stat.st_nlink == 1
+        and path_stat.st_size == expected_size
     )
 
 
@@ -1026,6 +1156,12 @@ def _validate_transaction(
         and retained_state.get("model")
         in {"missing", "pre_existing", "verified_pre_existing", "installed", "unsafe_drift"}
         and retained_state.get("verified_cache_artifacts") == downloaded
+        and _retained_transition_is_valid(
+            retained_state,
+            downloaded,
+            expected_downloaded_artifacts,
+            expected_completed_retained_state,
+        )
     )
     if (
         set(transaction) != _TRANSACTION_FIELDS
@@ -1075,6 +1211,123 @@ def _validate_transaction(
             "invalid_bootstrap_transaction",
             "Bootstrap transaction record does not match the exact frozen plan.",
         )
+
+
+def _retained_transition_is_valid(
+    retained_state: dict[str, object],
+    downloaded: object,
+    expected_downloaded_artifacts: tuple[str, ...],
+    expected_completed_retained_state: dict[str, object],
+) -> bool:
+    if not isinstance(downloaded, list):
+        return False
+    required_downloads = _component_download_ids(
+        expected_downloaded_artifacts,
+        expected_completed_retained_state,
+    )
+    for component in ("portable", "model"):
+        state = retained_state.get(component)
+        completed_state = expected_completed_retained_state.get(component)
+        if completed_state == "installed":
+            if state not in {"missing", "installed", "unsafe_drift"}:
+                return False
+            required_download = required_downloads[component]
+            if state == "installed" and required_download not in downloaded:
+                return False
+        elif completed_state == "verified_pre_existing":
+            if state not in {"pre_existing", "verified_pre_existing", "unsafe_drift"}:
+                return False
+        else:
+            return False
+    return True
+
+
+def _component_download_ids(
+    expected_downloaded_artifacts: tuple[str, ...],
+    expected_completed_retained_state: dict[str, object],
+) -> dict[str, str | None]:
+    result: dict[str, str | None] = {"portable": None, "model": None}
+    index = 0
+    for component in ("portable", "model"):
+        if expected_completed_retained_state.get(component) == "installed":
+            if index >= len(expected_downloaded_artifacts):
+                return {"portable": None, "model": None}
+            result[component] = expected_downloaded_artifacts[index]
+            index += 1
+    return result
+
+
+def _reconcile_retained_state(
+    transaction: dict[str, object],
+    expected_downloaded_artifacts: tuple[str, ...],
+    expected_completed_retained_state: dict[str, object],
+    portable_root: Path,
+    model_path: Path,
+    artifacts: dict[str, BootstrapArtifact],
+    cache_dir: Path,
+) -> dict[str, object]:
+    model_artifact = artifacts["model"]
+    downloaded = list(transaction["downloaded_artifacts"])
+    required_downloads = _component_download_ids(
+        expected_downloaded_artifacts,
+        expected_completed_retained_state,
+    )
+
+    portable_target = expected_completed_retained_state["portable"]
+    if not os.path.lexists(portable_root):
+        portable_state = "missing" if portable_target == "installed" else "unsafe_drift"
+    else:
+        try:
+            build_comfyui_start_config(portable_root)
+        except Exception:
+            portable_state = "unsafe_drift"
+        else:
+            if portable_target == "verified_pre_existing":
+                portable_state = "verified_pre_existing"
+            elif required_downloads["portable"] in downloaded:
+                portable_state = "installed"
+            else:
+                portable_state = "unsafe_drift"
+
+    model_target = expected_completed_retained_state["model"]
+    if not os.path.lexists(model_path):
+        model_state = "missing" if model_target == "installed" else "unsafe_drift"
+    else:
+        try:
+            _require_exact_artifact_file(model_path, model_artifact)
+        except (OSError, ArtifactError):
+            model_state = "unsafe_drift"
+        else:
+            if model_target == "verified_pre_existing":
+                model_state = "verified_pre_existing"
+            elif required_downloads["model"] in downloaded:
+                model_state = "installed"
+            else:
+                model_state = "unsafe_drift"
+
+    artifact_by_id = {
+        artifact.artifact_id: artifact
+        for artifact in artifacts.values()
+    }
+    verified_cache_artifacts: list[str] = []
+    for artifact_id in downloaded:
+        artifact = artifact_by_id.get(artifact_id)
+        if artifact is None:
+            continue
+        try:
+            _require_exact_artifact_file(
+                download_cache_path(artifact, cache_dir),
+                artifact,
+            )
+        except ArtifactError:
+            continue
+        verified_cache_artifacts.append(artifact_id)
+
+    return {
+        "portable": portable_state,
+        "model": model_state,
+        "verified_cache_artifacts": verified_cache_artifacts,
+    }
 
 
 def _validate_action_contract(scope: dict[str, object]) -> None:
