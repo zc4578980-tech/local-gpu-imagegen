@@ -4,6 +4,7 @@ import importlib.metadata
 import os
 import sys
 import sysconfig
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -13,6 +14,14 @@ RESOURCE_MARKERS = (
     Path("workflows") / "comfyui",
     Path("skills") / "local-gpu-imagegen" / "SKILL.md",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapPaths:
+    root: Path
+    cache: Path
+    install: Path
+    plans: Path
 
 
 def _missing_markers(root: Path) -> list[str]:
@@ -75,3 +84,17 @@ def default_output_root(root: Path | None = None) -> Path:
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
     return base / "local-gpu-imagegen" / "outputs"
+
+
+def default_bootstrap_paths() -> BootstrapPaths:
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    root = (base / "local-gpu-imagegen" / "bootstrap").expanduser().resolve()
+    return BootstrapPaths(
+        root=root,
+        cache=root / "cache",
+        install=root / "runtime",
+        plans=root / "plans",
+    )

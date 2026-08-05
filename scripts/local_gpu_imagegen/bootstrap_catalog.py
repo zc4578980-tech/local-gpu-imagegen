@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Collection
 from urllib.parse import urlsplit
 
+from .artifacts import atomic_write_json
 from .errors import ValidationError
 
 
@@ -46,6 +47,13 @@ _MODEL_ARTIFACT_FIELDS = _COMMON_ARTIFACT_FIELDS | {"minimum_vram_gb"}
 _WORKFLOW_FIELDS = frozenset({"backend", "template_id", "template_version", "operation"})
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_ARTIFACT_STATUSES = frozenset({"missing", "valid", "conflict"})
+_SUPPORTED_GPU_GENERATIONS = frozenset({
+    "rtx-20-series",
+    "rtx-30-series",
+    "rtx-40-series",
+    "rtx-50-series",
+})
 
 
 class _DuplicateManifestKey(ValueError):
@@ -95,6 +103,114 @@ class BootstrapManifest:
     @property
     def required_download_bytes(self) -> int:
         return self.comfyui.byte_size + self.model.byte_size
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapFacts:
+    platform: str
+    architecture: str
+    gpu_vendor: str
+    gpu_generation: str
+    vram_bytes: int
+    windows_build: int
+    free_disk_bytes: int
+    network_allowed: bool
+    endpoint_ready: bool
+    portable_status: str
+    model_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapAction:
+    kind: str
+    artifact_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapPlan:
+    plan_id: str
+    scope_sha256: str
+    confirmation: str | None
+    status: str
+    reason: str | None
+    actions: tuple[BootstrapAction, ...]
+    required_download_bytes: int
+    required_disk_bytes: int
+    install_root: Path
+    record_path: Path
+
+
+def build_bootstrap_plan(
+    manifest: BootstrapManifest,
+    facts: BootstrapFacts,
+    *,
+    install_root: Path,
+    plan_root: Path,
+) -> BootstrapPlan:
+    _validate_facts(facts)
+    resolved_install_root = Path(install_root).expanduser().resolve()
+    resolved_plan_root = Path(plan_root).expanduser().resolve()
+    _validate_plan_paths(resolved_install_root, resolved_plan_root)
+
+    status, reason, actions, required_download_bytes, required_disk_bytes = _classify_plan(
+        manifest,
+        facts,
+    )
+    scope = {
+        "schema_version": 1,
+        "manifest_sha256": manifest.manifest_sha256,
+        "install_root": str(resolved_install_root),
+        "status": status,
+        "reason": reason,
+        "facts": _facts_document(facts),
+        "actions": [_action_document(action) for action in actions],
+        "required_download_bytes": required_download_bytes,
+        "required_disk_bytes": required_disk_bytes,
+        "artifacts": {
+            "comfyui": _artifact_document(manifest.comfyui),
+            "model": _artifact_document(manifest.model),
+        },
+        "workflow": {
+            "backend": manifest.workflow.backend,
+            "template_id": manifest.workflow.template_id,
+            "template_version": manifest.workflow.template_version,
+            "operation": manifest.workflow.operation,
+        },
+    }
+    canonical_scope = json.dumps(
+        scope,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    scope_sha256 = hashlib.sha256(canonical_scope).hexdigest()
+    plan_id = scope_sha256[:24]
+    confirmation = (
+        f"bootstrap:{plan_id}:{scope_sha256}"
+        if status == "confirmation_required"
+        else None
+    )
+    record_path = resolved_plan_root / f"{plan_id}.json"
+    atomic_write_json(record_path, {
+        "schema_version": 1,
+        "plan_id": plan_id,
+        "scope_sha256": scope_sha256,
+        "confirmation": confirmation,
+        "scope": scope,
+    })
+    return BootstrapPlan(
+        plan_id=plan_id,
+        scope_sha256=scope_sha256,
+        confirmation=confirmation,
+        status=status,
+        reason=reason,
+        actions=actions,
+        required_download_bytes=required_download_bytes,
+        required_disk_bytes=required_disk_bytes,
+        install_root=resolved_install_root,
+        record_path=record_path,
+    )
 
 
 def load_bootstrap_manifest(
@@ -416,3 +532,167 @@ def _valid_identifier(value: object) -> bool:
 
 def _nonempty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _validate_facts(facts: BootstrapFacts) -> None:
+    string_fields = (
+        facts.platform,
+        facts.architecture,
+        facts.gpu_vendor,
+        facts.gpu_generation,
+        facts.portable_status,
+        facts.model_status,
+    )
+    if not all(_nonempty_string(value) for value in string_fields):
+        raise ValidationError(
+            "invalid_bootstrap_facts",
+            "Bootstrap environment strings must be non-empty.",
+        )
+    if (
+        type(facts.windows_build) is not int
+        or facts.windows_build < 0
+        or type(facts.vram_bytes) is not int
+        or facts.vram_bytes < 0
+        or type(facts.free_disk_bytes) is not int
+        or facts.free_disk_bytes < 0
+        or type(facts.network_allowed) is not bool
+        or type(facts.endpoint_ready) is not bool
+        or facts.portable_status not in _ARTIFACT_STATUSES
+        or facts.model_status not in _ARTIFACT_STATUSES
+    ):
+        raise ValidationError(
+            "invalid_bootstrap_facts",
+            "Bootstrap environment facts have invalid types or states.",
+        )
+
+
+def _validate_plan_paths(install_root: Path, plan_root: Path) -> None:
+    for name, value in (("install_root", install_root), ("plan_root", plan_root)):
+        anchor = Path(value.anchor)
+        if not value.is_absolute() or value == anchor:
+            raise ValidationError(
+                "invalid_bootstrap_path",
+                f"{name} must be a specific absolute directory, not a filesystem root.",
+            )
+    if install_root == plan_root or install_root in plan_root.parents or plan_root in install_root.parents:
+        raise ValidationError(
+            "invalid_bootstrap_path",
+            "Install and plan roots must be separate non-overlapping directories.",
+        )
+
+
+def _classify_plan(
+    manifest: BootstrapManifest,
+    facts: BootstrapFacts,
+) -> tuple[str, str | None, tuple[BootstrapAction, ...], int, int]:
+    unsupported_reason = _unsupported_reason(manifest, facts)
+    if unsupported_reason is not None:
+        return "unsupported", unsupported_reason, (), 0, 0
+
+    if facts.endpoint_ready:
+        return "ready", None, (BootstrapAction("reuse_endpoint"),), 0, 0
+
+    if facts.portable_status == "conflict":
+        return "conflict", "existing_portable_conflict", (), 0, 0
+    if facts.model_status == "conflict":
+        return "conflict", "existing_model_conflict", (), 0, 0
+
+    proposed_actions: list[BootstrapAction] = []
+    required_download_bytes = 0
+    if facts.portable_status == "valid":
+        proposed_actions.append(BootstrapAction("reuse_portable", manifest.comfyui.artifact_id))
+    else:
+        proposed_actions.extend((
+            BootstrapAction("download_comfyui", manifest.comfyui.artifact_id),
+            BootstrapAction("extract_comfyui", manifest.comfyui.artifact_id),
+        ))
+        required_download_bytes += manifest.comfyui.byte_size
+
+    if facts.model_status == "valid":
+        proposed_actions.append(BootstrapAction("reuse_model", manifest.model.artifact_id))
+    else:
+        proposed_actions.extend((
+            BootstrapAction("download_model", manifest.model.artifact_id),
+            BootstrapAction("install_model", manifest.model.artifact_id),
+        ))
+        required_download_bytes += manifest.model.byte_size
+    proposed_actions.append(BootstrapAction("verify_install"))
+
+    if required_download_bytes == 0:
+        return "ready", None, tuple(proposed_actions), 0, 0
+    if not facts.network_allowed:
+        return (
+            "blocked",
+            "network_permission_required",
+            (),
+            required_download_bytes,
+            manifest.minimum_free_disk_bytes,
+        )
+    if facts.free_disk_bytes < manifest.minimum_free_disk_bytes:
+        return (
+            "blocked",
+            "insufficient_disk",
+            (),
+            required_download_bytes,
+            manifest.minimum_free_disk_bytes,
+        )
+    return (
+        "confirmation_required",
+        None,
+        tuple(proposed_actions),
+        required_download_bytes,
+        manifest.minimum_free_disk_bytes,
+    )
+
+
+def _unsupported_reason(manifest: BootstrapManifest, facts: BootstrapFacts) -> str | None:
+    minimum_vram_bytes = (manifest.model.minimum_vram_gb or 0) * 1024**3
+    comparisons = (
+        (facts.platform != manifest.platform, "unsupported_platform"),
+        (facts.architecture != manifest.architecture, "unsupported_architecture"),
+        (facts.gpu_vendor != manifest.gpu_vendor, "unsupported_gpu_vendor"),
+        (facts.gpu_generation not in _SUPPORTED_GPU_GENERATIONS, "unsupported_gpu_generation"),
+        (facts.vram_bytes < minimum_vram_bytes, "insufficient_vram"),
+        (facts.windows_build < manifest.minimum_windows_build, "unsupported_windows_build"),
+    )
+    for condition, reason in comparisons:
+        if condition:
+            return reason
+    return None
+
+
+def _facts_document(facts: BootstrapFacts) -> dict[str, object]:
+    return {
+        "platform": facts.platform,
+        "architecture": facts.architecture,
+        "gpu_vendor": facts.gpu_vendor,
+        "gpu_generation": facts.gpu_generation,
+        "vram_bytes": facts.vram_bytes,
+        "windows_build": facts.windows_build,
+        "free_disk_bytes": facts.free_disk_bytes,
+        "network_allowed": facts.network_allowed,
+        "endpoint_ready": facts.endpoint_ready,
+        "portable_status": facts.portable_status,
+        "model_status": facts.model_status,
+    }
+
+
+def _action_document(action: BootstrapAction) -> dict[str, object]:
+    return {"kind": action.kind, "artifact_id": action.artifact_id}
+
+
+def _artifact_document(artifact: BootstrapArtifact) -> dict[str, object]:
+    return {
+        "kind": artifact.kind,
+        "artifact_id": artifact.artifact_id,
+        "version": artifact.version,
+        "source_url": artifact.source_url,
+        "source_host": artifact.source_host,
+        "byte_size": artifact.byte_size,
+        "sha256": artifact.sha256,
+        "license_id": artifact.license_id,
+        "license_url": artifact.license_url,
+        "install_relative_path": artifact.install_relative_path,
+        "archive_format": artifact.archive_format,
+        "minimum_vram_gb": artifact.minimum_vram_gb,
+    }

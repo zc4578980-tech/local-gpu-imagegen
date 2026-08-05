@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,10 +15,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.bootstrap_catalog import (  # noqa: E402
     MAX_ARTIFACT_BYTES,
+    BootstrapFacts,
+    build_bootstrap_plan,
     load_bootstrap_manifest,
     validate_bootstrap_manifest,
 )
 from local_gpu_imagegen.errors import ValidationError  # noqa: E402
+from local_gpu_imagegen.paths import default_bootstrap_paths  # noqa: E402
 
 
 def fixture_manifest() -> dict[str, object]:
@@ -236,6 +241,222 @@ class BootstrapCatalogTests(unittest.TestCase):
         second = self.validate(reordered)
 
         self.assertEqual(first.manifest_sha256, second.manifest_sha256)
+
+
+class BootstrapPlannerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.manifest = load_bootstrap_manifest(
+            ROOT / "profiles" / "bootstrap" / "windows-nvidia.json"
+        )
+
+    @staticmethod
+    def facts(**overrides: object) -> BootstrapFacts:
+        values: dict[str, object] = {
+            "platform": "win32",
+            "architecture": "amd64",
+            "gpu_vendor": "nvidia",
+            "gpu_generation": "rtx-50-series",
+            "vram_bytes": 16 * 1024**3,
+            "windows_build": 26100,
+            "free_disk_bytes": 40 * 1024**3,
+            "network_allowed": True,
+            "endpoint_ready": False,
+            "portable_status": "missing",
+            "model_status": "missing",
+        }
+        values.update(overrides)
+        return BootstrapFacts(**values)
+
+    def build(self, facts: BootstrapFacts, temporary_directory: str):
+        root = Path(temporary_directory)
+        return build_bootstrap_plan(
+            self.manifest,
+            facts,
+            install_root=root / "install",
+            plan_root=root / "plans",
+        )
+
+    def test_ready_endpoint_requires_no_install_or_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            plan = self.build(self.facts(endpoint_ready=True), temporary_directory)
+
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual([action.kind for action in plan.actions], ["reuse_endpoint"])
+        self.assertEqual(plan.required_download_bytes, 0)
+        self.assertEqual(plan.required_disk_bytes, 0)
+        self.assertIsNone(plan.confirmation)
+
+    def test_existing_exact_portable_and_model_are_reused(self) -> None:
+        facts = self.facts(portable_status="valid", model_status="valid")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            plan = self.build(facts, temporary_directory)
+
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual(
+            [action.kind for action in plan.actions],
+            ["reuse_portable", "reuse_model", "verify_install"],
+        )
+        self.assertEqual(plan.required_download_bytes, 0)
+        self.assertIsNone(plan.confirmation)
+
+    def test_missing_portable_and_model_require_exact_confirmed_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan = self.build(self.facts(), temporary_directory)
+            records = list((root / "plans").glob("*.json"))
+            record = json.loads(records[0].read_text(encoding="utf-8"))
+
+        self.assertEqual(plan.status, "confirmation_required")
+        self.assertEqual(
+            [action.kind for action in plan.actions],
+            [
+                "download_comfyui",
+                "extract_comfyui",
+                "download_model",
+                "install_model",
+                "verify_install",
+            ],
+        )
+        self.assertEqual(plan.required_download_bytes, 9048875554)
+        self.assertEqual(plan.required_disk_bytes, 30 * 1024**3)
+        self.assertEqual(plan.confirmation, f"bootstrap:{plan.plan_id}:{plan.scope_sha256}")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(record["plan_id"], plan.plan_id)
+        self.assertEqual(record["scope_sha256"], plan.scope_sha256)
+        self.assertEqual(record["confirmation"], plan.confirmation)
+
+    def test_existing_portable_downloads_only_the_missing_model(self) -> None:
+        facts = self.facts(portable_status="valid", model_status="missing")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            plan = self.build(facts, temporary_directory)
+
+        self.assertEqual(plan.status, "confirmation_required")
+        self.assertEqual(
+            [action.kind for action in plan.actions],
+            ["reuse_portable", "download_model", "install_model", "verify_install"],
+        )
+        self.assertEqual(plan.required_download_bytes, self.manifest.model.byte_size)
+
+    def test_insufficient_disk_blocks_before_confirmation(self) -> None:
+        facts = self.facts(free_disk_bytes=self.manifest.minimum_free_disk_bytes - 1)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            plan = self.build(facts, temporary_directory)
+
+        self.assertEqual(plan.status, "blocked")
+        self.assertEqual(plan.reason, "insufficient_disk")
+        self.assertIsNone(plan.confirmation)
+        self.assertEqual(plan.actions, ())
+
+    def test_missing_download_with_no_network_permission_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            plan = self.build(self.facts(network_allowed=False), temporary_directory)
+
+        self.assertEqual(plan.status, "blocked")
+        self.assertEqual(plan.reason, "network_permission_required")
+        self.assertIsNone(plan.confirmation)
+        self.assertEqual(plan.required_download_bytes, 9048875554)
+        self.assertEqual(plan.required_disk_bytes, 30 * 1024**3)
+
+    def test_unsupported_system_contracts_stop_without_actions(self) -> None:
+        cases = (
+            {"platform": "linux"},
+            {"architecture": "arm64"},
+            {"gpu_vendor": "amd"},
+            {"gpu_generation": "rtx-10-series"},
+            {"gpu_generation": "unknown"},
+            {"windows_build": 19044},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides), tempfile.TemporaryDirectory() as temporary_directory:
+                plan = self.build(self.facts(**overrides), temporary_directory)
+                self.assertEqual(plan.status, "unsupported")
+                self.assertIsNotNone(plan.reason)
+                self.assertEqual(plan.actions, ())
+                self.assertIsNone(plan.confirmation)
+
+    def test_insufficient_vram_is_an_unsupported_contract(self) -> None:
+        facts = self.facts(vram_bytes=8 * 1024**3)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            plan = self.build(facts, temporary_directory)
+
+        self.assertEqual(plan.status, "unsupported")
+        self.assertEqual(plan.reason, "insufficient_vram")
+        self.assertEqual(plan.actions, ())
+        self.assertIsNone(plan.confirmation)
+
+    def test_conflicting_existing_artifacts_are_never_overwritten(self) -> None:
+        for field in ("portable_status", "model_status"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary_directory:
+                plan = self.build(self.facts(**{field: "conflict"}), temporary_directory)
+                self.assertEqual(plan.status, "conflict")
+                self.assertEqual(plan.reason, f"existing_{field.removesuffix('_status')}_conflict")
+                self.assertEqual(plan.actions, ())
+                self.assertIsNone(plan.confirmation)
+
+    def test_plan_identity_is_deterministic_and_binds_install_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            first = build_bootstrap_plan(
+                self.manifest,
+                self.facts(),
+                install_root=root / "install-a",
+                plan_root=root / "plans-a",
+            )
+            second = build_bootstrap_plan(
+                self.manifest,
+                self.facts(),
+                install_root=root / "install-a",
+                plan_root=root / "plans-b",
+            )
+            different = build_bootstrap_plan(
+                self.manifest,
+                self.facts(),
+                install_root=root / "install-b",
+                plan_root=root / "plans-c",
+            )
+
+        self.assertEqual(first.plan_id, second.plan_id)
+        self.assertEqual(first.scope_sha256, second.scope_sha256)
+        self.assertEqual(first.confirmation, second.confirmation)
+        self.assertNotEqual(first.plan_id, different.plan_id)
+        self.assertNotEqual(first.scope_sha256, different.scope_sha256)
+
+    def test_scope_record_binds_artifact_sources_licenses_and_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan = self.build(self.facts(), temporary_directory)
+            record = json.loads(
+                (root / "plans" / f"{plan.plan_id}.json").read_text(encoding="utf-8")
+            )
+
+        artifacts = record["scope"]["artifacts"]
+        self.assertEqual(artifacts["comfyui"]["source_url"], self.manifest.comfyui.source_url)
+        self.assertEqual(artifacts["comfyui"]["license_id"], self.manifest.comfyui.license_id)
+        self.assertEqual(artifacts["model"]["sha256"], self.manifest.model.sha256)
+        self.assertEqual(record["scope"]["required_download_bytes"], 9048875554)
+        self.assertEqual(record["scope"]["required_disk_bytes"], 30 * 1024**3)
+
+    def test_planning_makes_no_network_or_process_calls(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch("urllib.request.urlopen", side_effect=AssertionError("network called")),
+            mock.patch("subprocess.run", side_effect=AssertionError("process called")),
+        ):
+            plan = self.build(self.facts(), temporary_directory)
+        self.assertEqual(plan.status, "confirmation_required")
+
+    def test_default_bootstrap_paths_are_user_local_and_do_not_create_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            local_app_data = Path(temporary_directory) / "LocalAppData"
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}):
+                paths = default_bootstrap_paths()
+
+            expected_root = local_app_data.resolve() / "local-gpu-imagegen" / "bootstrap"
+            self.assertEqual(paths.root, expected_root)
+            self.assertEqual(paths.cache, expected_root / "cache")
+            self.assertEqual(paths.install, expected_root / "runtime")
+            self.assertEqual(paths.plans, expected_root / "plans")
+            self.assertFalse(paths.root.exists())
 
 
 if __name__ == "__main__":
