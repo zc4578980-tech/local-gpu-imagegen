@@ -17,9 +17,12 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from local_gpu_imagegen.bootstrap_catalog import BootstrapArtifact  # noqa: E402
 from local_gpu_imagegen.bootstrap_download import (  # noqa: E402
+    ArchiveEntry,
     _PolicyRedirectHandler,
     download_part_path,
     download_verified,
+    validate_archive_entries,
+    validate_portable_archive_inventory,
 )
 from local_gpu_imagegen.errors import ArtifactError  # noqa: E402
 
@@ -226,7 +229,6 @@ class BootstrapDownloadTests(unittest.TestCase):
         )
 
         self.assertEqual(self.server.requests, [])
-
     def test_invalid_artifact_types_fail_structurally_before_request(self) -> None:
         artifact = self.artifact("/full")
         invalid_artifacts = (
@@ -325,6 +327,155 @@ class BootstrapDownloadTests(unittest.TestCase):
 
         self.assertEqual(result, destination.resolve())
         self.assertEqual(self.server.requests, [])
+
+
+class ArchiveBoundaryTests(unittest.TestCase):
+    @staticmethod
+    def entry(
+        name: str,
+        *,
+        kind: str = "file",
+        uncompressed_bytes: int = 1,
+    ) -> ArchiveEntry:
+        return ArchiveEntry(
+            name=name,
+            kind=kind,
+            uncompressed_bytes=0 if kind == "directory" else uncompressed_bytes,
+        )
+
+    def assert_unsafe(self, entries: list[ArchiveEntry], reason: str) -> None:
+        with self.assertRaises(ArtifactError) as raised:
+            validate_archive_entries(entries)
+        self.assertEqual(raised.exception.code, "unsafe_archive")
+        self.assertEqual(raised.exception.details.get("reason"), reason)
+
+    def test_valid_inventory_is_normalized_without_writing(self) -> None:
+        entries = [
+            self.entry("ComfyUI_windows_portable", kind="directory"),
+            self.entry("ComfyUI_windows_portable/python_embeded/python.exe", uncompressed_bytes=16),
+            self.entry("ComfyUI_windows_portable/ComfyUI/main.py", uncompressed_bytes=8),
+        ]
+
+        inventory = validate_archive_entries(entries)
+
+        self.assertEqual(inventory.entry_count, 3)
+        self.assertEqual(inventory.file_count, 2)
+        self.assertEqual(inventory.directory_count, 1)
+        self.assertEqual(inventory.expanded_bytes, 24)
+        self.assertEqual(inventory.entries, tuple(entries))
+
+        validated = validate_portable_archive_inventory(
+            inventory,
+            expected_root="ComfyUI_windows_portable",
+        )
+        self.assertIs(validated, inventory)
+
+    def test_portable_layout_rejects_missing_wrong_type_or_outside_markers(self) -> None:
+        valid = [
+            self.entry("ComfyUI_windows_portable", kind="directory"),
+            self.entry("ComfyUI_windows_portable/python_embeded/python.exe"),
+            self.entry("ComfyUI_windows_portable/ComfyUI/main.py"),
+        ]
+        cases = (
+            valid[:-1],
+            valid[:-2] + valid[-1:],
+            [valid[0], replace(valid[1], kind="directory", uncompressed_bytes=0), valid[2]],
+            valid + [self.entry("outside.txt")],
+        )
+        for entries in cases:
+            with self.subTest(entries=entries):
+                inventory = validate_archive_entries(entries)
+                with self.assertRaises(ArtifactError) as raised:
+                    validate_portable_archive_inventory(
+                        inventory,
+                        expected_root="ComfyUI_windows_portable",
+                    )
+                self.assertEqual(raised.exception.code, "invalid_portable_layout")
+
+    def test_rejects_absolute_drive_unc_traversal_and_ambiguous_paths(self) -> None:
+        paths = (
+            "/absolute/file",
+            "C:/drive/file",
+            "C:\\drive\\file",
+            "//server/share/file",
+            "../outside",
+            "root/../outside",
+            "root/./file",
+            "root//file",
+            "root\\file",
+            "root/file:stream",
+            "root/file.",
+            "root/file ",
+            "",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                self.assert_unsafe([self.entry(path)], "invalid_path")
+
+    def test_rejects_windows_device_names_in_any_segment(self) -> None:
+        paths = (
+            "CON",
+            "root/nul.txt",
+            "root/aux/config.json",
+            "root/COM1.bin",
+            "root/lpt9/file",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                self.assert_unsafe([self.entry(path)], "windows_device_name")
+
+    def test_rejects_links_reparse_and_special_entries(self) -> None:
+        for kind in ("symlink", "hardlink", "reparse", "device", "socket", "unknown"):
+            with self.subTest(kind=kind):
+                self.assert_unsafe([self.entry("root/item", kind=kind)], "unsupported_entry_kind")
+
+    def test_rejects_exact_casefold_and_unicode_destination_collisions(self) -> None:
+        collisions = (
+            ("root/file.txt", "root/file.txt"),
+            ("root/File.txt", "root/file.TXT"),
+            ("root/caf\u00e9.txt", "root/cafe\u0301.txt"),
+        )
+        for first, second in collisions:
+            with self.subTest(first=first, second=second):
+                self.assert_unsafe(
+                    [self.entry(first), self.entry(second)],
+                    "destination_collision",
+                )
+
+    def test_rejects_file_parent_conflicts(self) -> None:
+        self.assert_unsafe(
+            [self.entry("root/item"), self.entry("root/item/child.txt")],
+            "file_parent_conflict",
+        )
+
+    def test_rejects_excessive_entry_count_and_expanded_bytes(self) -> None:
+        with self.assertRaises(ArtifactError) as entries_error:
+            validate_archive_entries(
+                [self.entry("root/a"), self.entry("root/b")],
+                max_entries=1,
+            )
+        self.assertEqual(entries_error.exception.details.get("reason"), "entry_count_limit")
+
+        with self.assertRaises(ArtifactError) as bytes_error:
+            validate_archive_entries(
+                [
+                    self.entry("root/a", uncompressed_bytes=6),
+                    self.entry("root/b", uncompressed_bytes=5),
+                ],
+                max_expanded_bytes=10,
+            )
+        self.assertEqual(bytes_error.exception.details.get("reason"), "expanded_bytes_limit")
+
+    def test_rejects_empty_or_invalid_entry_metadata(self) -> None:
+        self.assert_unsafe([], "empty_archive")
+        invalid_entries = (
+            self.entry("root/file", uncompressed_bytes=-1),
+            self.entry("root/file", uncompressed_bytes=True),
+            replace(self.entry("root/directory", kind="directory"), uncompressed_bytes=1),
+        )
+        for entry in invalid_entries:
+            with self.subTest(entry=entry):
+                self.assert_unsafe([entry], "invalid_entry_metadata")
 
 
 if __name__ == "__main__":

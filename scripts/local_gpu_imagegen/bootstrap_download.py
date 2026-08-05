@@ -7,8 +7,11 @@ import socket
 import stat
 import urllib.error
 import urllib.request
+import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from pathlib import PurePosixPath
+from typing import Callable, Iterable
 from urllib.parse import urlsplit
 
 from .bootstrap_catalog import MAX_ARTIFACT_BYTES, BootstrapArtifact
@@ -17,6 +20,8 @@ from .errors import ArtifactError
 
 MAX_DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_DOWNLOAD_TIMEOUT_SECONDS = 300.0
+MAX_ARCHIVE_ENTRIES = 200_000
+MAX_ARCHIVE_EXPANDED_BYTES = 20 * 1024 * 1024 * 1024
 APPROVED_REDIRECT_HOSTS_BY_SOURCE = {
     "github.com": frozenset({
         "release-assets.githubusercontent.com",
@@ -31,6 +36,175 @@ APPROVED_REDIRECT_HOSTS_BY_SOURCE = {
 }
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveEntry:
+    name: str
+    kind: str
+    uncompressed_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveInventory:
+    entries: tuple[ArchiveEntry, ...]
+    entry_count: int
+    file_count: int
+    directory_count: int
+    expanded_bytes: int
+
+
+def validate_archive_entries(
+    entries: Iterable[ArchiveEntry],
+    *,
+    max_entries: int = MAX_ARCHIVE_ENTRIES,
+    max_expanded_bytes: int = MAX_ARCHIVE_EXPANDED_BYTES,
+) -> ArchiveInventory:
+    if (
+        type(max_entries) is not int
+        or not 1 <= max_entries <= MAX_ARCHIVE_ENTRIES
+        or type(max_expanded_bytes) is not int
+        or not 1 <= max_expanded_bytes <= MAX_ARCHIVE_EXPANDED_BYTES
+    ):
+        raise _unsafe_archive("invalid_limits")
+
+    accepted: list[ArchiveEntry] = []
+    destinations: dict[str, str] = {}
+    file_destinations: set[str] = set()
+    file_count = 0
+    directory_count = 0
+    expanded_bytes = 0
+    for entry in entries:
+        if len(accepted) >= max_entries:
+            raise _unsafe_archive("entry_count_limit")
+        if not isinstance(entry, ArchiveEntry):
+            raise _unsafe_archive("invalid_entry_metadata")
+        if entry.kind not in {"file", "directory"}:
+            raise _unsafe_archive("unsupported_entry_kind", entry.name)
+        if (
+            type(entry.uncompressed_bytes) is not int
+            or entry.uncompressed_bytes < 0
+            or (entry.kind == "directory" and entry.uncompressed_bytes != 0)
+        ):
+            raise _unsafe_archive("invalid_entry_metadata", entry.name)
+
+        destination = _archive_destination_key(entry.name)
+        if destination in destinations:
+            raise _unsafe_archive("destination_collision", entry.name)
+        destinations[destination] = entry.kind
+        if entry.kind == "file":
+            file_destinations.add(destination)
+            file_count += 1
+            expanded_bytes += entry.uncompressed_bytes
+            if expanded_bytes > max_expanded_bytes:
+                raise _unsafe_archive("expanded_bytes_limit", entry.name)
+        else:
+            directory_count += 1
+        accepted.append(entry)
+
+    if not accepted:
+        raise _unsafe_archive("empty_archive")
+
+    for destination in destinations:
+        parts = destination.split("/")
+        for length in range(1, len(parts)):
+            if "/".join(parts[:length]) in file_destinations:
+                raise _unsafe_archive("file_parent_conflict", destination)
+
+    return ArchiveInventory(
+        entries=tuple(accepted),
+        entry_count=len(accepted),
+        file_count=file_count,
+        directory_count=directory_count,
+        expanded_bytes=expanded_bytes,
+    )
+
+
+def validate_portable_archive_inventory(
+    inventory: ArchiveInventory,
+    *,
+    expected_root: str,
+) -> ArchiveInventory:
+    root_key = _archive_destination_key(expected_root)
+    if "/" in root_key:
+        raise ArtifactError(
+            "invalid_portable_layout",
+            "Portable archive root must be one safe directory name.",
+        )
+    destinations = {
+        _archive_destination_key(entry.name): entry.kind
+        for entry in inventory.entries
+    }
+    if destinations.get(root_key) != "directory" or any(
+        destination != root_key and not destination.startswith(root_key + "/")
+        for destination in destinations
+    ):
+        raise ArtifactError(
+            "invalid_portable_layout",
+            "Portable archive contains entries outside its exact root.",
+        )
+    required_files = (
+        f"{root_key}/python_embeded/python.exe",
+        f"{root_key}/comfyui/main.py",
+    )
+    missing = [path for path in required_files if destinations.get(path) != "file"]
+    if missing:
+        raise ArtifactError(
+            "invalid_portable_layout",
+            "Portable archive is missing required regular-file markers.",
+            {"missing": missing},
+        )
+    return inventory
+
+
+def _archive_destination_key(name: object) -> str:
+    if (
+        not isinstance(name, str)
+        or not name
+        or len(name) > 32_767
+        or name.startswith("/")
+        or "\\" in name
+        or ":" in name
+        or "\x00" in name
+        or any(ord(character) < 32 for character in name)
+    ):
+        raise _unsafe_archive("invalid_path", name if isinstance(name, str) else None)
+    path = PurePosixPath(name)
+    parts = name.split("/")
+    if (
+        path.is_absolute()
+        or str(path) != name
+        or len(parts) > 256
+        or any(
+            not part
+            or part in {".", ".."}
+            or len(part) > 255
+            or part.endswith((".", " "))
+            for part in parts
+        )
+    ):
+        raise _unsafe_archive("invalid_path", name)
+    for part in parts:
+        device_candidate = part.split(".", 1)[0].upper()
+        if device_candidate in _WINDOWS_DEVICE_NAMES:
+            raise _unsafe_archive("windows_device_name", name)
+    return "/".join(unicodedata.normalize("NFC", part).casefold() for part in parts)
+
+
+def _unsafe_archive(reason: str, entry: str | None = None) -> ArtifactError:
+    details: dict[str, object] = {"reason": reason}
+    if entry is not None:
+        details["entry"] = entry
+    return ArtifactError(
+        "unsafe_archive",
+        "Archive inventory violates the safe extraction boundary.",
+        details,
+    )
 
 
 class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
