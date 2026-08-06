@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import stat
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -109,6 +110,7 @@ _KNOWN_EXECUTION_FAILURE_CODES = frozenset({
     "invalid_portable_layout",
     "model_destination_conflict",
     "portable_destination_conflict",
+    "portable_runtime_smoke_failed",
     "portable_staging_conflict",
     "unsafe_archive",
     "unsafe_model_destination",
@@ -117,6 +119,7 @@ _PERSISTED_EXECUTION_FAILURE_CODES = _KNOWN_EXECUTION_FAILURE_CODES | {
     "bootstrap_execution_failed"
 }
 _MAX_STATE_BYTES = 512 * 1024
+_PORTABLE_RUNTIME_SMOKE_TIMEOUT_SECONDS = 15.0
 
 
 class _DuplicateStateKey(ValueError):
@@ -379,6 +382,7 @@ def apply_bootstrap_plan(
                         expected_sha256=normalized_artifacts["comfyui"].sha256,
                     )
                     build_comfyui_start_config(portable_root)
+                    _verify_portable_runtime(portable_root)
                     portable_promoted = True
                     _record_in_progress_boundary(
                         transaction,
@@ -429,6 +433,7 @@ def apply_bootstrap_plan(
                     )
                 elif kind == "reuse_portable":
                     build_comfyui_start_config(portable_root)
+                    _verify_portable_runtime(portable_root)
                     portable_reuse_verified = True
                 elif kind == "reuse_model":
                     _require_exact_artifact_file(model_path, normalized_artifacts["model"])
@@ -507,6 +512,34 @@ def _execution_failure_code(error: Exception) -> str:
     ):
         return error.code
     return "bootstrap_execution_failed"
+
+
+def _verify_portable_runtime(portable_root: Path) -> None:
+    python = portable_root / "python_embeded" / "python.exe"
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        completed = subprocess.run(
+            [str(python), "-I", "-c", "import PIL"],
+            cwd=str(portable_root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=_PORTABLE_RUNTIME_SMOKE_TIMEOUT_SECONDS,
+            check=False,
+            shell=False,
+            creationflags=creation_flags,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ArtifactError(
+            "portable_runtime_smoke_failed",
+            "Portable embedded Python could not complete the bounded Pillow import smoke.",
+        ) from error
+    if completed.returncode != 0:
+        raise ArtifactError(
+            "portable_runtime_smoke_failed",
+            "Portable embedded Python could not import Pillow.",
+            {"returncode": completed.returncode},
+        )
 
 
 def _existing_transaction_result(

@@ -162,12 +162,13 @@ class _ControlledWriterFactory:
         self.root = root
         self.root_guard = root_guard
         self.root_key = _archive_destination_key(expected_root)
+        inventory_spellings = _expanded_inventory_spellings(inventory)
         self.expected_files: dict[str, tuple[Path, int]] = {}
         for entry in inventory.entries:
             key = _archive_destination_key(entry.name)
             if entry.kind != "file":
                 continue
-            relative = _relative_member_path(key, self.root_key)
+            relative = _relative_member_path(inventory_spellings[key], self.root_key)
             self.expected_files[key] = (relative, entry.uncompressed_bytes)
         self.owned_paths = owned_paths
         self.owned_directory_identities = owned_directory_identities
@@ -245,6 +246,7 @@ def validate_archive_entries(
 
     accepted: list[ArchiveEntry] = []
     destinations: dict[str, str] = {}
+    destination_spellings: dict[str, str] = {}
     file_destinations: set[str] = set()
     file_count = 0
     directory_count = 0
@@ -266,6 +268,15 @@ def validate_archive_entries(
         destination = _archive_destination_key(entry.name)
         if destination in destinations:
             raise _unsafe_archive("destination_collision", entry.name)
+        spelling = _archive_destination_spelling(entry.name)
+        destination_parts = destination.split("/")
+        spelling_parts = spelling.split("/")
+        for length in range(1, len(destination_parts) + 1):
+            prefix = "/".join(destination_parts[:length])
+            prefix_spelling = "/".join(spelling_parts[:length])
+            existing_spelling = destination_spellings.setdefault(prefix, prefix_spelling)
+            if existing_spelling != prefix_spelling:
+                raise _unsafe_archive("path_case_conflict", entry.name)
         destinations[destination] = entry.kind
         if entry.kind == "file":
             file_destinations.add(destination)
@@ -709,14 +720,20 @@ def _cleanup_owned_paths(owned_paths: list[_OwnedPath]) -> None:
 
 
 def _relative_member_path(key: str, root_key: str) -> Path:
+    destination_key = _archive_destination_key(key)
     prefix = f"{root_key}/"
-    if not key.startswith(prefix):
+    if not destination_key.startswith(prefix):
         raise ArtifactError(
             "archive_postcheck_failed",
             "Portable archive member escaped its exact root.",
         )
-    relative = key.removeprefix(prefix)
-    return Path(*PurePosixPath(relative).parts)
+    parts = PurePosixPath(key).parts
+    if len(parts) < 2:
+        raise ArtifactError(
+            "archive_postcheck_failed",
+            "Portable archive member escaped its exact root.",
+        )
+    return Path(*parts[1:])
 
 
 def _create_controlled_directories(
@@ -730,13 +747,14 @@ def _create_controlled_directories(
     owned_directory_identities: dict[Path, os.stat_result],
 ) -> None:
     root_key = _archive_destination_key(expected_root)
+    inventory_spellings = _expanded_inventory_spellings(inventory)
     directories = {
         key
         for key, (kind, _size) in _expanded_inventory_contract(inventory).items()
         if kind == "directory" and key != root_key
     }
     for key in sorted(directories, key=lambda value: (value.count("/"), value)):
-        relative = _relative_member_path(key, root_key)
+        relative = _relative_member_path(inventory_spellings[key], root_key)
         directory = staging.joinpath(*relative.parts)
         parent_identity = owned_directory_identities.get(directory.parent)
         if parent_identity is None:
@@ -917,7 +935,10 @@ def _validate_extracted_inventory(
         _archive_destination_key(entry.name): (entry.kind, entry.uncompressed_bytes)
         for entry in actual.entries
     }
-    if actual_entries != expected_entries:
+    if (
+        actual_entries != expected_entries
+        or _expanded_inventory_spellings(actual) != _expanded_inventory_spellings(expected)
+    ):
         raise ArtifactError(
             "archive_postcheck_failed",
             "Extracted files do not match the preflight archive inventory.",
@@ -955,11 +976,15 @@ def _validate_controlled_extraction(
 ) -> None:
     root_key = _archive_destination_key(expected_root)
     expected_entries: dict[str, tuple[str, int]] = {}
+    expected_spellings: dict[str, str] = {}
+    inventory_spellings = _expanded_inventory_spellings(expected)
     for key, value in _expanded_inventory_contract(expected).items():
         if key == root_key:
             continue
-        relative = _relative_member_path(key, root_key).as_posix()
-        expected_entries[_archive_destination_key(relative)] = value
+        relative = _relative_member_path(inventory_spellings[key], root_key).as_posix()
+        relative_key = _archive_destination_key(relative)
+        expected_entries[relative_key] = value
+        expected_spellings[relative_key] = relative
     try:
         _require_owned_directory(staging, staging_identity)
         _require_owned_path_identities(owned_paths)
@@ -968,7 +993,10 @@ def _validate_controlled_extraction(
             _archive_destination_key(entry.name): (entry.kind, entry.uncompressed_bytes)
             for entry in actual.entries
         }
-        if actual_entries != expected_entries:
+        if (
+            actual_entries != expected_entries
+            or _expanded_inventory_spellings(actual) != expected_spellings
+        ):
             raise ArtifactError(
                 "archive_postcheck_failed",
                 "Controlled extracted files do not match the preflight inventory.",
@@ -1014,6 +1042,22 @@ def _expanded_inventory_contract(
             contract.setdefault("/".join(parts[:length]), ("directory", 0))
         contract[destination] = (entry.kind, entry.uncompressed_bytes)
     return contract
+
+
+def _expanded_inventory_spellings(inventory: ArchiveInventory) -> dict[str, str]:
+    spellings: dict[str, str] = {}
+    for entry in inventory.entries:
+        destination = _archive_destination_key(entry.name)
+        spelling = _archive_destination_spelling(entry.name)
+        destination_parts = destination.split("/")
+        spelling_parts = spelling.split("/")
+        for length in range(1, len(destination_parts) + 1):
+            prefix = "/".join(destination_parts[:length])
+            prefix_spelling = "/".join(spelling_parts[:length])
+            existing_spelling = spellings.setdefault(prefix, prefix_spelling)
+            if existing_spelling != prefix_spelling:
+                raise _unsafe_archive("path_case_conflict", entry.name)
+    return spellings
 
 
 def _is_regular_non_reparse_file(path: Path) -> bool:
@@ -1078,6 +1122,12 @@ def _archive_destination_key(name: object) -> str:
         if device_candidate in _WINDOWS_DEVICE_NAMES:
             raise _unsafe_archive("windows_device_name", name)
     return "/".join(unicodedata.normalize("NFC", part).casefold() for part in parts)
+
+
+def _archive_destination_spelling(name: object) -> str:
+    _archive_destination_key(name)
+    assert isinstance(name, str)
+    return name
 
 
 def _unsafe_archive(reason: str, entry: str | None = None) -> ArtifactError:

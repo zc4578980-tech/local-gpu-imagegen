@@ -28,6 +28,7 @@ from local_gpu_imagegen.bootstrap_download import (  # noqa: E402
     _OwnedPath,
     _PolicyRedirectHandler,
     _capture_directory_chain,
+    _validate_post_extraction,
     download_part_path,
     download_verified,
     safe_extract_portable,
@@ -461,6 +462,15 @@ class ArchiveBoundaryTests(unittest.TestCase):
                     "destination_collision",
                 )
 
+    def test_rejects_inconsistent_implicit_parent_casing(self) -> None:
+        self.assert_unsafe(
+            [
+                self.entry("root/PIL/first.py"),
+                self.entry("root/pil/second.py"),
+            ],
+            "path_case_conflict",
+        )
+
     def test_rejects_file_parent_conflicts(self) -> None:
         self.assert_unsafe(
             [self.entry("root/item"), self.entry("root/item/child.txt")],
@@ -695,6 +705,68 @@ class PortableExtractionTests(unittest.TestCase):
                 list((root / "install").glob(".local-gpu-imagegen-*.staging")),
                 [],
             )
+
+    def test_mixed_case_archive_paths_preserve_physical_casing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source" / "ComfyUI_windows_portable"
+            (source / "python_embeded").mkdir(parents=True)
+            (source / "python_embeded" / "python.exe").write_bytes(b"python")
+            (source / "ComfyUI").mkdir()
+            (source / "ComfyUI" / "main.py").write_bytes(b"main")
+            pillow = source / "python_embeded" / "Lib" / "site-packages" / "PIL"
+            pillow.mkdir(parents=True)
+            (pillow / "__init__.py").write_bytes(b"Pillow")
+            archive_path = root / "portable-mixed-case.7z"
+            with py7zr.SevenZipFile(archive_path, "w") as archive:
+                archive.writeall(source, arcname="ComfyUI_windows_portable")
+
+            destination = safe_extract_portable(
+                archive_path,
+                root / "install",
+                expected_root="ComfyUI_windows_portable",
+                plan_id="b" * 24,
+            )
+
+            self.assertIn("ComfyUI", {entry.name for entry in os.scandir(destination)})
+            site_packages = destination / "python_embeded" / "Lib" / "site-packages"
+            self.assertIn("PIL", {entry.name for entry in os.scandir(site_packages)})
+
+    def test_post_extraction_rejects_physical_case_drift(self) -> None:
+        entries = [
+            ArchiveEntry("ComfyUI_windows_portable", "directory", 0),
+            ArchiveEntry(
+                "ComfyUI_windows_portable/python_embeded/python.exe",
+                "file",
+                6,
+            ),
+            ArchiveEntry("ComfyUI_windows_portable/ComfyUI/main.py", "file", 4),
+            ArchiveEntry(
+                "ComfyUI_windows_portable/python_embeded/Lib/site-packages/PIL/__init__.py",
+                "file",
+                6,
+            ),
+        ]
+        expected = validate_archive_entries(entries)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            staging = Path(temporary_directory)
+            portable = staging / "ComfyUI_windows_portable"
+            (portable / "python_embeded").mkdir(parents=True)
+            (portable / "python_embeded" / "python.exe").write_bytes(b"python")
+            (portable / "ComfyUI").mkdir()
+            (portable / "ComfyUI" / "main.py").write_bytes(b"main")
+            pillow = portable / "python_embeded" / "Lib" / "site-packages" / "pil"
+            pillow.mkdir(parents=True)
+            (pillow / "__init__.py").write_bytes(b"Pillow")
+
+            with self.assertRaises(ArtifactError) as raised:
+                _validate_post_extraction(
+                    expected,
+                    staging,
+                    expected_root="ComfyUI_windows_portable",
+                )
+
+            self.assertEqual(raised.exception.code, "archive_postcheck_failed")
 
     @unittest.skipUnless(os.name == "nt", "Windows bsdtar BCJ2 fallback")
     def test_official_bcj2_method_is_extracted_through_the_safe_public_boundary(self) -> None:

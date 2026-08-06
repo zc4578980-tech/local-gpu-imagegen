@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -63,6 +64,12 @@ class BootstrapServiceTests(unittest.TestCase):
         self.manifest = load_bootstrap_manifest(
             ROOT / "profiles" / "bootstrap" / "windows-nvidia.json"
         )
+        runtime_smoke = mock.patch(
+            "local_gpu_imagegen.bootstrap_service.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        )
+        runtime_smoke.start()
+        self.addCleanup(runtime_smoke.stop)
 
     @staticmethod
     def facts() -> BootstrapFacts:
@@ -229,6 +236,60 @@ class BootstrapServiceTests(unittest.TestCase):
             self.assertEqual(repeated["rediscovery"], result["rediscovery"])
             self.assertEqual(repeated["setup"], result["setup"])
             self.assertEqual(downloader.call_count, 2)
+
+    def test_missing_pillow_runtime_smoke_rejects_install_before_model_download(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            state_dir = root / "plans"
+            portable_archive = self.write_portable_archive(root)
+            model_file = root / "model.safetensors"
+            model_file.write_bytes(b"synthetic-model")
+            plan_id, confirmation = self.synthetic_plan(
+                root,
+                state_dir,
+                portable_archive,
+                model_file,
+            )
+            downloader = mock.Mock(
+                side_effect=lambda artifact, _cache: {
+                    "comfyui": portable_archive,
+                    "model": model_file,
+                }[artifact.kind]
+            )
+
+            with mock.patch(
+                "local_gpu_imagegen.bootstrap_service.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    [],
+                    1,
+                    "",
+                    "ModuleNotFoundError: No module named 'PIL'",
+                ),
+            ) as runtime_smoke:
+                result = apply_bootstrap_plan(
+                    plan_id,
+                    confirmation,
+                    state_dir=state_dir,
+                    downloader=downloader,
+                )
+
+            self.assertEqual(result["status"], "recoverable_failure")
+            self.assertEqual(result["error"], {"code": "portable_runtime_smoke_failed"})
+            self.assertEqual(result["retained_state"]["portable"], "unsafe_drift")
+            self.assertEqual(downloader.call_count, 1)
+            command = runtime_smoke.call_args.args[0]
+            self.assertTrue(
+                os.path.samefile(
+                    command[0],
+                    root
+                    / "install"
+                    / "ComfyUI_windows_portable"
+                    / "python_embeded"
+                    / "python.exe",
+                )
+            )
+            self.assertEqual(command[1:], ["-I", "-c", "import PIL"])
+            self.assertLessEqual(runtime_smoke.call_args.kwargs["timeout"], 15.0)
 
     def test_model_failure_retains_promoted_portable_and_consumes_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
