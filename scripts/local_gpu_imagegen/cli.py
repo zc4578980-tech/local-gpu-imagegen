@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -26,6 +28,8 @@ from local_gpu_imagegen.paths import default_bootstrap_paths, resolve_resource_r
 
 
 _MAX_BOOTSTRAP_STATE_BYTES = 512 * 1024
+_MAX_BOOTSTRAP_RECORDS = 128
+_BOOTSTRAP_PLAN_ID = re.compile(r"[0-9a-f]{24}\Z")
 _PLAN_RECORD_FIELDS = frozenset({"schema_version", "plan_id", "scope_sha256", "confirmation", "scope"})
 _TRANSACTION_RECORD_FIELDS = frozenset({
     "schema_version",
@@ -59,42 +63,114 @@ def _disk_usage_parent(path: Path) -> Path:
 
 
 def _read_bootstrap_record(path: Path) -> dict[str, object] | None:
+    descriptor: int | None = None
     try:
         metadata = path.lstat()
-        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+            or metadata.st_nlink != 1
+        ):
             return None
         if metadata.st_size < 1 or metadata.st_size > _MAX_BOOTSTRAP_STATE_BYTES:
             return None
-        document = json.loads(path.read_text(encoding="utf-8"))
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(str(path), flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            opened = os.fstat(stream.fileno())
+            current = path.lstat()
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or stat.S_ISLNK(opened.st_mode)
+                or bool(getattr(opened, "st_file_attributes", 0) & reparse_flag)
+                or opened.st_nlink != 1
+                or opened.st_size < 1
+                or opened.st_size > _MAX_BOOTSTRAP_STATE_BYTES
+                or not os.path.samestat(metadata, opened)
+                or not os.path.samestat(current, opened)
+            ):
+                return None
+            raw = stream.read(_MAX_BOOTSTRAP_STATE_BYTES + 1)
+        if len(raw) > _MAX_BOOTSTRAP_STATE_BYTES:
+            return None
+        document = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
     return document if isinstance(document, dict) else None
 
 
-def _regular_file(path: Path) -> bool:
+def _regular_file_size(path: Path, expected_size: int) -> bool:
+    descriptor: int | None = None
     try:
         metadata = path.lstat()
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+            or metadata.st_nlink != 1
+            or metadata.st_size != expected_size
+        ):
+            return False
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(str(path), flags)
+        opened = os.fstat(descriptor)
+        current = path.lstat()
+        return (
+            stat.S_ISREG(opened.st_mode)
+            and not stat.S_ISLNK(opened.st_mode)
+            and not bool(getattr(opened, "st_file_attributes", 0) & reparse_flag)
+            and opened.st_nlink == 1
+            and opened.st_size == expected_size
+            and os.path.samestat(metadata, opened)
+            and os.path.samestat(current, opened)
+        )
     except OSError:
         return False
-    return stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
-def _matching_transaction_status(paths, manifest: BootstrapManifest) -> str | None:
+def _matching_transaction_evidence(
+    paths,
+    manifest: BootstrapManifest,
+) -> tuple[str, dict[str, object]] | None:
     try:
         root_metadata = paths.plans.lstat()
         if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
             return None
-        entries = sorted(paths.plans.glob("*.transaction.json"))
+        entries: list[Path] = []
+        with os.scandir(paths.plans) as iterator:
+            for entry in iterator:
+                if not entry.name.endswith(".transaction.json"):
+                    continue
+                entries.append(Path(entry.path))
+                if len(entries) > _MAX_BOOTSTRAP_RECORDS:
+                    return None
+        entries.sort()
     except OSError:
         return None
     resolved_install_root = str(paths.install.expanduser().resolve())
-    matching_statuses: set[str] = set()
+    matching_transactions: dict[str, dict[str, object]] = {}
     for transaction_path in entries:
         transaction = _read_bootstrap_record(transaction_path)
         if transaction is None or set(transaction) != _TRANSACTION_RECORD_FIELDS:
             continue
         plan_id = transaction.get("plan_id")
-        if not isinstance(plan_id, str):
+        if not isinstance(plan_id, str) or _BOOTSTRAP_PLAN_ID.fullmatch(plan_id) is None:
             continue
         plan = _read_bootstrap_record(paths.plans / f"{plan_id}.json")
         if plan is None or set(plan) != _PLAN_RECORD_FIELDS:
@@ -129,20 +205,54 @@ def _matching_transaction_status(paths, manifest: BootstrapManifest) -> str | No
             continue
         status = transaction.get("status")
         if status in {"completed", "failed", "in_progress"}:
-            matching_statuses.add(status)
-    if "completed" in matching_statuses:
-        return "completed"
-    if "in_progress" in matching_statuses:
-        return "in_progress"
-    if "failed" in matching_statuses:
-        return "failed"
+            matching_transactions[status] = transaction
+    for status in ("completed", "in_progress", "failed"):
+        if status in matching_transactions:
+            return status, matching_transactions[status]
     return None
+
+
+def _matching_transaction_status(paths, manifest: BootstrapManifest) -> str | None:
+    evidence = _matching_transaction_evidence(paths, manifest)
+    return evidence[0] if evidence is not None else None
+
+
+def _completed_model_evidence(
+    transaction: dict[str, object],
+    manifest: BootstrapManifest,
+    model_path: Path,
+) -> bool:
+    retained_state = transaction.get("retained_state")
+    downloaded_artifacts = transaction.get("downloaded_artifacts")
+    if (
+        not isinstance(retained_state, dict)
+        or set(retained_state) != {"portable", "model", "verified_cache_artifacts"}
+        or retained_state.get("portable") not in {"installed", "verified_pre_existing"}
+        or retained_state.get("model") not in {"installed", "verified_pre_existing"}
+        or not isinstance(downloaded_artifacts, list)
+        or any(not isinstance(item, str) or not item for item in downloaded_artifacts)
+        or len(downloaded_artifacts) != len(set(downloaded_artifacts))
+        or retained_state.get("verified_cache_artifacts") != downloaded_artifacts
+    ):
+        return False
+    for component, artifact in (
+        ("portable", manifest.comfyui),
+        ("model", manifest.model),
+    ):
+        downloaded = artifact.artifact_id in downloaded_artifacts
+        if retained_state.get(component) == "installed" and not downloaded:
+            return False
+        if retained_state.get(component) == "verified_pre_existing" and downloaded:
+            return False
+    return _regular_file_size(model_path, manifest.model.byte_size)
 
 
 def _bootstrap_local_state(paths, manifest: BootstrapManifest) -> dict[str, object]:
     portable_root = paths.install / manifest.comfyui.install_relative_path
     model_path = paths.install / manifest.model.install_relative_path
-    transaction_status = _matching_transaction_status(paths, manifest)
+    evidence = _matching_transaction_evidence(paths, manifest)
+    transaction_status = evidence[0] if evidence is not None else None
+    transaction = evidence[1] if evidence is not None else None
     portable_valid = False
     if transaction_status == "completed":
         try:
@@ -150,7 +260,11 @@ def _bootstrap_local_state(paths, manifest: BootstrapManifest) -> dict[str, obje
             portable_valid = True
         except (OSError, RuntimeError, ValueError):
             portable_valid = False
-        if portable_valid and _regular_file(model_path):
+        if (
+            portable_valid
+            and transaction is not None
+            and _completed_model_evidence(transaction, manifest, model_path)
+        ):
             return {
                 "status": "installed",
                 "reason_codes": [],

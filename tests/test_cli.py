@@ -39,7 +39,8 @@ class CliTests(unittest.TestCase):
         model.parent.mkdir(parents=True)
         python.write_bytes(b"synthetic-python")
         main.write_bytes(b"synthetic-main")
-        model.write_bytes(b"synthetic-model")
+        with model.open("wb") as stream:
+            stream.truncate(manifest.model.byte_size)
         if transaction_status is None:
             return
         facts = BootstrapFacts(
@@ -58,12 +59,12 @@ class CliTests(unittest.TestCase):
             "scope_sha256": plan.scope_sha256,
             "confirmation_sha256": hashlib.sha256(str(plan.confirmation).encode("utf-8")).hexdigest(),
             "status": transaction_status,
-            "downloaded_artifacts": [],
+            "downloaded_artifacts": [manifest.comfyui.artifact_id, manifest.model.artifact_id],
             "failure_code": "bootstrap_execution_failed" if transaction_status == "failed" else None,
             "retained_state": {
                 "portable": "installed",
                 "model": "installed",
-                "verified_cache_artifacts": [],
+                "verified_cache_artifacts": [manifest.comfyui.artifact_id, manifest.model.artifact_id],
             },
             "recoverable_next_actions": ["create_new_plan_reusing_portable"] if transaction_status == "failed" else [],
         }
@@ -228,6 +229,104 @@ class CliTests(unittest.TestCase):
                     facts = cli._collect_bootstrap_facts(paths, manifest)
 
             self.assertEqual((facts.portable_status, facts.model_status), expected)
+
+    def test_bootstrap_status_rejects_model_content_drift_without_reading_model_bytes(self) -> None:
+        from local_gpu_imagegen import cli
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self._bootstrap_paths(Path(directory) / "bootstrap")
+            self._write_bootstrap_evidence(paths, "completed")
+            from local_gpu_imagegen.bootstrap_catalog import load_bootstrap_manifest
+
+            manifest = load_bootstrap_manifest(ROOT / "profiles" / "bootstrap" / "windows-nvidia.json")
+            model_path = paths.install / manifest.model.install_relative_path
+            model_path.write_bytes(b"")
+            output = io.StringIO()
+            with (
+                patch("local_gpu_imagegen.cli.default_bootstrap_paths", return_value=paths),
+                redirect_stdout(output),
+            ):
+                exit_code = cli.main(["bootstrap", "status"])
+
+            readiness = {"cuda": {"available": False, "devices": []}, "comfyui": {"available": False}}
+            with patch("check_gpu.collect_report", return_value=readiness):
+                facts = cli._collect_bootstrap_facts(paths, manifest)
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["status"], "recoverable")
+        self.assertIn("completed_transaction_evidence_drift", report["reason_codes"])
+        self.assertEqual((facts.portable_status, facts.model_status), ("conflict", "conflict"))
+
+    def test_bootstrap_state_reader_rejects_plan_id_traversal_without_outside_read(self) -> None:
+        from local_gpu_imagegen import cli
+        from local_gpu_imagegen.bootstrap_catalog import load_bootstrap_manifest
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self._bootstrap_paths(Path(directory) / "bootstrap")
+            paths.plans.mkdir(parents=True)
+            manifest = load_bootstrap_manifest(ROOT / "profiles" / "bootstrap" / "windows-nvidia.json")
+            transaction = {
+                "schema_version": 1,
+                "plan_id": "../outside",
+                "scope_sha256": "a" * 64,
+                "confirmation_sha256": "b" * 64,
+                "status": "completed",
+                "downloaded_artifacts": [],
+                "failure_code": None,
+                "retained_state": {
+                    "portable": "installed",
+                    "model": "installed",
+                    "verified_cache_artifacts": [],
+                },
+                "recoverable_next_actions": [],
+            }
+            transaction_path = paths.plans / "record.transaction.json"
+            transaction_path.write_text(json.dumps(transaction), encoding="utf-8")
+            outside = paths.plans.parent / "outside.json"
+            outside.write_text("{}", encoding="utf-8")
+            calls: list[Path] = []
+            original_reader = cli._read_bootstrap_record
+
+            def record_reader(path: Path):
+                calls.append(path)
+                return original_reader(path)
+
+            with patch("local_gpu_imagegen.cli._read_bootstrap_record", side_effect=record_reader):
+                self.assertIsNone(cli._matching_transaction_status(paths, manifest))
+
+        self.assertFalse(any(path.resolve() == outside.resolve() for path in calls))
+
+    def test_bootstrap_state_reader_rejects_replacement_between_lstat_and_open(self) -> None:
+        from local_gpu_imagegen import cli
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state.json"
+            replacement = Path(directory) / "replacement.json"
+            state.write_text('{"ok": true}', encoding="utf-8")
+            replacement.write_text('{"ok": false}', encoding="utf-8")
+            original_open = os.open
+
+            def replace_before_open(path: str, *args, **kwargs):
+                if Path(path) == state:
+                    replacement.replace(state)
+                return original_open(path, *args, **kwargs)
+
+            with patch("local_gpu_imagegen.cli.os.open", new=replace_before_open):
+                self.assertIsNone(cli._read_bootstrap_record(state))
+
+    def test_bootstrap_state_reader_rejects_symlink_state_file(self) -> None:
+        from local_gpu_imagegen import cli
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target.json"
+            link = Path(directory) / "state.json"
+            target.write_text('{"ok": true}', encoding="utf-8")
+            try:
+                link.symlink_to(target)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            self.assertIsNone(cli._read_bootstrap_record(link))
 
     def test_bootstrap_apply_never_registers_a_client(self) -> None:
         from local_gpu_imagegen import cli
