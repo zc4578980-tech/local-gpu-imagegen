@@ -315,6 +315,30 @@ class CliTests(unittest.TestCase):
             with patch("local_gpu_imagegen.cli.os.open", new=replace_before_open):
                 self.assertIsNone(cli._read_bootstrap_record(state))
 
+    def test_bootstrap_state_reader_rejects_plans_root_replacement_before_scan(self) -> None:
+        from local_gpu_imagegen import cli
+        from local_gpu_imagegen.bootstrap_catalog import load_bootstrap_manifest
+        from local_gpu_imagegen.paths import BootstrapPaths
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self._bootstrap_paths(Path(directory) / "bootstrap")
+            paths.plans.mkdir(parents=True)
+            replacement = paths.root / "replacement-plans"
+            replacement_paths = BootstrapPaths(paths.root, paths.cache, paths.install, replacement)
+            self._write_bootstrap_evidence(replacement_paths, "completed")
+            manifest = load_bootstrap_manifest(ROOT / "profiles" / "bootstrap" / "windows-nvidia.json")
+            displaced = paths.root / "displaced-plans"
+            original_scandir = os.scandir
+
+            def replace_before_scan(path):
+                if Path(path) == paths.plans:
+                    paths.plans.replace(displaced)
+                    replacement.replace(paths.plans)
+                return original_scandir(path)
+
+            with patch("local_gpu_imagegen.cli.os.scandir", new=replace_before_scan):
+                self.assertIsNone(cli._matching_transaction_status(paths, manifest))
+
     def test_bootstrap_state_reader_rejects_symlink_state_file(self) -> None:
         from local_gpu_imagegen import cli
 

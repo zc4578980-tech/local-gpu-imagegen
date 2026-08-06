@@ -148,10 +148,37 @@ def _matching_transaction_evidence(
     paths,
     manifest: BootstrapManifest,
 ) -> tuple[str, dict[str, object]] | None:
+    root_descriptor: int | None = None
     try:
         root_metadata = paths.plans.lstat()
-        if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            not stat.S_ISDIR(root_metadata.st_mode)
+            or stat.S_ISLNK(root_metadata.st_mode)
+            or bool(getattr(root_metadata, "st_file_attributes", 0) & reparse_flag)
+        ):
             return None
+
+        # Bind the selected root when the platform permits directory
+        # descriptors. Windows' CRT does not allow os.open on directories, so
+        # it falls back to the path scan but still requires the identity check
+        # immediately after enumeration below.
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_DIRECTORY", 0)
+        try:
+            root_descriptor = os.open(str(paths.plans), flags)
+        except OSError:
+            if os.name != "nt":
+                return None
+        if root_descriptor is not None:
+            opened_root = os.fstat(root_descriptor)
+            if (
+                not stat.S_ISDIR(opened_root.st_mode)
+                or stat.S_ISLNK(opened_root.st_mode)
+                or bool(getattr(opened_root, "st_file_attributes", 0) & reparse_flag)
+                or not os.path.samestat(root_metadata, opened_root)
+            ):
+                return None
         entries: list[Path] = []
         with os.scandir(paths.plans) as iterator:
             for entry in iterator:
@@ -160,9 +187,27 @@ def _matching_transaction_evidence(
                 entries.append(Path(entry.path))
                 if len(entries) > _MAX_BOOTSTRAP_RECORDS:
                     return None
+        final_root = paths.plans.lstat()
+        if (
+            not stat.S_ISDIR(final_root.st_mode)
+            or stat.S_ISLNK(final_root.st_mode)
+            or bool(getattr(final_root, "st_file_attributes", 0) & reparse_flag)
+            or not os.path.samestat(root_metadata, final_root)
+            or (
+                root_descriptor is not None
+                and not os.path.samestat(os.fstat(root_descriptor), final_root)
+            )
+        ):
+            return None
         entries.sort()
     except OSError:
         return None
+    finally:
+        if root_descriptor is not None:
+            try:
+                os.close(root_descriptor)
+            except OSError:
+                pass
     resolved_install_root = str(paths.install.expanduser().resolve())
     matching_transactions: dict[str, dict[str, object]] = {}
     for transaction_path in entries:
