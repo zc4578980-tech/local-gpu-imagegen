@@ -350,14 +350,21 @@ def _collect_bootstrap_facts(paths, manifest: BootstrapManifest) -> BootstrapFac
 
     report = check_gpu.collect_report()
     cuda = report.get("cuda") if isinstance(report.get("cuda"), dict) else {}
-    devices = cuda.get("devices") if isinstance(cuda.get("devices"), list) else []
+    host_gpu = report.get("host_gpu") if isinstance(report.get("host_gpu"), dict) else {}
+    host_devices = host_gpu.get("devices") if isinstance(host_gpu.get("devices"), list) else []
+    host_available = host_gpu.get("available") is True and bool(host_devices)
+    devices = host_devices if host_available else (cuda.get("devices") if isinstance(cuda.get("devices"), list) else [])
     first_device = devices[0] if devices and isinstance(devices[0], dict) else {}
-    cuda_available = cuda.get("available") is True
-    memory_gb = first_device.get("total_memory_gb", 0)
-    try:
-        vram_bytes = max(0, int(float(memory_gb) * 1024**3))
-    except (TypeError, ValueError):
-        vram_bytes = 0
+    cuda_available = host_available or cuda.get("available") is True
+    memory_bytes = first_device.get("total_memory_bytes")
+    if isinstance(memory_bytes, int) and not isinstance(memory_bytes, bool):
+        vram_bytes = max(0, memory_bytes)
+    else:
+        memory_gb = first_device.get("total_memory_gb", 0)
+        try:
+            vram_bytes = max(0, int(float(memory_gb) * 1024**3))
+        except (TypeError, ValueError):
+            vram_bytes = 0
 
     machine = platform.machine().lower()
     architecture = "amd64" if machine in {"amd64", "x86_64"} else machine or "unknown"

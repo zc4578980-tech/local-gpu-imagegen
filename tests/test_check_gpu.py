@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -33,6 +34,49 @@ class FakeCuda:
 
 
 class CheckGpuTests(unittest.TestCase):
+    def test_collect_report_includes_host_nvidia_capability_when_comfyui_is_ready(self) -> None:
+        output = io.StringIO()
+        nvidia_smi = subprocess.CompletedProcess(
+            args=["nvidia-smi"],
+            returncode=0,
+            stdout="NVIDIA GeForce RTX 5070 Ti Laptop GPU, 12227, 610.62\n",
+            stderr="",
+        )
+        with (
+            patch.object(check_gpu, "module_available", return_value=False),
+            patch.object(
+                check_gpu,
+                "check_webui",
+                return_value={"url": "local-webui", "available": False, "model": None, "api_error": "stopped"},
+            ),
+            patch.object(
+                check_gpu,
+                "check_comfyui",
+                return_value={"backend": "comfyui", "available": True, "api_error": None},
+            ),
+            patch("subprocess.run", return_value=nvidia_smi),
+            redirect_stdout(output),
+        ):
+            report = check_gpu.collect_report()
+
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(
+            report.get("host_gpu"),
+            {
+                "available": True,
+                "device_count": 1,
+                "devices": [
+                    {
+                        "index": 0,
+                        "name": "NVIDIA GeForce RTX 5070 Ti Laptop GPU",
+                        "total_memory_bytes": 12227 * 1024**2,
+                        "driver_version": "610.62",
+                    }
+                ],
+                "api_error": None,
+            },
+        )
+
     def test_collect_report_returns_readiness_without_printing(self) -> None:
         output = io.StringIO()
         with (

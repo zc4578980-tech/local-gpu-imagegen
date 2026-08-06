@@ -214,6 +214,37 @@ class CliTests(unittest.TestCase):
 
         self.assertGreater(facts.free_disk_bytes, 0)
 
+    def test_bootstrap_facts_use_host_nvidia_when_plugin_torch_is_unavailable(self) -> None:
+        from local_gpu_imagegen import cli
+        from local_gpu_imagegen.bootstrap_catalog import load_bootstrap_manifest
+
+        readiness = {
+            "cuda": {"available": False, "devices": []},
+            "host_gpu": {
+                "available": True,
+                "device_count": 1,
+                "devices": [
+                    {
+                        "index": 0,
+                        "name": "NVIDIA GeForce RTX 5070 Ti Laptop GPU",
+                        "total_memory_bytes": 12227 * 1024**2,
+                        "driver_version": "610.62",
+                    }
+                ],
+                "api_error": None,
+            },
+            "comfyui": {"available": True},
+        }
+        manifest = load_bootstrap_manifest(ROOT / "profiles" / "bootstrap" / "windows-nvidia.json")
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self._bootstrap_paths(Path(directory) / "bootstrap")
+            with patch("check_gpu.collect_report", return_value=readiness):
+                facts = cli._collect_bootstrap_facts(paths, manifest)
+
+        self.assertEqual(facts.gpu_vendor, "nvidia")
+        self.assertEqual(facts.gpu_generation, "rtx-50-series")
+        self.assertEqual(facts.vram_bytes, 12227 * 1024**2)
+
     def test_bootstrap_facts_reuse_only_completed_verified_evidence(self) -> None:
         from local_gpu_imagegen import cli
         from local_gpu_imagegen.bootstrap_catalog import load_bootstrap_manifest

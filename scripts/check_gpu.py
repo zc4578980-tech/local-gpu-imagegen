@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import importlib.util
+import csv
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -16,6 +18,62 @@ from local_gpu_imagegen.errors import AssetEngineError
 
 def module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
+
+
+def check_host_nvidia() -> dict[str, object]:
+    report: dict[str, object] = {
+        "available": False,
+        "device_count": 0,
+        "devices": [],
+        "api_error": None,
+    }
+    try:
+        completed = subprocess.run(
+            (
+                "nvidia-smi",
+                "--query-gpu=name,memory.total,driver_version",
+                "--format=csv,noheader,nounits",
+            ),
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        report["api_error"] = "nvidia_smi_unavailable"
+        return report
+    if completed.returncode != 0:
+        report["api_error"] = "nvidia_smi_failed"
+        return report
+
+    devices: list[dict[str, object]] = []
+    try:
+        rows = csv.reader(line for line in completed.stdout.splitlines() if line.strip())
+        for index, row in enumerate(rows):
+            if len(row) != 3:
+                raise ValueError("invalid column count")
+            name, memory_text, driver_version = (field.strip() for field in row)
+            memory_mib = int(float(memory_text))
+            if not name or memory_mib <= 0 or not driver_version:
+                raise ValueError("invalid device metadata")
+            devices.append(
+                {
+                    "index": index,
+                    "name": name,
+                    "total_memory_bytes": memory_mib * 1024**2,
+                    "driver_version": driver_version,
+                }
+            )
+    except (TypeError, ValueError):
+        report["api_error"] = "nvidia_smi_invalid_output"
+        return report
+    if not devices:
+        report["api_error"] = "nvidia_smi_no_devices"
+        return report
+    report["available"] = True
+    report["device_count"] = len(devices)
+    report["devices"] = devices
+    return report
 
 
 def check_webui() -> dict[str, object]:
@@ -95,6 +153,7 @@ def collect_report() -> dict[str, object]:
             "device_count": 0,
             "devices": [],
         },
+        "host_gpu": check_host_nvidia(),
         "webui": check_webui(),
         "comfyui": check_comfyui(),
     }
