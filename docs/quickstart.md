@@ -5,7 +5,7 @@
 An existing environment uses `bootstrap status` and reuses only verified local
 artifacts. A zero-environment path uses `bootstrap plan`, then `bootstrap apply`
 only after an explicit confirmation of downloads, licenses, hashes, disk/VRAM
-effects, and rollback behavior. Transfers are resumable and there are no silent
+effects, and bounded rollback behavior. Transfers are resumable and there are no silent
 downloads. This is Windows 10/11 x64 NVIDIA only (10 GiB VRAM and 30 GiB free
 disk); Docker is not required. The contract does not prove image generation.
 

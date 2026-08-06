@@ -116,7 +116,7 @@ class PublicDocumentationTests(unittest.TestCase):
             "docs/quickstart.md": (
                 "existing environment", "zero-environment", "bootstrap status",
                 "bootstrap plan", "bootstrap apply", "explicit confirmation",
-                "licenses", "hashes", "resumable", "rollback behavior",
+                "licenses", "hashes", "resumable", "bounded rollback",
                 "Windows 10/11 x64 NVIDIA", "Docker is not required",
                 "10 GiB VRAM", "30 GiB free",
             ),
