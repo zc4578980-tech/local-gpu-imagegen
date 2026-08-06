@@ -2,6 +2,12 @@
 
 This checklist covers repository release readiness. It does not grant model, workflow-component, generated-output, client-configuration, publication, or public acceptance authority.
 
+## Guided Bootstrap Gate
+
+- [ ] Existing-environment `bootstrap status` and zero-environment `bootstrap plan`/`bootstrap apply` paths are documented.
+- [ ] Explicit download and license confirmation, resumable transfers, bounded rollback, 10 GiB VRAM, 30 GiB free disk, and Windows 10/11 x64 NVIDIA scope are stated.
+- [ ] Docker is not required; bootstrap evidence does not claim real image generation or production readiness.
+
 ## Gate policy
 
 The v0.8 preview gate requires exact-commit model-free tests, a clean wheel install, exactly seventeen tools, fail-closed `doctor` behavior, safe named-client setup contracts, the portable historical Codex 0.7 generation labeled historical, the Codex 0.8 zero-GPU onboarding record labeled non-generation, and explicit disclosure of missing evidence. A current-v0.8 Codex managed-MCP live gate and its separately approved bounded replacement produced two private, reviewed, ineligible runs. They are fail-closed local development evidence, not publishable release-set artifacts, finalized images, image-quality evidence, or full acceptance.

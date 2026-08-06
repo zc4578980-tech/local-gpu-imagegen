@@ -229,6 +229,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         extra_content: str = "fixture",
         metadata_mode: int | None = None,
         wheel_headers: str = "Wheel-Version: 1.0\nTag: py3-none-any\n",
+        include_bootstrap_assets: bool = True,
     ) -> Path:
         wheel = root / "local_gpu_imagegen-0.8.3-py3-none-any.whl"
         metadata = metadata or (
@@ -249,6 +250,17 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
                 wheel_headers,
             )
             archive.writestr("local_gpu_imagegen-0.8.3.dist-info/RECORD", "")
+            if include_bootstrap_assets:
+                archive.writestr(
+                    "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
+                    "profiles/bootstrap/windows-nvidia.json",
+                    "{}",
+                )
+                archive.writestr(
+                    "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
+                    "skills/local-gpu-imagegen/SKILL.md",
+                    "bootstrap skill fixture\n",
+                )
             if extra_dist_info:
                 archive.writestr("other-1.0.dist-info/METADATA", metadata)
             if extra_entry is not None:
@@ -278,6 +290,12 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         self.assertEqual(facts["version"], "0.8.3")
         self.assertEqual(facts["registry_identifier"], "local-gpu-imagegen")
 
+    def test_wheel_requires_bootstrap_manifest_and_skill_assets(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root, include_bootstrap_assets=False)
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("bootstrap_assets_missing", self.codes(results))
+
     def test_wheel_returns_sorted_unique_checks_with_explicit_dist_info(self) -> None:
         root = self.make_release_root()
         wheel = self.make_wheel(root)
@@ -297,6 +315,7 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
             "../escape.py",
             "C:/absolute.py",
             "models/private.safetensors",
+            "private.bin",
             "outputs/runs/private.json",
         ):
             with self.subTest(entry=entry):

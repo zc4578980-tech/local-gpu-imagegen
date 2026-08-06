@@ -7,6 +7,15 @@ installer. Planning is read-only apart from its own user-local plan record, and
 downloads require a later exact confirmation that binds the sources, licenses,
 byte ceilings, hashes, destinations, and disk effects shown below.
 
+## Existing Or Zero Environment
+
+Use `bootstrap status` for an existing environment: only a verified portable
+layout, exact checkpoint metadata, and a ready loopback endpoint can take the
+reuse fast path. A zero-environment install is guided by `bootstrap plan`, then
+`bootstrap apply` after an explicit confirmation. Download state is resumable;
+interrupted work is retained for retry, and failed promotion rolls back bounded
+staging without deleting a pre-existing install. Docker is not required.
+
 ## Supported System
 
 - Windows 10 22H2 build 19045 or Windows 11, x64.

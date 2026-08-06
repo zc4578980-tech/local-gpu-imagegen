@@ -1,5 +1,14 @@
 # Client Compatibility
 
+## Bootstrap Before Client Setup
+
+An existing environment can take the read-only `bootstrap status` fast path. A
+zero-environment user must inspect `bootstrap plan` and then provide the exact
+displayed confirmation to `bootstrap apply`; downloads, licenses, disk/VRAM
+effects, resumable transfer state, and rollback are explicit. This guided path
+supports Windows 10/11 x64 NVIDIA only (10 GiB VRAM, 30 GiB free disk); Docker
+is not required and bootstrap readiness does not prove image generation.
+
 ## Verified Setup Boundary
 
 The Codex and Claude Code official CLI setup contracts are parsed and checked

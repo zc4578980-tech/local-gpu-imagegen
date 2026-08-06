@@ -36,6 +36,11 @@ PUBLIC_MODEL_DESCRIPTOR_PARENT = PurePosixPath(
     "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
     "profiles/models"
 )
+BOOTSTRAP_ASSET_SUFFIXES = (
+    "share/local-gpu-imagegen/profiles/bootstrap/windows-nvidia.json",
+    "share/local-gpu-imagegen/skills/local-gpu-imagegen/SKILL.md",
+)
+MODEL_BINARY_SUFFIXES = (".safetensors", ".ckpt", ".pt", ".pth", ".bin")
 PYTHON_VERSION_SCRIPT = "import json,sys; print(json.dumps(list(sys.version_info[:2])))"
 CREATE_VENV_SCRIPT = "import sys,venv; venv.EnvBuilder(with_pip=True).create(sys.argv[1])"
 EXPECTED_TOOLS = (
@@ -344,6 +349,8 @@ def _is_safe_entry(info: zipfile.ZipInfo) -> bool:
     if normalized_name != name:
         return False
     if any(part.casefold() == "outputs" for part in path.parts):
+        return False
+    if not path_is_directory and path.suffix.casefold() in MODEL_BINARY_SUFFIXES:
         return False
     if any(part.casefold() == "models" for part in path.parts) and not (
         not path_is_directory
@@ -891,6 +898,10 @@ def inspect_wheel(
                 results.append(passed_check("wheel_entries"))
 
             names = {info.filename for info in entries}
+            if not all(any(name.endswith(suffix) for name in names) for suffix in BOOTSTRAP_ASSET_SUFFIXES):
+                results.append(blocked_check("bootstrap_assets", "bootstrap_assets_missing"))
+            else:
+                results.append(passed_check("bootstrap_assets"))
             duplicates = {name for name, count in Counter(info.filename for info in entries).items() if count > 1}
             dist_roots = {name.split("/", 1)[0] for name in names if ".dist-info/" in name}
             required = {f"{EXPECTED_DIST_INFO}/{item}" for item in ("METADATA", "WHEEL", "RECORD")}

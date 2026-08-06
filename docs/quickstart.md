@@ -1,5 +1,14 @@
 # Five-Minute Quickstart
 
+## Choose The Bootstrap Path
+
+An existing environment uses `bootstrap status` and reuses only verified local
+artifacts. A zero-environment path uses `bootstrap plan`, then `bootstrap apply`
+only after an explicit confirmation of downloads, licenses, hashes, disk/VRAM
+effects, and rollback behavior. Transfers are resumable and there are no silent
+downloads. This is Windows 10/11 x64 NVIDIA only (10 GiB VRAM and 30 GiB free
+disk); Docker is not required. The contract does not prove image generation.
+
 [English](quickstart.md) | [简体中文](quickstart.zh-CN.md)
 
 By default, this path is for Python 3.11 or 3.12 users whose supported backend and model are already running.

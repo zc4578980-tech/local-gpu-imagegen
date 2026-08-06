@@ -91,6 +91,47 @@ def _assert_ordered(text: str, values: tuple[str, ...]) -> None:
 
 
 class PublicDocumentationTests(unittest.TestCase):
+    def test_guided_bootstrap_docs_share_zero_and_existing_environment_paths(self) -> None:
+        documents = (
+            (ROOT / "README.md").read_text(encoding="utf-8"),
+            QUICKSTART.read_text(encoding="utf-8"),
+            (ROOT / "docs" / "bootstrap-windows.md").read_text(encoding="utf-8"),
+            (ROOT / "docs" / "client-compatibility.md").read_text(encoding="utf-8"),
+            RELEASE_CHECKLIST.read_text(encoding="utf-8"),
+        )
+        required = (
+            "existing environment",
+            "zero-environment",
+            "bootstrap status",
+            "bootstrap plan",
+            "bootstrap apply",
+            "explicit confirmation",
+            "license",
+            "resumable",
+            "rollback",
+            "Windows 10/11 x64",
+            "NVIDIA",
+            "Docker is not required",
+            "10 GiB VRAM",
+            "30 GiB free",
+        )
+        combined = "\n".join(documents).casefold()
+        for phrase in required:
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase.casefold(), combined)
+
+    def test_bootstrap_docs_keep_generation_and_readiness_claims_evidence_bound(self) -> None:
+        combined = "\n".join(
+            (
+                (ROOT / "README.md").read_text(encoding="utf-8"),
+                QUICKSTART.read_text(encoding="utf-8"),
+                (ROOT / "docs" / "bootstrap-windows.md").read_text(encoding="utf-8"),
+            )
+        ).casefold()
+        for forbidden in ("production ready", "real image generation is guaranteed"):
+            self.assertNotIn(forbidden, combined)
+        self.assertIn("does not prove image generation", combined)
+
     def test_bilingual_quickstarts_explain_the_durable_launcher_and_drift_recovery(self) -> None:
         english = QUICKSTART.read_text(encoding="utf-8")
         chinese = CHINESE_QUICKSTART.read_text(encoding="utf-8")

@@ -157,6 +157,19 @@ class PackagingTests(unittest.TestCase):
                 self.assertTrue(any(name.endswith(suffix) for name in names), suffix)
         self.assertFalse(any("outputs/" in name or name.endswith(".safetensors") for name in names))
 
+    def test_wheel_contains_bootstrap_manifest_and_bundled_skill_without_model_bytes(self) -> None:
+        with zipfile.ZipFile(self.wheel) as archive:
+            names = set(archive.namelist())
+        self.assertTrue(any(name.endswith("share/local-gpu-imagegen/profiles/bootstrap/windows-nvidia.json") for name in names))
+        self.assertTrue(any(name.endswith("share/local-gpu-imagegen/skills/local-gpu-imagegen/SKILL.md") for name in names))
+        self.assertFalse(
+            any(
+                name.casefold().endswith((".safetensors", ".ckpt", ".pt", ".pth", ".bin"))
+                for name in names
+            )
+        )
+
+
     def test_release_candidate_static_checks_pass_for_real_wheel(self) -> None:
         digest = hashlib.sha256(self.wheel.read_bytes()).hexdigest()
         results, facts = release_candidate_checks.inspect_wheel(

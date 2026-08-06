@@ -51,6 +51,17 @@ Original finalized 1024x1024 PNG from ordinary `sdxl-txt2img`; SHA-256 `36b5de50
 
 This path requires an existing local image backend and model; there are no silent model downloads or switches.
 
+## Guided Bootstrap (Windows NVIDIA)
+
+For an existing environment, run `bootstrap status` and reuse only a verified
+portable root, checkpoint, and loopback endpoint. For a zero-environment setup,
+`bootstrap plan` shows the exact portable archive, checkpoint, byte ceiling,
+license URLs, disk/VRAM requirements, and rollback boundary; `bootstrap apply`
+requires the displayed explicit confirmation. Downloads are resumable and never
+silent. The frozen scope is Windows 10/11 x64 with NVIDIA RTX 20-series or newer,
+10 GiB VRAM, and 30 GiB free disk. Docker is not required. This model-free
+bootstrap contract does not prove image generation or production readiness.
+
 `setup` is read-only without `--apply`. The apply path delegates to the client's official `mcp add` command; Local GPU Imagegen does not edit client configuration files directly or download a model.
 
 **Trust proof:** the retained ordinary-route result came from one installed Codex session. Discovery did not load weights; trust and route identity were explicit; successful rounds were bounded; review used the original-resolution PNG; finalization was bound to the reviewed bytes; and the run state remains recoverable. The evidence proves this one result, not complete 9+3 acceptance, measured performance, or production readiness.
