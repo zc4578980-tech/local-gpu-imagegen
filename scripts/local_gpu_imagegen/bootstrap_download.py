@@ -8,6 +8,7 @@ import re
 import shutil
 import socket
 import stat
+import subprocess
 import urllib.error
 import urllib.request
 import unicodedata
@@ -439,7 +440,15 @@ def safe_extract_portable(
                     owned_directory_identities,
                 )
                 _require_directory_chain(root, root_guard)
-                archive_reader.extract(path=staging, factory=writer_factory)
+                if _archive_requires_windows_bsdtar(archive_reader):
+                    _extract_archive_stream_with_windows_bsdtar(
+                        archive_stream,
+                        inventory,
+                        writer_factory,
+                        staging,
+                    )
+                else:
+                    archive_reader.extract(path=staging, factory=writer_factory)
                 writer_factory.finish()
                 _require_directory_chain(root, root_guard)
 
@@ -486,6 +495,113 @@ def safe_extract_portable(
     finally:
         if archive_stream is not None:
             archive_stream.close()
+
+
+def _archive_requires_windows_bsdtar(archive_reader: object) -> bool:
+    method_names = getattr(archive_reader.archiveinfo(), "method_names", ())
+    return any(
+        isinstance(method, str) and method.rstrip("*").upper() == "BCJ2"
+        for method in method_names
+    )
+
+
+def _extract_archive_stream_with_windows_bsdtar(
+    archive_stream: BinaryIO,
+    inventory: ArchiveInventory,
+    writer_factory: _ControlledWriterFactory,
+    staging: Path,
+) -> None:
+    extractor, extractor_identity = _windows_bsdtar_path()
+    try:
+        archive_stream.seek(0)
+    except OSError as error:
+        raise ArtifactError(
+            "archive_extract_failed",
+            "Verified portable archive could not be rewound for BCJ2 extraction.",
+        ) from error
+
+    process: subprocess.Popen[bytes] | None = None
+    stdout: BinaryIO | None = None
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        process = subprocess.Popen(
+            [str(extractor), "-xOf", "-"],
+            stdin=archive_stream,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            cwd=extractor.parent,
+            shell=False,
+            creationflags=creation_flags,
+        )
+        stdout = process.stdout
+        if stdout is None:
+            raise OSError("BCJ2 extractor stdout was not captured")
+        # bsdtar emits regular-file bodies in archive order. Filesystem writes
+        # remain behind the existing handle-bound writer and frozen inventory.
+        for entry in inventory.entries:
+            if entry.kind != "file":
+                continue
+            member = staging.joinpath(*PurePosixPath(entry.name).parts)
+            writer = writer_factory.create(str(member))
+            remaining = entry.uncompressed_bytes
+            while remaining:
+                block = stdout.read(min(1024 * 1024, remaining))
+                if not block:
+                    raise OSError("BCJ2 extractor ended before the frozen inventory")
+                writer.write(block)
+                remaining -= len(block)
+            writer.close()
+        if stdout.read(1):
+            raise OSError("BCJ2 extractor exceeded the frozen inventory")
+        if process.wait() != 0:
+            raise OSError("BCJ2 extractor returned a failure status")
+        if not os.path.samestat(extractor_identity, extractor.lstat()):
+            raise OSError("BCJ2 extractor identity changed during execution")
+    except (OSError, subprocess.SubprocessError) as error:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        raise ArtifactError(
+            "archive_extract_failed",
+            "Windows BCJ2 extraction failed before destination promotion.",
+        ) from error
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        if stdout is not None:
+            stdout.close()
+
+
+def _windows_bsdtar_path() -> tuple[Path, os.stat_result]:
+    if os.name != "nt":
+        raise ArtifactError(
+            "extractor_dependency_unavailable",
+            "BCJ2 extraction requires the Windows system bsdtar.",
+        )
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(32_768)
+        length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+        if not 0 < length < len(buffer):
+            raise OSError("Windows system directory lookup failed")
+        extractor = Path(buffer.value) / "tar.exe"
+        extractor_identity = extractor.lstat()
+    except (AttributeError, OSError, ValueError) as error:
+        raise ArtifactError(
+            "extractor_dependency_unavailable",
+            "Windows system bsdtar could not be resolved safely.",
+        ) from error
+    if (
+        not _is_regular_non_reparse_file(extractor)
+        or not 0 < extractor_identity.st_size <= 32 * 1024 * 1024
+    ):
+        raise ArtifactError(
+            "extractor_dependency_unavailable",
+            "Windows system bsdtar is not one bounded regular executable.",
+        )
+    return extractor, extractor_identity
 
 
 def _capture_directory_chain(root: Path) -> tuple[tuple[Path, os.stat_result], ...]:

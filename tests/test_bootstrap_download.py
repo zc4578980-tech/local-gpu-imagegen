@@ -23,6 +23,7 @@ from local_gpu_imagegen.bootstrap_catalog import BootstrapArtifact  # noqa: E402
 from local_gpu_imagegen.bootstrap_download import (  # noqa: E402
     ArchiveEntry,
     ArchiveInventory,
+    _BoundedArchiveFile,
     _ControlledWriterFactory,
     _OwnedPath,
     _PolicyRedirectHandler,
@@ -497,6 +498,8 @@ class ArchiveBoundaryTests(unittest.TestCase):
 
 
 class PortableExtractionTests(unittest.TestCase):
+    BCJ2_FIXTURE = Path(__file__).parent / "fixtures" / "bootstrap" / "bcj2-portable.7z"
+
     @staticmethod
     def write_portable_archive(
         root: Path,
@@ -692,6 +695,78 @@ class PortableExtractionTests(unittest.TestCase):
                 list((root / "install").glob(".local-gpu-imagegen-*.staging")),
                 [],
             )
+
+    @unittest.skipUnless(os.name == "nt", "Windows bsdtar BCJ2 fallback")
+    def test_official_bcj2_method_is_extracted_through_the_safe_public_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            destination = safe_extract_portable(
+                self.BCJ2_FIXTURE,
+                root / "install",
+                expected_root="ComfyUI_windows_portable",
+                plan_id="e" * 24,
+            )
+
+            self.assertEqual(
+                (destination / "python_embeded" / "python.exe").read_bytes(),
+                b'"""Deterministic planning primitives for local visual-asset runs."""\r\n\r\n'
+                b'__version__ = "0.8.3"\n',
+            )
+            self.assertTrue((destination / "ComfyUI" / "main.py").is_file())
+            self.assertEqual(
+                list((root / "install").glob(".local-gpu-imagegen-*.staging")),
+                [],
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows bsdtar BCJ2 fallback")
+    def test_bcj2_stream_closes_each_member_before_opening_the_next_member(self) -> None:
+        original_create = _ControlledWriterFactory.create
+        original_close = _BoundedArchiveFile.close
+        events: list[str] = []
+
+        def tracked_create(
+            factory: _ControlledWriterFactory,
+            filename: str,
+        ) -> _BoundedArchiveFile:
+            writer = original_create(factory, filename)
+            events.append("open")
+            return writer
+
+        def tracked_close(writer: _BoundedArchiveFile) -> None:
+            if not writer._closed:
+                events.append("close")
+            original_close(writer)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with (
+                mock.patch.object(
+                    _ControlledWriterFactory,
+                    "create",
+                    autospec=True,
+                    side_effect=tracked_create,
+                ),
+                mock.patch.object(
+                    _BoundedArchiveFile,
+                    "close",
+                    autospec=True,
+                    side_effect=tracked_close,
+                ),
+            ):
+                safe_extract_portable(
+                    self.BCJ2_FIXTURE,
+                    root / "install",
+                    expected_root="ComfyUI_windows_portable",
+                    plan_id="f" * 24,
+                )
+
+        open_members = 0
+        peak_open_members = 0
+        for event in events:
+            open_members += 1 if event == "open" else -1
+            peak_open_members = max(peak_open_members, open_members)
+        self.assertEqual(open_members, 0)
+        self.assertEqual(peak_open_members, 1)
 
     def test_portable_extraction_never_uses_path_based_extractall(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

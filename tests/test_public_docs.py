@@ -125,6 +125,7 @@ class PublicDocumentationTests(unittest.TestCase):
                 "bootstrap plan", "bootstrap apply", "explicit confirmation",
                 "licenses", "hashes", "bounded rollback", "Windows 10/11 x64",
                 "NVIDIA", "Docker is not required", "10 GiB VRAM", "30 GiB free",
+                "BCJ2", "bsdtar",
             ),
             "docs/client-compatibility.md": (
                 "existing environment", "zero-environment", "bootstrap status",

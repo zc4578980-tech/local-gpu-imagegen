@@ -88,19 +88,26 @@ a mirror; the planned 0.9.0 target inherits the same boundary.
 
 ## Extraction Choice
 
-The official archive is 7z. Python 3.11 and 3.12 cannot extract 7z with the
-standard library, and Windows 10 does not provide one uniform built-in 7z
-contract. The implementation therefore pins the Python `py7zr` `1.1.3`
-library as an application dependency. Its upstream release was published on
-2026-06-19 and its repository license is LGPL-2.1:
+The official archive is 7z and the pinned v0.30.0 asset uses the BCJ2 filter.
+Python 3.11 and 3.12 cannot extract 7z with the standard library, while
+`py7zr` 1.1.3 can inspect this archive but cannot decode BCJ2. The
+implementation still pins `py7zr` `1.1.3` for metadata preflight and for
+non-BCJ2 extraction. Its upstream release was published on 2026-06-19 and its
+repository license is LGPL-2.1:
 <https://github.com/miurahr/py7zr/releases/tag/v1.1.3> and
-<https://github.com/miurahr/py7zr/blob/v1.1.3/LICENSE>. Before extraction,
-project code must independently reject absolute paths, drive paths, traversal,
-links, reparse-like entries,
-device names, alternate data streams, duplicate or case-colliding paths,
-excessive entry counts, and excessive expanded bytes. Extraction occurs only
-in a new plan-owned staging directory and is followed by a second containment
-and layout check before an atomic rename.
+<https://github.com/miurahr/py7zr/blob/v1.1.3/LICENSE>.
+
+For BCJ2 only, the supported Windows 10/11 path resolves the operating
+system's `System32\tar.exe` (`bsdtar`) through the Windows system-directory
+API. It receives the already verified archive through stdin and emits only
+decoded file bodies through stdout; it never receives an extraction
+destination. Project code independently rejects absolute paths, drive paths,
+traversal, links, reparse-like entries, device names, alternate data streams,
+duplicate or case-colliding paths, excessive entry counts, and excessive
+expanded bytes before decoding. The existing handle-bound writer creates each
+file under a new plan-owned staging directory with the exact frozen size. A
+second containment and layout check runs before the atomic rename. A missing
+or invalid system bsdtar fails closed without promoting an installation.
 
 This choice does not authorize a dependency, portable, or model transfer by
 itself. Dependency metadata and packaging are handled in the downloader task;
