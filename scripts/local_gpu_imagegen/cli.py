@@ -2,11 +2,114 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Sequence
 
+from local_gpu_imagegen.bootstrap_catalog import (
+    BootstrapFacts,
+    BootstrapManifest,
+    BootstrapPlan,
+    build_bootstrap_plan,
+    load_bootstrap_manifest,
+)
+from local_gpu_imagegen.bootstrap_service import apply_bootstrap_plan
 from local_gpu_imagegen.client_setup import SERVER_COMMAND
+from local_gpu_imagegen.errors import ArtifactError, StateError, ValidationError
+from local_gpu_imagegen.paths import default_bootstrap_paths, resolve_resource_root
+
+
+def _gpu_generation(name: object) -> str:
+    normalized = str(name).lower()
+    for generation in ("50", "40", "30", "20"):
+        if f"rtx {generation}" in normalized or f"rtx{generation}" in normalized:
+            return f"rtx-{generation}-series"
+    return "unknown"
+
+
+def _disk_usage_parent(path: Path) -> Path:
+    candidate = Path(path).expanduser()
+    while not candidate.exists():
+        parent = candidate.parent
+        if parent == candidate:
+            break
+        candidate = parent
+    return candidate
+
+
+def _collect_bootstrap_facts(install_root: Path) -> BootstrapFacts:
+    """Build conservative planner facts from the existing readiness report."""
+    import check_gpu
+
+    report = check_gpu.collect_report()
+    cuda = report.get("cuda") if isinstance(report.get("cuda"), dict) else {}
+    devices = cuda.get("devices") if isinstance(cuda.get("devices"), list) else []
+    first_device = devices[0] if devices and isinstance(devices[0], dict) else {}
+    cuda_available = cuda.get("available") is True
+    memory_gb = first_device.get("total_memory_gb", 0)
+    try:
+        vram_bytes = max(0, int(float(memory_gb) * 1024**3))
+    except (TypeError, ValueError):
+        vram_bytes = 0
+
+    machine = platform.machine().lower()
+    architecture = "amd64" if machine in {"amd64", "x86_64"} else machine or "unknown"
+    windows_version = getattr(sys, "getwindowsversion", None)
+    windows_build = int(windows_version().build) if callable(windows_version) else 0
+    comfyui = report.get("comfyui") if isinstance(report.get("comfyui"), dict) else {}
+    return BootstrapFacts(
+        platform=sys.platform,
+        architecture=architecture,
+        gpu_vendor="nvidia" if cuda_available else "unknown",
+        gpu_generation=_gpu_generation(first_device.get("name")) if cuda_available else "unknown",
+        vram_bytes=vram_bytes,
+        windows_build=windows_build,
+        free_disk_bytes=shutil.disk_usage(_disk_usage_parent(install_root)).free,
+        network_allowed=True,
+        endpoint_ready=bool(comfyui.get("available")),
+        # Reuse needs the verified lifecycle evidence from the transaction layer.
+        portable_status="missing",
+        model_status="missing",
+    )
+
+
+def _bootstrap_plan_report(plan: BootstrapPlan, manifest: BootstrapManifest, client: str) -> dict[str, object]:
+    next_action = (
+        f"local-gpu-imagegen bootstrap apply --plan-id {plan.plan_id} --confirmation {plan.confirmation}"
+        if plan.confirmation is not None
+        else "local-gpu-imagegen bootstrap status"
+    )
+    return {
+        "ok": True,
+        "client": client,
+        "status": plan.status,
+        "reason": plan.reason,
+        "plan_id": plan.plan_id,
+        "confirmation": plan.confirmation,
+        "actions": [
+            {"kind": action.kind, "artifact_id": action.artifact_id}
+            for action in plan.actions
+        ],
+        "estimated_download_bytes": plan.required_download_bytes,
+        "estimated_disk_bytes": plan.required_disk_bytes,
+        "licenses": [
+            {
+                "artifact_id": artifact.artifact_id,
+                "license_id": artifact.license_id,
+                "license_url": artifact.license_url,
+            }
+            for artifact in (manifest.comfyui, manifest.model)
+        ],
+        "next_action": next_action,
+    }
+
+
+def _bootstrap_error(error: BaseException) -> dict[str, object]:
+    code = getattr(error, "code", None)
+    return {"ok": False, "error": {"code": code if isinstance(code, str) else "bootstrap_cli_failed"}}
 
 
 def render_client_config(client: str) -> str:
@@ -78,11 +181,85 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--comfyui-root", help="Existing ComfyUI_windows_portable root.")
     setup.add_argument("--comfyui-url", default="http://127.0.0.1:8188")
     setup.add_argument("--comfyui-start-timeout-seconds", type=float, default=120.0)
+    bootstrap = subparsers.add_parser(
+        "bootstrap",
+        help="Plan or apply the explicit Windows NVIDIA bootstrap transaction.",
+    )
+    bootstrap_subparsers = bootstrap.add_subparsers(dest="bootstrap_command", required=True)
+    bootstrap_subparsers.add_parser("status", help="Show the local bootstrap state without changing it.")
+    plan = bootstrap_subparsers.add_parser("plan", help="Display one bootstrap plan and its confirmation.")
+    plan.add_argument("--client", choices=("codex",), required=True)
+    apply = bootstrap_subparsers.add_parser("apply", help="Apply one previously displayed bootstrap plan.")
+    apply.add_argument("--plan-id", required=True)
+    apply.add_argument("--confirmation", required=True)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "bootstrap":
+        paths = default_bootstrap_paths()
+        if args.bootstrap_command == "status":
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "not_installed",
+                        "install_root": str(paths.install),
+                        "next_action": "local-gpu-imagegen bootstrap plan --client codex",
+                    }
+                )
+            )
+            return 0
+        try:
+            if args.bootstrap_command == "plan":
+                manifest = load_bootstrap_manifest(
+                    resolve_resource_root() / "profiles" / "bootstrap" / "windows-nvidia.json"
+                )
+                plan = build_bootstrap_plan(
+                    manifest,
+                    _collect_bootstrap_facts(paths.install),
+                    install_root=paths.install,
+                    plan_root=paths.plans,
+                )
+                print(json.dumps(_bootstrap_plan_report(plan, manifest, args.client)))
+                return 0
+            if args.bootstrap_command == "apply":
+                result = apply_bootstrap_plan(
+                    args.plan_id,
+                    args.confirmation,
+                    state_dir=paths.plans,
+                )
+                status = result.get("status")
+                if status == "installed":
+                    print(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "status": status,
+                                "next_action": "local-gpu-imagegen setup codex --apply",
+                            }
+                        )
+                    )
+                    return 0
+                error = result.get("error")
+                code = error.get("code") if isinstance(error, dict) else None
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "status": status if isinstance(status, str) else "failed",
+                            "error": {
+                                "code": code if code == "bootstrap_execution_failed" else "bootstrap_apply_failed"
+                            },
+                        }
+                    ),
+                    file=sys.stderr,
+                )
+                return 1
+        except (ArtifactError, OSError, RuntimeError, StateError, ValidationError, ValueError) as error:
+            print(json.dumps(_bootstrap_error(error)), file=sys.stderr)
+            return 1
     if args.command == "serve":
         import mcp_server
 

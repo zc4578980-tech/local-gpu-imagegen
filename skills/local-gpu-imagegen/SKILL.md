@@ -11,6 +11,31 @@ Brief first, resolve one exact local route, confirm after displaying it, then ru
 
 The plugin exposes exactly seventeen MCP tools: `local_gpu_imagegen_check`, `local_gpu_generate_image`, `local_gpu_discover_models`, `local_gpu_inspect_workflow`, `local_gpu_register_workflow`, `local_gpu_list_profiles`, `local_gpu_set_model_trust`, `local_gpu_recommend_models`, `local_gpu_start_run`, `local_gpu_get_run`, `local_gpu_branch_run`, `local_gpu_prepare_mask`, `local_gpu_confirm_mask`, `local_gpu_generate_round`, `local_gpu_record_review`, `local_gpu_finalize_run`, and `local_gpu_cleanup_run`. Use the fifteen high-level discovery/onboarding/profile/run/revision tools for adaptive runs. The check and direct-generation tools are compatibility tools, not shortcuts around briefing, route resolution, and confirmation.
 
+## Guided Bootstrap
+
+When `local_gpu_imagegen_check` reports `ready: false`, treat its `bootstrap`
+field as guidance only. Do not create a bootstrap MCP tool or invoke an
+installer through MCP. First display the current state with
+`local-gpu-imagegen bootstrap status`, then use only the official CLI command
+`local-gpu-imagegen bootstrap plan --client codex`.
+
+Display the actions, estimated bytes, and licenses from the plan, including the
+exact confirmation value. The plan is display-only: it does not authorize the
+transfer. Stop and wait for a later user message that repeats the exact displayed
+confirmation. There is no silent download and no silent license acceptance.
+
+Only after that later user message, invoke the official CLI exactly as
+`local-gpu-imagegen bootstrap apply --plan-id <plan_id> --confirmation <confirmation>`.
+Do not substitute a model URL, direct downloader, client configuration edit,
+or a remembered confirmation. After a verified successful install, client
+registration remains separate: use `local-gpu-imagegen setup codex --apply`
+only when the user requests that registration.
+
+Then verify readiness with `local-gpu-imagegen doctor`. A successful install
+does not prove backend readiness or image generation. Once readiness is
+confirmed, continue through fresh MCP discovery; do not reuse prior process,
+route, model, or confirmation identities.
+
 ## Codex-First Workflow Runner
 
 Use this golden path when the user supplies one existing supported ComfyUI API

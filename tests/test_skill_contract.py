@@ -140,6 +140,22 @@ class SkillContractTests(unittest.TestCase):
         cls.text = SKILL_PATH.read_text(encoding="utf-8")
         cls.plugin = json.loads(PLUGIN_PATH.read_text(encoding="utf-8"))
 
+    def test_guided_bootstrap_requires_a_later_confirmation_and_fresh_discovery(self) -> None:
+        section = _section(self.text, "## Guided Bootstrap", "## Codex-First Workflow Runner")
+        _assert_ordered(section, (
+            "`local_gpu_imagegen_check`",
+            "`local-gpu-imagegen bootstrap status`",
+            "`local-gpu-imagegen bootstrap plan --client codex`",
+            "Display the actions, estimated bytes, and licenses",
+            "later user message",
+            "`local-gpu-imagegen bootstrap apply --plan-id <plan_id> --confirmation <confirmation>`",
+            "`local-gpu-imagegen setup codex --apply`",
+            "verify readiness",
+            "fresh MCP discovery",
+        ))
+        for prohibited in ("silent download", "silent license acceptance"):
+            self.assertIn(prohibited, section)
+
     def test_codex_first_runner_has_three_first_use_decisions_and_exact_revalidation(self) -> None:
         section = _section(
             self.text,

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from local_gpu_imagegen import __version__
+from local_gpu_imagegen.bootstrap_catalog import load_bootstrap_manifest
 from local_gpu_imagegen.errors import AssetEngineError
 from local_gpu_imagegen.model_identity import build_component_bundle, identity_token
 from local_gpu_imagegen.paths import default_output_root, resolve_resource_root
@@ -199,6 +200,36 @@ def get_capabilities() -> dict[str, object]:
     return {**value, "available_backends": available_backends}
 
 
+def bootstrap_guidance(readiness: dict[str, object]) -> dict[str, object]:
+    """Describe the explicit CLI bootstrap without planning or mutating state."""
+    manifest = load_bootstrap_manifest(
+        ROOT / "profiles" / "bootstrap" / "windows-nvidia.json"
+    )
+    cuda = readiness.get("cuda") if isinstance(readiness.get("cuda"), dict) else {}
+    reason_codes: list[str] = []
+    if sys.platform != "win32":
+        support_status = "unsupported"
+        reason_codes.append("unsupported_platform")
+    elif cuda.get("available") is not True:
+        support_status = "unknown"
+        reason_codes.append("cuda_unavailable")
+    else:
+        support_status = "supported"
+    if readiness.get("comfyui_ready") is not True:
+        reason_codes.append("comfyui_not_ready")
+    if readiness.get("webui_ready") is not True:
+        reason_codes.append("webui_not_ready")
+    if readiness.get("diffusers_ready") is not True:
+        reason_codes.append("diffusers_not_ready")
+    return {
+        "support_status": support_status,
+        "reason_codes": reason_codes,
+        "estimated_download_bytes": manifest.required_download_bytes,
+        "estimated_disk_bytes": manifest.minimum_free_disk_bytes,
+        "next_action": "local-gpu-imagegen bootstrap plan --client codex",
+    }
+
+
 def _diffusers_runner(request: dict[str, object]) -> dict[str, object]:
     model = request.get("model")
     if not isinstance(model, dict):
@@ -325,6 +356,25 @@ def tool_schema() -> list[dict[str, Any]]:
                     "ready": {"type": "boolean"},
                     "diffusers_ready": {"type": "boolean"},
                     "webui_ready": {"type": "boolean"},
+                    "bootstrap": _object_schema(
+                        {
+                            "support_status": {
+                                "type": "string",
+                                "enum": ["supported", "unknown", "unsupported"],
+                            },
+                            "reason_codes": {"type": "array", "items": {"type": "string"}},
+                            "estimated_download_bytes": {"type": "integer", "minimum": 0},
+                            "estimated_disk_bytes": {"type": "integer", "minimum": 0},
+                            "next_action": {"type": "string"},
+                        },
+                        [
+                            "support_status",
+                            "reason_codes",
+                            "estimated_download_bytes",
+                            "estimated_disk_bytes",
+                            "next_action",
+                        ],
+                    ),
                 },
                 "additionalProperties": True,
             },
@@ -1887,7 +1937,15 @@ def handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
 
     if name == "local_gpu_imagegen_check":
         code, stdout, stderr = run_script("check_gpu.py")
-        return script_json_result("check_gpu.py", code, stdout, stderr, {0, 1})
+        result = script_json_result("check_gpu.py", code, stdout, stderr, {0, 1})
+        report = result.get("structuredContent")
+        if (
+            not result["isError"]
+            and isinstance(report, dict)
+            and report.get("ready") is False
+        ):
+            return tool_success({**report, "bootstrap": bootstrap_guidance(report)})
+        return result
 
     if name == "local_gpu_generate_image":
         prompt = arguments.get("prompt")

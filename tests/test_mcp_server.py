@@ -51,6 +51,25 @@ EXPECTED_TOOLS = {
     "local_gpu_finalize_run",
     "local_gpu_cleanup_run",
 }
+EXPECTED_TOOL_ORDER = (
+    "local_gpu_imagegen_check",
+    "local_gpu_generate_image",
+    "local_gpu_discover_models",
+    "local_gpu_inspect_workflow",
+    "local_gpu_register_workflow",
+    "local_gpu_set_model_trust",
+    "local_gpu_recommend_models",
+    "local_gpu_list_profiles",
+    "local_gpu_start_run",
+    "local_gpu_get_run",
+    "local_gpu_branch_run",
+    "local_gpu_prepare_mask",
+    "local_gpu_confirm_mask",
+    "local_gpu_generate_round",
+    "local_gpu_record_review",
+    "local_gpu_finalize_run",
+    "local_gpu_cleanup_run",
+)
 
 HIGH_LEVEL_TOOLS = EXPECTED_TOOLS - {
     "local_gpu_imagegen_check",
@@ -104,12 +123,59 @@ def workflow_capabilities(defaults: dict[str, object]) -> dict[str, object]:
 
 
 class McpServerUnitTests(unittest.TestCase):
+    def test_readiness_returns_non_mutating_bootstrap_guidance_when_not_ready(self) -> None:
+        readiness = {
+            "ready": False,
+            "cuda": {"available": False, "devices": []},
+            "comfyui": {"available": False},
+            "diffusers_ready": False,
+            "webui_ready": False,
+            "comfyui_ready": False,
+        }
+        with patch.object(
+            mcp_server,
+            "run_script",
+            return_value=(1, json.dumps(readiness), ""),
+        ):
+            result = mcp_server.handle_tool_call({"name": "local_gpu_imagegen_check"})
+
+        report = result["structuredContent"]
+        bootstrap = report["bootstrap"]
+        self.assertFalse(result["isError"])
+        self.assertEqual(bootstrap["support_status"], "unknown")
+        self.assertIn("cuda_unavailable", bootstrap["reason_codes"])
+        self.assertGreater(bootstrap["estimated_download_bytes"], 0)
+        self.assertGreater(bootstrap["estimated_disk_bytes"], 0)
+        self.assertEqual(
+            bootstrap["next_action"],
+            "local-gpu-imagegen bootstrap plan --client codex",
+        )
+
+    def test_ready_readiness_result_does_not_include_bootstrap_guidance(self) -> None:
+        readiness = {"ready": True, "comfyui_ready": True}
+        with patch.object(
+            mcp_server,
+            "run_script",
+            return_value=(0, json.dumps(readiness), ""),
+        ):
+            result = mcp_server.handle_tool_call({"name": "local_gpu_imagegen_check"})
+
+        self.assertNotIn("bootstrap", result["structuredContent"])
+
     def test_schema_exposes_expected_tools(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
         self.assertEqual(set(tools), EXPECTED_TOOLS)
         self.assertIn("prompt", tools["local_gpu_generate_image"]["inputSchema"]["required"])
         self.assertIn("allow_download", tools["local_gpu_generate_image"]["inputSchema"]["properties"])
         self.assertIn("outputSchema", tools["local_gpu_imagegen_check"])
+        bootstrap = tools["local_gpu_imagegen_check"]["outputSchema"]["properties"]["bootstrap"]
+        self.assertEqual(bootstrap["required"], [
+            "support_status",
+            "reason_codes",
+            "estimated_download_bytes",
+            "estimated_disk_bytes",
+            "next_action",
+        ])
         self.assertIn("outputSchema", tools["local_gpu_generate_image"])
         list_profiles_success = tools["local_gpu_list_profiles"]["outputSchema"]["oneOf"][0]
         self.assertIn("models", list_profiles_success["properties"])
@@ -179,6 +245,7 @@ class McpServerUnitTests(unittest.TestCase):
         tools = mcp_server.tool_schema()
 
         self.assertEqual(len(tools), 17)
+        self.assertEqual(tuple(tool["name"] for tool in tools), EXPECTED_TOOL_ORDER)
         for tool in tools:
             with self.subTest(name=tool["name"]):
                 self.assertEqual(tool["outputSchema"].get("type"), "object")
@@ -2011,7 +2078,12 @@ class McpServerUnitTests(unittest.TestCase):
             result = mcp_server.handle_tool_call({"name": "local_gpu_imagegen_check", "arguments": {}})
 
         self.assertFalse(result["isError"])
-        self.assertEqual(result["structuredContent"], report)
+        for field, value in report.items():
+            self.assertEqual(result["structuredContent"][field], value)
+        self.assertEqual(
+            result["structuredContent"]["bootstrap"]["next_action"],
+            "local-gpu-imagegen bootstrap plan --client codex",
+        )
 
     def test_crashed_check_is_not_treated_as_not_ready_status(self) -> None:
         with patch.object(mcp_server, "run_script", return_value=(1, "", "torch import crashed")):

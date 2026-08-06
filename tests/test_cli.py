@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 
 class CliTests(unittest.TestCase):
-    def test_help_lists_the_five_installed_commands(self) -> None:
+    def test_help_lists_the_installed_commands_including_bootstrap(self) -> None:
         environment = {**os.environ, "PYTHONPATH": str(SCRIPTS)}
         completed = subprocess.run(
             [sys.executable, "-m", "local_gpu_imagegen.cli", "--help"],
@@ -29,8 +29,180 @@ class CliTests(unittest.TestCase):
             check=True,
         )
 
-        for command in ("serve", "doctor", "verify", "config", "setup"):
+        for command in ("serve", "doctor", "verify", "config", "setup", "bootstrap"):
             self.assertIn(command, completed.stdout)
+
+    def test_bootstrap_status_is_json_only_and_does_not_create_state(self) -> None:
+        from local_gpu_imagegen import cli
+        from local_gpu_imagegen.paths import BootstrapPaths
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "bootstrap"
+            paths = BootstrapPaths(
+                root=root,
+                cache=root / "cache",
+                install=root / "runtime",
+                plans=root / "plans",
+            )
+            output = io.StringIO()
+            with (
+                patch("local_gpu_imagegen.cli.default_bootstrap_paths", return_value=paths),
+                redirect_stdout(output),
+            ):
+                exit_code = cli.main(["bootstrap", "status"])
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["status"], "not_installed")
+        self.assertEqual(report["install_root"], str(paths.install))
+        self.assertEqual(report["next_action"], "local-gpu-imagegen bootstrap plan --client codex")
+        self.assertFalse(root.exists())
+
+    def test_bootstrap_plan_displays_effects_and_requires_later_confirmation(self) -> None:
+        from local_gpu_imagegen import cli
+        from local_gpu_imagegen.bootstrap_catalog import BootstrapFacts, BootstrapPlan
+        from local_gpu_imagegen.paths import BootstrapPaths
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "bootstrap"
+            paths = BootstrapPaths(
+                root=root,
+                cache=root / "cache",
+                install=root / "runtime",
+                plans=root / "plans",
+            )
+            plan = BootstrapPlan(
+                plan_id="a" * 24,
+                scope_sha256="b" * 64,
+                confirmation=f"bootstrap:{'a' * 24}:{'b' * 64}",
+                status="confirmation_required",
+                reason=None,
+                actions=(),
+                required_download_bytes=12,
+                required_disk_bytes=34,
+                install_root=paths.install,
+                record_path=paths.plans / ("a" * 24 + ".json"),
+            )
+            facts = BootstrapFacts(
+                platform="win32",
+                architecture="amd64",
+                gpu_vendor="nvidia",
+                gpu_generation="rtx-50-series",
+                vram_bytes=16 * 1024**3,
+                windows_build=26100,
+                free_disk_bytes=40 * 1024**3,
+                network_allowed=True,
+                endpoint_ready=False,
+                portable_status="missing",
+                model_status="missing",
+            )
+            output = io.StringIO()
+            with (
+                patch("local_gpu_imagegen.cli.default_bootstrap_paths", return_value=paths),
+                patch("local_gpu_imagegen.cli._collect_bootstrap_facts", return_value=facts),
+                patch("local_gpu_imagegen.cli.build_bootstrap_plan", return_value=plan) as build,
+                redirect_stdout(output),
+            ):
+                exit_code = cli.main(["bootstrap", "plan", "--client", "codex"])
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["plan_id"], plan.plan_id)
+        self.assertEqual(report["confirmation"], plan.confirmation)
+        self.assertEqual(report["estimated_download_bytes"], 12)
+        self.assertEqual(report["estimated_disk_bytes"], 34)
+        self.assertEqual(
+            report["next_action"],
+            f"local-gpu-imagegen bootstrap apply --plan-id {plan.plan_id} --confirmation {plan.confirmation}",
+        )
+        self.assertIn("licenses", report)
+        self.assertNotIn("record_path", report)
+        build.assert_called_once()
+
+    def test_bootstrap_facts_measure_disk_from_an_existing_parent(self) -> None:
+        from local_gpu_imagegen import cli
+
+        readiness = {
+            "cuda": {"available": False, "devices": []},
+            "comfyui": {"available": False},
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing_install_root = Path(temporary_directory) / "bootstrap" / "runtime"
+            with patch("check_gpu.collect_report", return_value=readiness):
+                facts = cli._collect_bootstrap_facts(missing_install_root)
+
+        self.assertGreater(facts.free_disk_bytes, 0)
+
+    def test_bootstrap_apply_never_registers_a_client(self) -> None:
+        from local_gpu_imagegen import cli
+        from local_gpu_imagegen.paths import BootstrapPaths
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "bootstrap"
+            paths = BootstrapPaths(root, root / "cache", root / "runtime", root / "plans")
+            output = io.StringIO()
+            with (
+                patch("local_gpu_imagegen.cli.default_bootstrap_paths", return_value=paths),
+                patch(
+                    "local_gpu_imagegen.cli.apply_bootstrap_plan",
+                    return_value={"status": "installed"},
+                ) as apply,
+                patch(
+                    "local_gpu_imagegen.client_setup.apply_setup_plan",
+                    side_effect=AssertionError("bootstrap must not register a client"),
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = cli.main(
+                    [
+                        "bootstrap",
+                        "apply",
+                        "--plan-id",
+                        "a" * 24,
+                        "--confirmation",
+                        f"bootstrap:{'a' * 24}:{'b' * 64}",
+                    ]
+                )
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["next_action"], "local-gpu-imagegen setup codex --apply")
+        apply.assert_called_once_with(
+            "a" * 24,
+            f"bootstrap:{'a' * 24}:{'b' * 64}",
+            state_dir=paths.plans,
+        )
+
+    def test_bootstrap_domain_errors_are_sanitized_json(self) -> None:
+        from local_gpu_imagegen import cli
+        from local_gpu_imagegen.bootstrap_catalog import BootstrapFacts
+        from local_gpu_imagegen.errors import ValidationError
+        from local_gpu_imagegen.paths import BootstrapPaths
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "bootstrap"
+            paths = BootstrapPaths(root, root / "cache", root / "runtime", root / "plans")
+            facts = BootstrapFacts(
+                "win32", "amd64", "nvidia", "rtx-50-series", 16 * 1024**3,
+                26100, 40 * 1024**3, True, False, "missing", "missing",
+            )
+            error = io.StringIO()
+            with (
+                patch("local_gpu_imagegen.cli.default_bootstrap_paths", return_value=paths),
+                patch("local_gpu_imagegen.cli._collect_bootstrap_facts", return_value=facts),
+                patch(
+                    "local_gpu_imagegen.cli.build_bootstrap_plan",
+                    side_effect=ValidationError("invalid_bootstrap_facts", "C:/private/token?secret=1"),
+                ),
+                redirect_stderr(error),
+            ):
+                exit_code = cli.main(["bootstrap", "plan", "--client", "codex"])
+
+        report = json.loads(error.getvalue())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(report, {"ok": False, "error": {"code": "invalid_bootstrap_facts"}})
+        self.assertNotIn("private", error.getvalue())
+        self.assertNotIn("secret", error.getvalue())
 
     def test_setup_dry_run_includes_readiness_without_apply(self) -> None:
         from local_gpu_imagegen import cli
