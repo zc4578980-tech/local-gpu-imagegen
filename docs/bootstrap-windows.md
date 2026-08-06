@@ -1,6 +1,8 @@
 # Windows NVIDIA Guided Bootstrap Contract
 
-Status: frozen for the local-gpu-imagegen 0.9.0 implementation on 2026-08-05.
+Status: frozen for the current local-gpu-imagegen 0.8.3 candidate on
+2026-08-05. The planned 0.9.0 target is future release scope, not this
+published package.
 
 This contract covers one Windows x64 path. It is not a general ComfyUI or model
 installer. Planning is read-only apart from its own user-local plan record, and
@@ -17,6 +19,8 @@ interrupted work is retained for retry, and failed promotion rolls back bounded
 staging without deleting a pre-existing install. Docker is not required.
 
 ## Supported System
+
+The exact supported scope is Windows 10/11 x64 with NVIDIA only.
 
 - Windows 10 22H2 build 19045 or Windows 11, x64.
 - NVIDIA RTX 20 series or newer.
@@ -48,7 +52,8 @@ model, or an unapproved mirror.
 The normal NVIDIA archive is intentional: the pinned upstream README says it
 supports NVIDIA 20 series and above and contains Python 3.13 with PyTorch CUDA
 13.0. The alternative `cu126` archive is for NVIDIA 10 series and older and is
-outside this single 0.9.0 contract.
+outside the planned 0.9.0 target; it is not part of the current 0.8.3
+candidate contract.
 
 ### Default checkpoint
 
@@ -71,14 +76,15 @@ the user.
 The exact new-download ceiling is `9048875554` bytes (about 8.43 GiB):
 `2110797220` bytes for ComfyUI plus `6938078334` bytes for the checkpoint. The
 30 GiB disk floor leaves room for retained verified downloads, staged portable
-extraction, final model placement, plan state, and rollback without deleting a
-pre-existing install.
+extraction, final model placement, plan state, and bounded rollback without
+deleting a pre-existing install.
 
 Only `github.com` and `huggingface.co` are approved production source hosts.
 URLs are HTTPS and revision-pinned. Redirects must remain inside the later
 downloader's explicit host policy. If Hugging Face is unreachable, the command
 must retain resumable state and recommend configuring a working VPN or HTTPS
-proxy before retrying. Version 0.9.0 does not silently switch to a mirror.
+proxy before retrying. The current 0.8.3 candidate does not silently switch to
+a mirror; the planned 0.9.0 target inherits the same boundary.
 
 ## Extraction Choice
 

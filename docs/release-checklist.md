@@ -5,7 +5,9 @@ This checklist covers repository release readiness. It does not grant model, wor
 ## Guided Bootstrap Gate
 
 - [ ] Existing-environment `bootstrap status` and zero-environment `bootstrap plan`/`bootstrap apply` paths are documented.
-- [ ] Explicit download and license confirmation, resumable transfers, bounded rollback, 10 GiB VRAM, 30 GiB free disk, and Windows 10/11 x64 NVIDIA scope are stated.
+- [ ] Explicit download and license confirmation, SHA-256 hash confirmation,
+  resumable transfers, bounded rollback, 10 GiB VRAM, 30 GiB free disk, and
+  Windows 10/11 x64 NVIDIA scope are stated.
 - [ ] Docker is not required; bootstrap evidence does not claim real image generation or production readiness.
 
 ## Gate policy

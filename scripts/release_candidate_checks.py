@@ -36,9 +36,11 @@ PUBLIC_MODEL_DESCRIPTOR_PARENT = PurePosixPath(
     "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
     "profiles/models"
 )
-BOOTSTRAP_ASSET_SUFFIXES = (
-    "share/local-gpu-imagegen/profiles/bootstrap/windows-nvidia.json",
-    "share/local-gpu-imagegen/skills/local-gpu-imagegen/SKILL.md",
+BOOTSTRAP_ASSET_PATHS = (
+    "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
+    "profiles/bootstrap/windows-nvidia.json",
+    "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
+    "skills/local-gpu-imagegen/SKILL.md",
 )
 MODEL_BINARY_SUFFIXES = (".safetensors", ".ckpt", ".pt", ".pth", ".bin")
 PYTHON_VERSION_SCRIPT = "import json,sys; print(json.dumps(list(sys.version_info[:2])))"
@@ -898,7 +900,7 @@ def inspect_wheel(
                 results.append(passed_check("wheel_entries"))
 
             names = {info.filename for info in entries}
-            if not all(any(name.endswith(suffix) for name in names) for suffix in BOOTSTRAP_ASSET_SUFFIXES):
+            if not all(path in names for path in BOOTSTRAP_ASSET_PATHS):
                 results.append(blocked_check("bootstrap_assets", "bootstrap_assets_missing"))
             else:
                 results.append(passed_check("bootstrap_assets"))

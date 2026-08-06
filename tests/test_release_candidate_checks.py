@@ -296,6 +296,21 @@ class ReleaseCandidateWheelTests(unittest.TestCase):
         results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
         self.assertIn("bootstrap_assets_missing", self.codes(results))
 
+    def test_wheel_rejects_decoy_bootstrap_asset_members(self) -> None:
+        root = self.make_release_root()
+        wheel = self.make_wheel(root, include_bootstrap_assets=False)
+        with zipfile.ZipFile(wheel, "a") as archive:
+            archive.writestr(
+                "attacker/share/local-gpu-imagegen/profiles/bootstrap/windows-nvidia.json",
+                "{}",
+            )
+            archive.writestr(
+                "attacker/share/local-gpu-imagegen/skills/local-gpu-imagegen/SKILL.md",
+                "decoy\n",
+            )
+        results, _ = checks.inspect_wheel(root, wheel, self.sha(wheel))
+        self.assertIn("bootstrap_assets_missing", self.codes(results))
+
     def test_wheel_returns_sorted_unique_checks_with_explicit_dist_info(self) -> None:
         root = self.make_release_root()
         wheel = self.make_wheel(root)

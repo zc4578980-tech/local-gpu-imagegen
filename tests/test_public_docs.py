@@ -91,34 +91,62 @@ def _assert_ordered(text: str, values: tuple[str, ...]) -> None:
 
 
 class PublicDocumentationTests(unittest.TestCase):
+    def test_bootstrap_doc_binds_current_candidate_and_future_target(self) -> None:
+        document = (ROOT / "docs" / "bootstrap-windows.md").read_text(encoding="utf-8")
+        self.assertIn("current local-gpu-imagegen 0.8.3 candidate", document)
+        self.assertIn("planned 0.9.0 target", document)
+        self.assertNotIn("frozen for the local-gpu-imagegen 0.9.0 implementation", document)
+
     def test_guided_bootstrap_docs_share_zero_and_existing_environment_paths(self) -> None:
-        documents = (
-            (ROOT / "README.md").read_text(encoding="utf-8"),
-            QUICKSTART.read_text(encoding="utf-8"),
-            (ROOT / "docs" / "bootstrap-windows.md").read_text(encoding="utf-8"),
-            (ROOT / "docs" / "client-compatibility.md").read_text(encoding="utf-8"),
-            RELEASE_CHECKLIST.read_text(encoding="utf-8"),
-        )
-        required = (
-            "existing environment",
-            "zero-environment",
-            "bootstrap status",
-            "bootstrap plan",
-            "bootstrap apply",
-            "explicit confirmation",
-            "license",
-            "resumable",
-            "rollback",
-            "Windows 10/11 x64",
-            "NVIDIA",
-            "Docker is not required",
-            "10 GiB VRAM",
-            "30 GiB free",
-        )
-        combined = "\n".join(documents).casefold()
-        for phrase in required:
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase.casefold(), combined)
+        documents = {
+            "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
+            "docs/quickstart.md": QUICKSTART.read_text(encoding="utf-8"),
+            "docs/bootstrap-windows.md": (ROOT / "docs" / "bootstrap-windows.md").read_text(encoding="utf-8"),
+            "docs/client-compatibility.md": (ROOT / "docs" / "client-compatibility.md").read_text(encoding="utf-8"),
+            "docs/release-checklist.md": RELEASE_CHECKLIST.read_text(encoding="utf-8"),
+        }
+        required_by_document = {
+            "README.md": (
+                "existing environment", "zero-environment", "bootstrap status",
+                "bootstrap plan", "bootstrap apply", "explicit confirmation",
+                "license URLs", "SHA-256 hashes", "bounded rollback",
+                "Windows 10/11 x64", "NVIDIA", "Docker is not required",
+                "10 GiB VRAM", "30 GiB free",
+            ),
+            "docs/quickstart.md": (
+                "existing environment", "zero-environment", "bootstrap status",
+                "bootstrap plan", "bootstrap apply", "explicit confirmation",
+                "licenses", "hashes", "resumable", "rollback behavior",
+                "Windows 10/11 x64 NVIDIA", "Docker is not required",
+                "10 GiB VRAM", "30 GiB free",
+            ),
+            "docs/bootstrap-windows.md": (
+                "existing environment", "zero-environment", "bootstrap status",
+                "bootstrap plan", "bootstrap apply", "explicit confirmation",
+                "licenses", "hashes", "bounded rollback", "Windows 10/11 x64",
+                "NVIDIA", "Docker is not required", "10 GiB VRAM", "30 GiB free",
+            ),
+            "docs/client-compatibility.md": (
+                "existing environment", "zero-environment", "bootstrap status",
+                "bootstrap plan", "bootstrap apply", "exact displayed confirmation",
+                "licenses", "SHA-256 hashes", "bounded rollback",
+                "Windows 10/11 x64 NVIDIA", "Docker is not required", "10 GiB VRAM",
+                "30 GiB free",
+            ),
+            "docs/release-checklist.md": (
+                "Existing-environment", "zero-environment", "bootstrap status",
+                "bootstrap plan", "bootstrap apply",
+                "Explicit download and license confirmation", "SHA-256 hash confirmation",
+                "resumable", "bounded rollback", "Windows 10/11 x64 NVIDIA",
+                "Docker is not required", "10 GiB VRAM", "30 GiB free",
+            ),
+        }
+        for name, required in required_by_document.items():
+            with self.subTest(document=name):
+                document = " ".join(documents[name].casefold().split())
+                for phrase in required:
+                    with self.subTest(phrase=phrase):
+                        self.assertIn(phrase.casefold(), document)
 
     def test_bootstrap_docs_keep_generation_and_readiness_claims_evidence_bound(self) -> None:
         combined = "\n".join(

@@ -160,8 +160,13 @@ class PackagingTests(unittest.TestCase):
     def test_wheel_contains_bootstrap_manifest_and_bundled_skill_without_model_bytes(self) -> None:
         with zipfile.ZipFile(self.wheel) as archive:
             names = set(archive.namelist())
-        self.assertTrue(any(name.endswith("share/local-gpu-imagegen/profiles/bootstrap/windows-nvidia.json") for name in names))
-        self.assertTrue(any(name.endswith("share/local-gpu-imagegen/skills/local-gpu-imagegen/SKILL.md") for name in names))
+        expected_assets = {
+            "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
+            "profiles/bootstrap/windows-nvidia.json",
+            "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
+            "skills/local-gpu-imagegen/SKILL.md",
+        }
+        self.assertTrue(expected_assets <= names)
         self.assertFalse(
             any(
                 name.casefold().endswith((".safetensors", ".ckpt", ".pt", ".pth", ".bin"))

@@ -56,10 +56,11 @@ This path requires an existing local image backend and model; there are no silen
 For an existing environment, run `bootstrap status` and reuse only a verified
 portable root, checkpoint, and loopback endpoint. For a zero-environment setup,
 `bootstrap plan` shows the exact portable archive, checkpoint, byte ceiling,
-license URLs, disk/VRAM requirements, and rollback boundary; `bootstrap apply`
-requires the displayed explicit confirmation. Downloads are resumable and never
-silent. The frozen scope is Windows 10/11 x64 with NVIDIA RTX 20-series or newer,
-10 GiB VRAM, and 30 GiB free disk. Docker is not required. This model-free
+license URLs, SHA-256 hashes, disk/VRAM requirements, and bounded rollback;
+`bootstrap apply` requires the displayed explicit confirmation. Downloads are
+resumable and never silent. The frozen scope is Windows 10/11 x64 with NVIDIA
+RTX 20-series or newer, 10 GiB VRAM, and 30 GiB free disk. Docker is not
+required. This model-free
 bootstrap contract does not prove image generation or production readiness.
 
 `setup` is read-only without `--apply`. The apply path delegates to the client's official `mcp add` command; Local GPU Imagegen does not edit client configuration files directly or download a model.
