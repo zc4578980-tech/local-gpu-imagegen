@@ -162,6 +162,30 @@ class McpServerUnitTests(unittest.TestCase):
 
         self.assertNotIn("bootstrap", result["structuredContent"])
 
+    def test_bootstrap_guidance_rejects_non_x64_cuda_host(self) -> None:
+        readiness = {"cuda": {"available": True}, "comfyui_ready": False}
+        with (
+            patch.object(mcp_server.sys, "platform", "win32"),
+            patch("platform.machine", return_value="ARM64"),
+            patch.object(mcp_server.sys, "getwindowsversion", return_value=SimpleNamespace(build=26100)),
+        ):
+            guidance = mcp_server.bootstrap_guidance(readiness)
+
+        self.assertEqual(guidance["support_status"], "unsupported")
+        self.assertIn("unsupported_architecture", guidance["reason_codes"])
+
+    def test_bootstrap_guidance_rejects_unsupported_windows_build(self) -> None:
+        readiness = {"cuda": {"available": True}, "comfyui_ready": False}
+        with (
+            patch.object(mcp_server.sys, "platform", "win32"),
+            patch("platform.machine", return_value="AMD64"),
+            patch.object(mcp_server.sys, "getwindowsversion", return_value=SimpleNamespace(build=19044)),
+        ):
+            guidance = mcp_server.bootstrap_guidance(readiness)
+
+        self.assertEqual(guidance["support_status"], "unsupported")
+        self.assertIn("unsupported_windows_build", guidance["reason_codes"])
+
     def test_schema_exposes_expected_tools(self) -> None:
         tools = {tool["name"]: tool for tool in mcp_server.tool_schema()}
         self.assertEqual(set(tools), EXPECTED_TOOLS)

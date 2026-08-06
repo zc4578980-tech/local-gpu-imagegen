@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import io
 import os
 import subprocess
@@ -18,6 +19,58 @@ sys.path.insert(0, str(SCRIPTS))
 
 
 class CliTests(unittest.TestCase):
+    @staticmethod
+    def _bootstrap_paths(root: Path):
+        from local_gpu_imagegen.paths import BootstrapPaths
+
+        return BootstrapPaths(root, root / "cache", root / "runtime", root / "plans")
+
+    @staticmethod
+    def _write_bootstrap_evidence(paths, transaction_status: str | None) -> None:
+        from local_gpu_imagegen.bootstrap_catalog import BootstrapFacts, build_bootstrap_plan, load_bootstrap_manifest
+
+        manifest = load_bootstrap_manifest(ROOT / "profiles" / "bootstrap" / "windows-nvidia.json")
+        portable_root = paths.install / manifest.comfyui.install_relative_path
+        python = portable_root / "python_embeded" / "python.exe"
+        main = portable_root / "ComfyUI" / "main.py"
+        model = paths.install / manifest.model.install_relative_path
+        python.parent.mkdir(parents=True)
+        main.parent.mkdir(parents=True)
+        model.parent.mkdir(parents=True)
+        python.write_bytes(b"synthetic-python")
+        main.write_bytes(b"synthetic-main")
+        model.write_bytes(b"synthetic-model")
+        if transaction_status is None:
+            return
+        facts = BootstrapFacts(
+            "win32", "amd64", "nvidia", "rtx-50-series", 16 * 1024**3,
+            26100, 40 * 1024**3, True, False, "missing", "missing",
+        )
+        plan = build_bootstrap_plan(
+            manifest,
+            facts,
+            install_root=paths.install,
+            plan_root=paths.plans,
+        )
+        transaction = {
+            "schema_version": 1,
+            "plan_id": plan.plan_id,
+            "scope_sha256": plan.scope_sha256,
+            "confirmation_sha256": hashlib.sha256(str(plan.confirmation).encode("utf-8")).hexdigest(),
+            "status": transaction_status,
+            "downloaded_artifacts": [],
+            "failure_code": "bootstrap_execution_failed" if transaction_status == "failed" else None,
+            "retained_state": {
+                "portable": "installed",
+                "model": "installed",
+                "verified_cache_artifacts": [],
+            },
+            "recoverable_next_actions": ["create_new_plan_reusing_portable"] if transaction_status == "failed" else [],
+        }
+        (paths.plans / f"{plan.plan_id}.transaction.json").write_text(
+            json.dumps(transaction), encoding="utf-8"
+        )
+
     def test_help_lists_the_installed_commands_including_bootstrap(self) -> None:
         environment = {**os.environ, "PYTHONPATH": str(SCRIPTS)}
         completed = subprocess.run(
@@ -57,6 +110,29 @@ class CliTests(unittest.TestCase):
         self.assertEqual(report["install_root"], str(paths.install))
         self.assertEqual(report["next_action"], "local-gpu-imagegen bootstrap plan --client codex")
         self.assertFalse(root.exists())
+
+    def test_bootstrap_status_distinguishes_installed_recoverable_and_unknown_evidence(self) -> None:
+        from local_gpu_imagegen import cli
+
+        cases = (
+            ("completed", "installed"),
+            ("failed", "recoverable"),
+            (None, "unknown"),
+        )
+        for transaction_status, expected_status in cases:
+            with self.subTest(transaction_status=transaction_status), tempfile.TemporaryDirectory() as directory:
+                paths = self._bootstrap_paths(Path(directory) / "bootstrap")
+                self._write_bootstrap_evidence(paths, transaction_status)
+                output = io.StringIO()
+                with (
+                    patch("local_gpu_imagegen.cli.default_bootstrap_paths", return_value=paths),
+                    redirect_stdout(output),
+                ):
+                    exit_code = cli.main(["bootstrap", "status"])
+
+            report = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(report["status"], expected_status)
 
     def test_bootstrap_plan_displays_effects_and_requires_later_confirmation(self) -> None:
         from local_gpu_imagegen import cli
@@ -128,10 +204,30 @@ class CliTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary_directory:
             missing_install_root = Path(temporary_directory) / "bootstrap" / "runtime"
+            paths = self._bootstrap_paths(missing_install_root.parent)
+            from local_gpu_imagegen.bootstrap_catalog import load_bootstrap_manifest
+
+            manifest = load_bootstrap_manifest(ROOT / "profiles" / "bootstrap" / "windows-nvidia.json")
             with patch("check_gpu.collect_report", return_value=readiness):
-                facts = cli._collect_bootstrap_facts(missing_install_root)
+                facts = cli._collect_bootstrap_facts(paths, manifest)
 
         self.assertGreater(facts.free_disk_bytes, 0)
+
+    def test_bootstrap_facts_reuse_only_completed_verified_evidence(self) -> None:
+        from local_gpu_imagegen import cli
+        from local_gpu_imagegen.bootstrap_catalog import load_bootstrap_manifest
+
+        readiness = {"cuda": {"available": False, "devices": []}, "comfyui": {"available": False}}
+        manifest = load_bootstrap_manifest(ROOT / "profiles" / "bootstrap" / "windows-nvidia.json")
+        cases = (("completed", ("valid", "valid")), (None, ("conflict", "conflict")))
+        for transaction_status, expected in cases:
+            with self.subTest(transaction_status=transaction_status), tempfile.TemporaryDirectory() as directory:
+                paths = self._bootstrap_paths(Path(directory) / "bootstrap")
+                self._write_bootstrap_evidence(paths, transaction_status)
+                with patch("check_gpu.collect_report", return_value=readiness):
+                    facts = cli._collect_bootstrap_facts(paths, manifest)
+
+            self.assertEqual((facts.portable_status, facts.model_status), expected)
 
     def test_bootstrap_apply_never_registers_a_client(self) -> None:
         from local_gpu_imagegen import cli
@@ -145,7 +241,7 @@ class CliTests(unittest.TestCase):
                 patch("local_gpu_imagegen.cli.default_bootstrap_paths", return_value=paths),
                 patch(
                     "local_gpu_imagegen.cli.apply_bootstrap_plan",
-                    return_value={"status": "installed"},
+                    return_value={"ok": True, "status": "installed"},
                 ) as apply,
                 patch(
                     "local_gpu_imagegen.client_setup.apply_setup_plan",
@@ -172,6 +268,32 @@ class CliTests(unittest.TestCase):
             f"bootstrap:{'a' * 24}:{'b' * 64}",
             state_dir=paths.plans,
         )
+
+    def test_bootstrap_apply_retry_is_a_successful_idempotent_result(self) -> None:
+        from local_gpu_imagegen import cli
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            paths = self._bootstrap_paths(Path(temporary_directory) / "bootstrap")
+            output = io.StringIO()
+            with (
+                patch("local_gpu_imagegen.cli.default_bootstrap_paths", return_value=paths),
+                patch(
+                    "local_gpu_imagegen.cli.apply_bootstrap_plan",
+                    return_value={"ok": True, "status": "already_installed"},
+                ),
+                redirect_stdout(output),
+            ):
+                exit_code = cli.main(
+                    [
+                        "bootstrap", "apply", "--plan-id", "a" * 24,
+                        "--confirmation", f"bootstrap:{'a' * 24}:{'b' * 64}",
+                    ]
+                )
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["status"], "already_installed")
+        self.assertEqual(report["next_action"], "local-gpu-imagegen setup codex --apply")
 
     def test_bootstrap_domain_errors_are_sanitized_json(self) -> None:
         from local_gpu_imagegen import cli

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -17,9 +19,25 @@ from local_gpu_imagegen.bootstrap_catalog import (
     load_bootstrap_manifest,
 )
 from local_gpu_imagegen.bootstrap_service import apply_bootstrap_plan
+from local_gpu_imagegen.backend_lifecycle import build_comfyui_start_config
 from local_gpu_imagegen.client_setup import SERVER_COMMAND
 from local_gpu_imagegen.errors import ArtifactError, StateError, ValidationError
 from local_gpu_imagegen.paths import default_bootstrap_paths, resolve_resource_root
+
+
+_MAX_BOOTSTRAP_STATE_BYTES = 512 * 1024
+_PLAN_RECORD_FIELDS = frozenset({"schema_version", "plan_id", "scope_sha256", "confirmation", "scope"})
+_TRANSACTION_RECORD_FIELDS = frozenset({
+    "schema_version",
+    "plan_id",
+    "scope_sha256",
+    "confirmation_sha256",
+    "status",
+    "downloaded_artifacts",
+    "failure_code",
+    "retained_state",
+    "recoverable_next_actions",
+})
 
 
 def _gpu_generation(name: object) -> str:
@@ -40,7 +58,134 @@ def _disk_usage_parent(path: Path) -> Path:
     return candidate
 
 
-def _collect_bootstrap_facts(install_root: Path) -> BootstrapFacts:
+def _read_bootstrap_record(path: Path) -> dict[str, object] | None:
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            return None
+        if metadata.st_size < 1 or metadata.st_size > _MAX_BOOTSTRAP_STATE_BYTES:
+            return None
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _regular_file(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+
+
+def _matching_transaction_status(paths, manifest: BootstrapManifest) -> str | None:
+    try:
+        root_metadata = paths.plans.lstat()
+        if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
+            return None
+        entries = sorted(paths.plans.glob("*.transaction.json"))
+    except OSError:
+        return None
+    resolved_install_root = str(paths.install.expanduser().resolve())
+    matching_statuses: set[str] = set()
+    for transaction_path in entries:
+        transaction = _read_bootstrap_record(transaction_path)
+        if transaction is None or set(transaction) != _TRANSACTION_RECORD_FIELDS:
+            continue
+        plan_id = transaction.get("plan_id")
+        if not isinstance(plan_id, str):
+            continue
+        plan = _read_bootstrap_record(paths.plans / f"{plan_id}.json")
+        if plan is None or set(plan) != _PLAN_RECORD_FIELDS:
+            continue
+        scope = plan.get("scope")
+        if isinstance(scope, dict):
+            canonical_scope = json.dumps(
+                scope,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("utf-8")
+            scope_sha256 = hashlib.sha256(canonical_scope).hexdigest()
+        else:
+            scope_sha256 = None
+        if (
+            plan.get("schema_version") != 1
+            or plan.get("plan_id") != plan_id
+            or plan.get("scope_sha256") != scope_sha256
+            or scope_sha256 is None
+            or plan_id != scope_sha256[:24]
+            or transaction.get("scope_sha256") != scope_sha256
+            or not isinstance(plan.get("confirmation"), str)
+            or transaction.get("confirmation_sha256") != hashlib.sha256(
+                str(plan.get("confirmation")).encode("utf-8")
+            ).hexdigest()
+            or not isinstance(scope, dict)
+            or scope.get("manifest_sha256") != manifest.manifest_sha256
+            or scope.get("install_root") != resolved_install_root
+        ):
+            continue
+        status = transaction.get("status")
+        if status in {"completed", "failed", "in_progress"}:
+            matching_statuses.add(status)
+    if "completed" in matching_statuses:
+        return "completed"
+    if "in_progress" in matching_statuses:
+        return "in_progress"
+    if "failed" in matching_statuses:
+        return "failed"
+    return None
+
+
+def _bootstrap_local_state(paths, manifest: BootstrapManifest) -> dict[str, object]:
+    portable_root = paths.install / manifest.comfyui.install_relative_path
+    model_path = paths.install / manifest.model.install_relative_path
+    transaction_status = _matching_transaction_status(paths, manifest)
+    portable_valid = False
+    if transaction_status == "completed":
+        try:
+            build_comfyui_start_config(portable_root)
+            portable_valid = True
+        except (OSError, RuntimeError, ValueError):
+            portable_valid = False
+        if portable_valid and _regular_file(model_path):
+            return {
+                "status": "installed",
+                "reason_codes": [],
+                "portable_status": "valid",
+                "model_status": "valid",
+            }
+        return {
+            "status": "recoverable",
+            "reason_codes": ["completed_transaction_evidence_drift"],
+            "portable_status": "conflict",
+            "model_status": "conflict",
+        }
+    if transaction_status in {"failed", "in_progress"}:
+        return {
+            "status": "recoverable",
+            "reason_codes": ["bootstrap_transaction_recovery_required"],
+            "portable_status": "conflict",
+            "model_status": "conflict",
+        }
+    if portable_root.exists() or model_path.exists():
+        return {
+            "status": "unknown",
+            "reason_codes": ["unverified_existing_installation"],
+            "portable_status": "conflict" if portable_root.exists() else "missing",
+            "model_status": "conflict" if model_path.exists() else "missing",
+        }
+    return {
+        "status": "not_installed",
+        "reason_codes": [],
+        "portable_status": "missing",
+        "model_status": "missing",
+    }
+
+
+def _collect_bootstrap_facts(paths, manifest: BootstrapManifest) -> BootstrapFacts:
     """Build conservative planner facts from the existing readiness report."""
     import check_gpu
 
@@ -60,6 +205,7 @@ def _collect_bootstrap_facts(install_root: Path) -> BootstrapFacts:
     windows_version = getattr(sys, "getwindowsversion", None)
     windows_build = int(windows_version().build) if callable(windows_version) else 0
     comfyui = report.get("comfyui") if isinstance(report.get("comfyui"), dict) else {}
+    local_state = _bootstrap_local_state(paths, manifest)
     return BootstrapFacts(
         platform=sys.platform,
         architecture=architecture,
@@ -67,12 +213,11 @@ def _collect_bootstrap_facts(install_root: Path) -> BootstrapFacts:
         gpu_generation=_gpu_generation(first_device.get("name")) if cuda_available else "unknown",
         vram_bytes=vram_bytes,
         windows_build=windows_build,
-        free_disk_bytes=shutil.disk_usage(_disk_usage_parent(install_root)).free,
+        free_disk_bytes=shutil.disk_usage(_disk_usage_parent(paths.install)).free,
         network_allowed=True,
         endpoint_ready=bool(comfyui.get("available")),
-        # Reuse needs the verified lifecycle evidence from the transaction layer.
-        portable_status="missing",
-        model_status="missing",
+        portable_status=str(local_state["portable_status"]),
+        model_status=str(local_state["model_status"]),
     )
 
 
@@ -199,26 +344,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "bootstrap":
         paths = default_bootstrap_paths()
-        if args.bootstrap_command == "status":
-            print(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "status": "not_installed",
-                        "install_root": str(paths.install),
-                        "next_action": "local-gpu-imagegen bootstrap plan --client codex",
-                    }
-                )
-            )
-            return 0
         try:
+            if args.bootstrap_command == "status":
+                manifest = load_bootstrap_manifest(
+                    resolve_resource_root() / "profiles" / "bootstrap" / "windows-nvidia.json"
+                )
+                state = _bootstrap_local_state(paths, manifest)
+                print(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "status": state["status"],
+                            "reason_codes": state["reason_codes"],
+                            "install_root": str(paths.install),
+                            "next_action": "local-gpu-imagegen bootstrap plan --client codex",
+                        }
+                    )
+                )
+                return 0
             if args.bootstrap_command == "plan":
                 manifest = load_bootstrap_manifest(
                     resolve_resource_root() / "profiles" / "bootstrap" / "windows-nvidia.json"
                 )
                 plan = build_bootstrap_plan(
                     manifest,
-                    _collect_bootstrap_facts(paths.install),
+                    _collect_bootstrap_facts(paths, manifest),
                     install_root=paths.install,
                     plan_root=paths.plans,
                 )
@@ -231,7 +381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     state_dir=paths.plans,
                 )
                 status = result.get("status")
-                if status == "installed":
+                if status in {"installed", "already_installed"} and result.get("ok") is True:
                     print(
                         json.dumps(
                             {

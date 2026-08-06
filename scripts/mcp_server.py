@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -207,9 +208,25 @@ def bootstrap_guidance(readiness: dict[str, object]) -> dict[str, object]:
     )
     cuda = readiness.get("cuda") if isinstance(readiness.get("cuda"), dict) else {}
     reason_codes: list[str] = []
-    if sys.platform != "win32":
+    architecture = platform.machine().lower()
+    normalized_architecture = "amd64" if architecture in {"amd64", "x86_64"} else architecture
+    windows_version = getattr(sys, "getwindowsversion", None)
+    try:
+        windows_build = int(windows_version().build) if callable(windows_version) else None
+    except (AttributeError, TypeError, ValueError):
+        windows_build = None
+    if sys.platform != manifest.platform:
         support_status = "unsupported"
         reason_codes.append("unsupported_platform")
+    elif normalized_architecture != manifest.architecture:
+        support_status = "unsupported"
+        reason_codes.append("unsupported_architecture")
+    elif windows_build is None:
+        support_status = "unknown"
+        reason_codes.append("windows_build_unknown")
+    elif windows_build < manifest.minimum_windows_build:
+        support_status = "unsupported"
+        reason_codes.append("unsupported_windows_build")
     elif cuda.get("available") is not True:
         support_status = "unknown"
         reason_codes.append("cuda_unavailable")
