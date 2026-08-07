@@ -16,7 +16,7 @@ $env:RELEASE_CANDIDATE_WHEEL_SHA256 = '<frozen-64-character-wheel-sha256>'
 ```
 
 The wheel must already exist at
-`dist/local_gpu_imagegen-0.8.3-py3-none-any.whl`. Do not rebuild it during this
+`dist/local_gpu_imagegen-0.9.0-py3-none-any.whl`. Do not rebuild it during this
 verification.
 
 ## Run The Offline Verifier
@@ -30,7 +30,7 @@ $commit = $env:RELEASE_CANDIDATE_COMMIT
 $expectedWheelSha256 = $env:RELEASE_CANDIDATE_WHEEL_SHA256
 if ($commit -notmatch '^[0-9a-f]{40}$') { throw 'Missing frozen release commit' }
 if ($expectedWheelSha256 -notmatch '^[0-9a-f]{64}$') { throw 'Missing frozen wheel SHA-256' }
-$wheel = Resolve-Path .\dist\local_gpu_imagegen-0.8.3-py3-none-any.whl
+$wheel = Resolve-Path .\dist\local_gpu_imagegen-0.9.0-py3-none-any.whl
 $reportRoot = New-Item -ItemType Directory -Force -Path .\outputs\release-candidate-validation
 $attemptId = [guid]::NewGuid().ToString('N')
 $report = Join-Path $reportRoot.FullName "candidate-report-$attemptId.json"
@@ -59,7 +59,7 @@ for each action unless the user explicitly bundles named actions:
 2. Publish the exact verified wheel to PyPI.
 3. Publish the MCP Registry descriptor and verify the resolved package and
    stdio command.
-4. Create the `v0.8.3` tag.
+4. Create the `v0.9.0` tag.
 5. Create the GitHub Release from the reviewed release copy and assets.
 6. Change repository metadata, topics, or social preview.
 7. Submit each directory listing.

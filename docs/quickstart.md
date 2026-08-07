@@ -22,7 +22,7 @@ installation, model downloads, and generation time.
 uvx local-gpu-imagegen verify
 ```
 
-Checkpoint: the JSON reports `ok: true`, version `0.8.3`, and exactly seventeen tools. Stop and use [First-Run Problems](#first-run-problems) if it does not.
+Checkpoint: the JSON reports `ok: true`, version `0.9.0`, and exactly seventeen tools. Stop and use [First-Run Problems](#first-run-problems) if it does not.
 
 ## 2. Add It To Codex Or Claude Code
 
@@ -54,7 +54,7 @@ command, rather than relying on a console script from the temporary `uvx`
 environment:
 
 ```text
-uvx --from local-gpu-imagegen==0.8.3 local-gpu-imagegen serve
+uvx --from local-gpu-imagegen==0.9.0 local-gpu-imagegen serve
 ```
 
 If setup reports `client_setup_drift`, the existing entry uses a different

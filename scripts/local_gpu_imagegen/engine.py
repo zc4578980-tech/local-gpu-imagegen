@@ -1765,6 +1765,8 @@ def _review_response(manifest: dict[str, object]) -> dict[str, object]:
         **manifest,
         "recoverable_next_actions": recoverable_next_actions(manifest),
     }
+    if manifest.get("state") == "finalized" or manifest.get("final") is not None:
+        return response
     candidates = _eligible_candidates(manifest)
     if candidates:
         round_number = candidates[-1].get("round_number")

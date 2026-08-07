@@ -2594,6 +2594,36 @@ class AssetRunEngineTests(unittest.TestCase):
             reviewed["finalization_candidate"]["image_sha256"],
         )
 
+    def test_finalized_run_does_not_reexpose_finalization_candidate_after_restart(self) -> None:
+        started = self.start(max_rounds=2)
+        run_id = started["run_id"]
+        self.engine.generate_round(self.generate_arguments(run_id, max_rounds=2))
+        reviewed = self.review(run_id, 1)
+        self.engine.finalize_run({
+            "run_id": run_id,
+            "round_number": 1,
+            "summary": "Selected candidate.",
+            "confirmation": reviewed["finalization_candidate"]["confirmation"],
+        })
+
+        current = self.engine.get_run({"run_id": run_id})
+        recovered = self.restarted_engine().get_run({"run_id": run_id})
+
+        for result in (current, recovered):
+            self.assertEqual(result["state"], "finalized")
+            self.assertEqual(result["final"]["quality_status"], "accepted")
+            self.assertNotIn("finalization_candidate", result)
+            self.assertNotIn("finalize_run", result["recoverable_next_actions"])
+
+        with self.assertRaises(AssetEngineError) as raised:
+            self.engine.finalize_run({
+                "run_id": run_id,
+                "round_number": 1,
+                "summary": "Repeated selection.",
+                "confirmation": reviewed["finalization_candidate"]["confirmation"],
+            })
+        self.assertEqual(raised.exception.code, "already_finalized")
+
     def test_nominated_eligible_round_is_published_even_when_later_round_scores_higher(self) -> None:
         started = self.start()
         run_id = started["run_id"]

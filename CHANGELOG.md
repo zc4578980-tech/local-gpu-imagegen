@@ -2,6 +2,42 @@
 
 All notable changes will be documented in this file.
 
+## [0.9.0] - 2026-08-07
+
+### Added
+
+- Added a confirmation-bound Windows/NVIDIA guided bootstrap with explicit
+  source and license display, resumable checksum-verified downloads, bounded
+  archive extraction, transactional install/rollback, installed readiness
+  checks, and managed ComfyUI startup.
+- Added packaged bootstrap manifests and first-run documentation for both an
+  existing portable environment and a fresh local environment. Docker remains
+  optional and no model or runtime download occurs without confirmation.
+
+### Fixed
+
+- Hardened portable ComfyUI extraction for BCJ2 archives, path-case
+  preservation, filesystem capability races, rollback wording, NVIDIA host
+  detection, and setup-to-managed-startup routing.
+- Finalized runs no longer re-expose a stale `finalization_candidate` after
+  `local_gpu_get_run` or process restart. Repeated finalization remains blocked
+  with `already_finalized`, and concurrent generation keeps its existing
+  `run_busy` and review-state behavior.
+
+### Evidence Boundary
+
+- One bounded local Windows/NVIDIA acceptance used explicitly approved
+  ComfyUI and SDXL artifacts, reached managed backend readiness, exercised the
+  real 17-tool MCP path, and finalized one reviewed non-human environment PNG
+  with byte-identical source and final SHA-256 values.
+- That accepted environment evidence remains local until separately sanitized
+  and exported. It is not bundled in the wheel and does not establish public
+  evidence authority, production readiness, performance, latency, or VRAM
+  savings.
+- Two separate character runs remained private and ineligible because strict
+  prominent-human anatomy acceptance was not met. They are negative evidence,
+  are not release images, and do not support a character-quality claim.
+
 ## [0.8.3] - 2026-08-03
 
 ### Added

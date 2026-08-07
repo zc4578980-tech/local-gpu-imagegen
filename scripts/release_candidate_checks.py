@@ -26,20 +26,20 @@ from typing import Callable, Iterator
 
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-EXPECTED_WHEEL = "local_gpu_imagegen-0.8.3-py3-none-any.whl"
-EXPECTED_VERSION = "0.8.3"
+EXPECTED_WHEEL = "local_gpu_imagegen-0.9.0-py3-none-any.whl"
+EXPECTED_VERSION = "0.9.0"
 EXPECTED_REQUIRES_PYTHON = ">=3.11"
 EXPECTED_DEPENDENCIES = ("py7zr==1.1.3",)
-EXPECTED_DIST_INFO = "local_gpu_imagegen-0.8.3.dist-info"
+EXPECTED_DIST_INFO = "local_gpu_imagegen-0.9.0.dist-info"
 EXPECTED_PROTOCOL = "2024-11-05"
 PUBLIC_MODEL_DESCRIPTOR_PARENT = PurePosixPath(
-    "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
+    "local_gpu_imagegen-0.9.0.data/data/share/local-gpu-imagegen/"
     "profiles/models"
 )
 BOOTSTRAP_ASSET_PATHS = (
-    "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
+    "local_gpu_imagegen-0.9.0.data/data/share/local-gpu-imagegen/"
     "profiles/bootstrap/windows-nvidia.json",
-    "local_gpu_imagegen-0.8.3.data/data/share/local-gpu-imagegen/"
+    "local_gpu_imagegen-0.9.0.data/data/share/local-gpu-imagegen/"
     "skills/local-gpu-imagegen/SKILL.md",
 )
 MODEL_BINARY_SUFFIXES = (".safetensors", ".ckpt", ".pt", ".pth", ".bin")

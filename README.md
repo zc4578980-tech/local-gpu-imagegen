@@ -15,7 +15,7 @@ uvx local-gpu-imagegen setup codex --apply
 ```
 
 Setup stores a resolved, version-pinned launcher equivalent to
-`uvx --from local-gpu-imagegen==0.8.3 local-gpu-imagegen serve`; it does not
+`uvx --from local-gpu-imagegen==0.9.0 local-gpu-imagegen serve`; it does not
 depend on a console script from the temporary `uvx` environment. If an older
 entry reports `client_setup_drift`, remove only that client entry and apply
 setup again. Starting ComfyUI does not repair an MCP launcher failure; backend
@@ -66,6 +66,14 @@ bootstrap contract does not prove image generation or production readiness.
 `setup` is read-only without `--apply`. The apply path delegates to the client's official `mcp add` command; Local GPU Imagegen does not edit client configuration files directly or download a model.
 
 **Trust proof:** the retained ordinary-route result came from one installed Codex session. Discovery did not load weights; trust and route identity were explicit; successful rounds were bounded; review used the original-resolution PNG; finalization was bound to the reviewed bytes; and the run state remains recoverable. The evidence proves this one result, not complete 9+3 acceptance, measured performance, or production readiness.
+
+**v0.9 local acceptance:** a fresh Windows/NVIDIA installation built from the
+user-approved ComfyUI archive and SDXL checkpoint reached managed readiness,
+served exactly seventeen MCP tools, and finalized one reviewed non-human
+environment image with byte-identical source and final hashes. The artifact
+remains local until a separate sanitized export and is not bundled in the
+package. Two separate character attempts failed strict hand, eye, or tail
+review; prominent-human anatomy quality is therefore not established.
 
 ### Optional Managed ComfyUI Startup
 
@@ -137,7 +145,7 @@ Expected result:
   "ok": true,
   "transport": "stdio",
   "python": "<current-python>",
-  "server": {"name": "local-gpu-imagegen", "version": "0.8.3"},
+  "server": {"name": "local-gpu-imagegen", "version": "0.9.0"},
   "protocolVersion": "2024-11-05",
   "tools": [
     "local_gpu_branch_run",

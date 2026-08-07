@@ -4,9 +4,9 @@ This directory is the public, machine-verifiable record for real Codex MCP accep
 
 ## Release gate policy
 
-The current v0.8 preview gate targets version `0.8.3` and requires exact-commit model-free tests, a clean wheel install, exactly seventeen tools, fail-closed `doctor` behavior, safe named-client setup contracts, the portable historical Codex `0.7.0` generation labeled historical, the Codex `0.8.0` zero-GPU onboarding record labeled non-generation, and explicit disclosure of missing evidence. A current-v0.8 Codex managed-MCP live gate and its separately approved bounded replacement produced two private, reviewed, ineligible runs. They are fail-closed local development evidence, not publishable release-set artifacts, finalized images, image-quality evidence, a complete named-client generation release set, or full acceptance.
+The current v0.9 preview gate targets version `0.9.0` and requires an exact-commit model-free suite, reproducible clean wheel, exactly seventeen tools, fail-closed `doctor` behavior, safe named-client setup contracts, and explicit disclosure of missing evidence. One local Windows/NVIDIA acceptance finalized a reviewed non-human environment result through managed ComfyUI and the real MCP path, but it remains outside this public directory until separately sanitized, exported, and validated. Two character runs remain private, reviewed, ineligible negative evidence and are not publishable release-set artifacts. Prominent-human anatomy quality, a complete named-client generation release set, and full acceptance are not established.
 
-The existing strict acceptance validator remains the full-acceptance/v1.0 gate. Its exact 9-root plus 3-revision requirement is unchanged. The current incomplete matrix is expected to fail that gate; the failure does not block the separately defined v0.8 preview gate and must not be hidden or presented as a strict pass.
+The existing strict acceptance validator remains the full-acceptance/v1.0 gate. Its exact 9-root plus 3-revision requirement is unchanged. The current incomplete matrix is expected to fail that gate; the failure does not block the separately defined v0.9 preview gate and must not be hidden or presented as a strict pass.
 
 `z-image-component-source-audit.json` is a blocked source audit, not an authority grant. It records exact installed/published hashes, component commit provenance, bounded safetensors-header inspection, upstream license evidence, and unresolved repack/output authority. Partial component evidence never promotes the complete route.
 
@@ -32,7 +32,7 @@ With no approved authority or retained runs it returns `ok: true`, zero counts, 
 
 Each formal Release campaign owns `docs/evidence/adoption/<campaign_id>/campaign.json` and `docs/evidence/adoption/<campaign_id>/events.jsonl`. The first file fixes the repository, Release ID/tag/publication time, target, and timing policy. The second is canonical append-only JSONL linked by SHA-256.
 
-The current `v0.8.3-release-364342670` campaign recorded a zero-Star baseline
+The historical `v0.8.3-release-364342670` campaign recorded a zero-Star baseline
 37 minutes after publication. Validation classifies that observation as
 `degraded` and the unfinished campaign as `measurement_incomplete`; it is not
 reconstructed publication-time evidence.

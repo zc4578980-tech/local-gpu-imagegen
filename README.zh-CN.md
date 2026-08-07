@@ -16,7 +16,7 @@ uvx local-gpu-imagegen setup codex --apply
 ```
 
 setup 会保存一个已经解析、固定当前版本的启动器，等价命令为
-`uvx --from local-gpu-imagegen==0.8.3 local-gpu-imagegen serve`；它不依赖临时
+`uvx --from local-gpu-imagegen==0.9.0 local-gpu-imagegen serve`；它不依赖临时
 `uvx` 环境中的控制台脚本。如果旧条目报告 `client_setup_drift`，请只移除对应客户端
 条目，再重新应用 setup。启动 ComfyUI 不能修复 MCP 启动器故障；客户端成功加载
 服务器后，才进入后端就绪检查。
@@ -143,7 +143,7 @@ PyPI 发布前，请安装已验证 wheel 或使用源码检出，然后运行�
 python .\scripts\verify_mcp.py
 ```
 
-预期 JSON 包含：`ok: true`、服务器版本 `0.8.3`、协议 `2024-11-05`，以及以下
+预期 JSON 包含：`ok: true`、服务器版本 `0.9.0`、协议 `2024-11-05`，以及以下
 恰好 17 个工具：
 
 ```text

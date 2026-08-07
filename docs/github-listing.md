@@ -14,19 +14,42 @@ Topics:
 
 ## GitHub Release
 
-Title: `Local GPU Imagegen v0.8.3`
+Title: `Local GPU Imagegen v0.9.0`
 
 Summary:
 
-This preview packages a seventeen-tool MCP server and installed Python CLI for Codex and Claude Code. Its primary launch path inspects and registers supported ordinary ComfyUI `txt2img` API workflows with single-checkpoint or split-model topology, reports `source_sha256`, `workflow_sha256`, inferred bindings, components, and limitations, then requires later digest-bound registration confirmation and separate trust through `registered_workflow_id`; registration does not grant model trust. The project reuses an existing ComfyUI backend without silently downloading or switching a model. AUTOMATIC1111/Forge and Diffusers remain compatibility paths.
+This release packages a seventeen-tool MCP server and installed Python CLI for
+Codex and Claude Code. It adds a confirmation-bound Windows/NVIDIA guided
+bootstrap with explicit sources and licenses, resumable checksum verification,
+bounded extraction and rollback, installed readiness checks, and optional
+managed ComfyUI startup. Existing ComfyUI environments remain the fast path;
+AUTOMATIC1111/Forge and Diffusers remain compatibility paths. Docker is not
+required, and no model or runtime is downloaded or switched silently.
 
 One retained installed Codex onboarding session exercised discovery, inspection, registration, exact checkpoint fingerprinting, component binding, and private trust without submitting a prompt or using the GPU. A separate retained Codex generation produced the ordinary-route SDXL image described below. The records are not one end-to-end imported-workflow generation and make no image-quality superiority claim.
 
-A current-v0.8 Codex managed-MCP live gate completed exact-file verification, immutable workflow preparation, fresh route approval, and one generation round; its separately approved bounded replacement completed two more rounds. The two private, reviewed, ineligible runs are fail-closed local development evidence, not publishable release-set artifacts, finalized images, or image-quality evidence. Claude Code hosted generation remains pending.
+A fresh local Windows/NVIDIA acceptance used user-approved ComfyUI and SDXL
+artifacts, reached managed readiness, exercised the real seventeen-tool MCP
+path, and finalized one reviewed non-human environment image with
+byte-identical source and final hashes. That artifact remains local until a
+separate sanitized export and is not bundled in the wheel. Two separate
+character attempts remained private and ineligible because strict hand, eye,
+and tail review failed; prominent-human anatomy quality is not established.
+Claude Code hosted generation remains pending.
 
 One installed Codex session produced a validated ordinary `sdxl-txt2img` SDXL/ComfyUI result retained as its original 1024x1024 finalized PNG with a sanitized MCP result, full-resolution review, exact hashes, and public rights. Its disclosed limitations are a red-purple palette rather than clear blue hour, no distinct directional beacon beam, one extra navigation beacon, and minor railing/cliff-ladder artifacts. Regional and two-stage composition remain experimental, are not part of the golden path, and provide no fallback; their retained negative evidence does not establish a visual-quality improvement.
 
-Public `v0.8.3` is available from PyPI and as a non-prerelease GitHub Release at `https://github.com/zc4578980-tech/local-gpu-imagegen/releases/tag/v0.8.3`; its exact release commit passed the four-job Windows/Ubuntu and Python 3.11/3.12 matrix. The exact `0.8.3` descriptor is also published in the official MCP Registry with status `active`, and the repository description plus all eight prepared topics are applied. Remote social-preview metadata remains pending. The `awesome-mcp-servers` submission is open as PR `#11452` with its submission check passing, while Glama remains unsubmitted because its current Add Server flow requires an unavailable interactive browser surface. `100 net-new GitHub Stars` is the minimum acceptable first-month outcome and planning floor, not the target; it is a post-release adoption goal and does not block publication. The threshold is not a guarantee, and a miss does not retract the Release. Zero-GPU real-client onboarding evidence is retained, but the release does not claim complete 9+3 acceptance, measured quality, latency, VRAM, concurrency, production readiness, or workflow-generated image evidence.
+`v0.9.0` is a local release candidate and is not yet on PyPI, tagged, published
+as a GitHub Release, or registered as the latest MCP Registry version. Public
+`v0.8.3` remains the current published package and Registry record. The
+existing `awesome-mcp-servers` PR `#11452` describes that older public release;
+the `0.9.0` update and Glama submission remain pending. `100 net-new GitHub
+Stars` is the minimum acceptable first-month outcome and planning floor. The
+floor is not a guarantee; it is a post-release adoption goal and does not block publication.
+A missed result does not retract the Release.
+The release does not claim complete 9+3 acceptance, character-quality
+readiness, measured quality, latency, VRAM, concurrency, or production
+readiness.
 
 Install:
 

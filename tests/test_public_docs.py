@@ -91,11 +91,11 @@ def _assert_ordered(text: str, values: tuple[str, ...]) -> None:
 
 
 class PublicDocumentationTests(unittest.TestCase):
-    def test_bootstrap_doc_binds_current_candidate_and_future_target(self) -> None:
+    def test_bootstrap_doc_binds_current_v090_candidate(self) -> None:
         document = (ROOT / "docs" / "bootstrap-windows.md").read_text(encoding="utf-8")
-        self.assertIn("current local-gpu-imagegen 0.8.3 candidate", document)
-        self.assertIn("planned 0.9.0 target", document)
-        self.assertNotIn("frozen for the local-gpu-imagegen 0.9.0 implementation", document)
+        self.assertIn("current local-gpu-imagegen 0.9.0", document)
+        self.assertIn("Publication remains a separate gate", document)
+        self.assertNotIn("planned 0.9.0 target", document)
 
     def test_guided_bootstrap_docs_share_zero_and_existing_environment_paths(self) -> None:
         documents = {
@@ -167,7 +167,7 @@ class PublicDocumentationTests(unittest.TestCase):
         english_readme = (ROOT / "README.md").read_text(encoding="utf-8")
         chinese_readme = CHINESE_README.read_text(encoding="utf-8")
         launcher = (
-            "uvx --from local-gpu-imagegen==0.8.3 "
+            "uvx --from local-gpu-imagegen==0.9.0 "
             "local-gpu-imagegen serve"
         )
 
@@ -303,9 +303,10 @@ class PublicDocumentationTests(unittest.TestCase):
         combined = "\n".join((listing, playbook, checklist))
 
         self.assertIn("official MCP Registry", combined)
-        self.assertIn("status `active`", listing)
-        self.assertIn("all eight prepared topics are applied", combined)
-        self.assertIn("Remote social-preview metadata remains pending", checklist)
+        self.assertIn("not yet on PyPI", listing)
+        self.assertIn("`v0.8.3` remains the current published package", listing)
+        self.assertIn("all eight prepared topics are applied", playbook)
+        self.assertIn("social preview", checklist)
         self.assertNotIn(
             "MCP Registry publication, repository topics, social-preview metadata",
             combined,
@@ -319,11 +320,11 @@ class PublicDocumentationTests(unittest.TestCase):
 
         self.assertIn("awesome-mcp-servers#11452", listings)
         self.assertIn("check-submission", listings)
-        self.assertIn("status `active`", listings)
+        self.assertIn("not yet published", listings)
         self.assertIn("Status: not submitted", listings)
-        self.assertIn("Glama remains unsubmitted", checklist)
+        self.assertIn("Glama", checklist)
         self.assertIn("PR `#11452`", github_listing)
-        self.assertIn("Glama remains unsubmitted", github_listing)
+        self.assertIn("Glama submission remain pending", github_listing)
         self.assertNotIn("publication remains pending", listings)
 
     def test_publication_runbook_binds_exact_offline_candidate_before_remote_actions(
@@ -370,21 +371,21 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("candidate-report.json", playbook)
         self.assertIn('"status": "passed"', playbook)
 
-    def test_release_checklist_records_completed_local_release_gates(self) -> None:
+    def test_release_checklist_records_current_local_release_gate_status(self) -> None:
         checklist = RELEASE_CHECKLIST.read_text(encoding="utf-8")
         self.assertIn(
-            "- [x] The offline release-candidate verifier passed at exact commit `6627838`",
+            "- [x] The finalized-run candidate leak has a RED/GREEN regression test",
             checklist,
         )
-        self.assertIn('"status": "passed"', checklist)
-        for completed in (
-            "The final model-free suite",
-            "A fresh isolated Python 3.12 environment",
-            "Installed `verify`",
-            "Tracked files, staged files, and wheel entries",
+        self.assertIn("- [x] The pre-freeze candidate content passed all 1,148", checklist)
+        self.assertIn("- [x] Build `local_gpu_imagegen-0.9.0-py3-none-any.whl` twice", checklist)
+        for pending in (
+            "Freeze an exact release commit",
+            "Run the complete model-free suite",
+            "Pass the offline release-candidate verifier",
         ):
-            with self.subTest(completed=completed):
-                self.assertIn(f"- [x] {completed}", checklist)
+            with self.subTest(pending=pending):
+                self.assertIn(f"- [ ] {pending}", checklist)
 
     def test_quickstart_uses_three_first_use_decisions_and_one_successful_round(self) -> None:
         quickstart = QUICKSTART.read_text(encoding="utf-8")
@@ -595,7 +596,7 @@ class PublicDocumentationTests(unittest.TestCase):
     def test_github_listing_bounds_the_workflow_offer(self) -> None:
         listing = GITHUB_LISTING.read_text(encoding="utf-8")
         self.assertIn(
-            "Title: `Local GPU Imagegen v0.8.3`",
+            "Title: `Local GPU Imagegen v0.9.0`",
             listing,
         )
 
@@ -830,7 +831,7 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertIn("experimental compatibility", public)
         self.assertIn("does not establish a visual-quality improvement", public)
 
-    def test_active_versions_are_v083_and_historical_versions_are_preserved(self) -> None:
+    def test_active_versions_are_v090_and_historical_versions_are_preserved(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -839,9 +840,10 @@ class PublicDocumentationTests(unittest.TestCase):
             for path in ACTIVE_VERSION_FILES
         )
 
-        self.assertEqual(plugin["version"], "0.8.3")
-        self.assertIn('"version": "0.8.3"', readme)
+        self.assertEqual(plugin["version"], "0.9.0")
+        self.assertIn('"version": "0.9.0"', readme)
         self.assertEqual(active_version_findings(active_documents), [])
+        self.assertIn("## [0.9.0] - 2026-08-07", changelog)
         self.assertIn("## [0.8.3] - 2026-08-03", changelog)
         self.assertIn("## [0.8.2] - 2026-08-03", changelog)
         self.assertIn("public clean-cache acquisition", changelog)
@@ -899,11 +901,11 @@ class PublicDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(required, public)
 
-    def test_active_release_guides_pin_v083_and_seventeen_tools(self) -> None:
+    def test_active_release_guides_pin_v090_and_seventeen_tools(self) -> None:
         for path in (RELEASE_CHECKLIST, ROOT / "docs" / "client-compatibility.md"):
             with self.subTest(path=path):
                 text = path.read_text(encoding="utf-8")
-                self.assertIn("`0.8.3`", text)
+                self.assertIn("`0.9.0`", text)
                 self.assertIn("exactly seventeen tools", text)
                 self.assertNotIn("exactly fifteen tools", text)
 
@@ -947,11 +949,11 @@ class PublicDocumentationTests(unittest.TestCase):
         for path in (RELEASE_CHECKLIST, EVIDENCE_README):
             with self.subTest(path=path):
                 text = path.read_text(encoding="utf-8")
-                self.assertIn("v0.8 preview gate", text)
+                self.assertIn("v0.9 preview gate", text)
                 self.assertIn("full-acceptance/v1.0 gate", text)
                 self.assertIn("not publishable release-set artifacts", text)
 
-    def test_release_coherence_docs_share_v083_state(self) -> None:
+    def test_release_coherence_docs_share_v090_state(self) -> None:
         release_documents = (
             RELEASE_CHECKLIST,
             ROOT / "docs" / "client-compatibility.md",
@@ -960,7 +962,7 @@ class PublicDocumentationTests(unittest.TestCase):
         )
         for path in release_documents:
             with self.subTest(path=path):
-                self.assertIn("0.8.3", path.read_text(encoding="utf-8"))
+                self.assertIn("0.9.0", path.read_text(encoding="utf-8"))
 
         for path in (RELEASE_CHECKLIST, ROOT / "docs" / "client-compatibility.md"):
             with self.subTest(path=path):

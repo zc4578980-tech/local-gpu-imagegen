@@ -1,8 +1,7 @@
 # Windows NVIDIA Guided Bootstrap Contract
 
-Status: frozen for the current local-gpu-imagegen 0.8.3 candidate on
-2026-08-05. The planned 0.9.0 target is future release scope, not this
-published package.
+Status: implemented and frozen for the current local-gpu-imagegen 0.9.0
+release candidate on 2026-08-07. Publication remains a separate gate.
 
 This contract covers one Windows x64 path. It is not a general ComfyUI or model
 installer. Planning is read-only apart from its own user-local plan record, and
@@ -52,7 +51,7 @@ model, or an unapproved mirror.
 The normal NVIDIA archive is intentional: the pinned upstream README says it
 supports NVIDIA 20 series and above and contains Python 3.13 with PyTorch CUDA
 13.0. The alternative `cu126` archive is for NVIDIA 10 series and older and is
-outside the planned 0.9.0 target; it is not part of the current 0.8.3
+outside the 0.9.0 target; it is not part of the current 0.9.0
 candidate contract.
 
 ### Default checkpoint
@@ -83,8 +82,8 @@ Only `github.com` and `huggingface.co` are approved production source hosts.
 URLs are HTTPS and revision-pinned. Redirects must remain inside the later
 downloader's explicit host policy. If Hugging Face is unreachable, the command
 must retain resumable state and recommend configuring a working VPN or HTTPS
-proxy before retrying. The current 0.8.3 candidate does not silently switch to
-a mirror; the planned 0.9.0 target inherits the same boundary.
+proxy before retrying. The current 0.9.0 candidate does not silently switch to
+a mirror.
 
 ## Extraction Choice
 

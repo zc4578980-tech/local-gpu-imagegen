@@ -1,70 +1,119 @@
-# v0.8.3 Release Checklist
+# v0.9.0 Release Checklist
 
-This checklist covers repository release readiness. It does not grant model, workflow-component, generated-output, client-configuration, publication, or public acceptance authority.
+This checklist covers repository release readiness. It does not grant model,
+workflow-component, generated-output, client-configuration, publication, or
+public acceptance authority.
 
 ## Guided Bootstrap Gate
 
-- [ ] Existing-environment `bootstrap status` and zero-environment `bootstrap plan`/`bootstrap apply` paths are documented.
-- [ ] Explicit download and license confirmation, SHA-256 hash confirmation,
-  resumable transfers, bounded rollback, 10 GiB VRAM, 30 GiB free disk, and
-  Windows 10/11 x64 NVIDIA scope are stated.
-- [ ] Docker is not required; bootstrap evidence does not claim real image generation or production readiness.
+- [x] Existing-environment `bootstrap status` and zero-environment `bootstrap
+  plan` / `bootstrap apply` paths are documented.
+- [x] Explicit download and license confirmation, SHA-256 hash confirmation,
+  source display, resumable transfers, bounded rollback, 10 GiB VRAM, 30 GiB
+  free disk, and Windows 10/11 x64 NVIDIA scope are stated.
+- [x] Docker is not required. No runtime or model download is silent, and
+  bootstrap readiness is not described as production readiness.
+- [x] One fresh local acceptance installed from user-approved ComfyUI and SDXL
+  artifacts, reached managed readiness, and completed a bounded real MCP run.
+  This does not prove the automatic download path on every network or host.
 
-## Gate policy
+## Gate Policy
 
-The v0.8 preview gate requires exact-commit model-free tests, a clean wheel install, exactly seventeen tools, fail-closed `doctor` behavior, safe named-client setup contracts, the portable historical Codex 0.7 generation labeled historical, the Codex 0.8 zero-GPU onboarding record labeled non-generation, and explicit disclosure of missing evidence. A current-v0.8 Codex managed-MCP live gate and its separately approved bounded replacement produced two private, reviewed, ineligible runs. They are fail-closed local development evidence, not publishable release-set artifacts, finalized images, image-quality evidence, or full acceptance.
+The v0.9 preview gate requires an exact-commit model-free suite, a reproducible
+clean wheel, exactly seventeen tools, fail-closed `doctor` behavior, safe
+named-client setup contracts, guided-bootstrap transaction coverage, and
+truthful disclosure of missing evidence.
 
-The unchanged `python scripts/validate_acceptance_evidence.py --strict` command remains the full-acceptance/v1.0 gate. It requires exactly nine accepted roots and three declared child revisions. Its expected failure on the currently incomplete matrix does not block the separately defined v0.8 preview gate, but it does block any full-acceptance or v1.0 claim.
+The unchanged `python scripts/validate_acceptance_evidence.py --strict`
+command remains the full-acceptance/v1.0 gate. It requires exactly nine
+accepted roots and three declared child revisions. Its expected failure on the
+incomplete matrix does not block the separately defined v0.9 preview gate, but
+it blocks any full-acceptance or v1.0 claim.
 
 The `100 net-new GitHub Stars` floor is a post-release adoption goal and
-planning floor. The approved post-release measurement design supersedes the
-earlier forecast gate: a forecast below the floor does not block publication,
-and a missed result does not retract the Release.
+planning floor. It does not block publication, and a missed or incomplete
+result does not retract the Release.
 
-## Local gate
+## Local Gate
 
-- [x] The offline release-candidate verifier passed at exact commit `6627838`; its immutable report records `"status": "passed"` for the frozen wheel SHA-256.
-- [x] The final model-free suite, Python compilation, strict UTF-8 JSON parse, repository hygiene, and public-document truthfulness gates passed at that commit.
-- [x] A fresh isolated Python 3.12 environment installed the exact-commit wheel outside the checkout and verified version `0.8.3`, protocol `2024-11-05`, and exactly seventeen tools; the four-job CI matrix covered Python 3.11 and 3.12.
-- [x] Installed `verify`, fail-closed `doctor`, local-wheel `uvx`, and read-only Codex and Claude Code setup paths passed without a source clone or direct configuration-file edit.
-- [x] Tracked files, staged files, and wheel entries passed the bounded credential, private-path, local-state, image, model-weight, and temporary-client scans.
+- [x] The finalized-run candidate leak has a RED/GREEN regression test;
+  finalized and restarted responses omit the stale candidate, repeated
+  finalization returns `already_finalized`, and concurrent generation keeps its
+  established error semantics.
+- [ ] Freeze an exact release commit with a clean tracked worktree.
+- [x] The pre-freeze candidate content passed all 1,148 model-free tests with
+  12 documented platform/privilege skips, Python compilation, `pip check`, and
+  independent stdio verification of version `0.9.0` and exactly seventeen
+  tools.
+- [ ] Run the complete model-free suite and Python compilation at that exact
+  commit; only documented privilege/integration skips may remain.
+- [x] Build `local_gpu_imagegen-0.9.0-py3-none-any.whl` twice from the same
+  source epoch and require byte-identical SHA-256 values.
+- [ ] Pass the offline release-candidate verifier and isolated installed-wheel
+  checks for version `0.9.0`, protocol `2024-11-05`, and exactly seventeen
+  tools.
+- [x] Pass bounded credential, private-path, local-state, image, model-weight,
+  temporary-client, dependency, and `git diff --check` scans.
 
-## Evidence gate
+## Evidence Gate
 
-- [x] The retained Codex `0.7.0` generation is historical evidence and is not a v0.8 release-set record.
-- [x] The retained Codex `0.8.0` workflow-onboarding session is zero-GPU evidence and is not generation evidence.
-- [x] A current-v0.8 Codex managed-MCP live gate and its separately approved bounded replacement produced two private, reviewed, ineligible runs. They remain fail-closed local development evidence and not publishable release-set artifacts.
-- [ ] Claude Code hosted generation remains pending, and no publishable current-v0.8 named-client generation release set is retained.
-- [x] One historical ordinary-route SDXL root retains its original PNG and MCP result, passes full-resolution structured review, and is finalized by a later byte-bound user confirmation.
-- [x] The historical ordinary-route public demo validates portably under `docs/demo/real/`, including public rights, exact artifact hashes, route identity, and sanitized client binding.
-- [x] README evidence appears before the simulated protocol material and is derived from the validated manifest.
-- [x] Regional and two-stage routes remain labeled experimental, outside the golden path and release blockers, with no visual-quality improvement claim.
+- [x] The retained Codex `0.7.0` generation and `0.8.0` onboarding records
+  remain historical evidence and are not relabeled as v0.9 acceptance.
+- [x] A local v0.9 Windows/NVIDIA acceptance finalized one reviewed
+  non-human environment PNG through managed ComfyUI and the real MCP path.
+- [x] The accepted local source and final PNG bytes are identical at
+  `1216x832`, 1,403,658 bytes, with SHA-256
+  `f999cf440f1557017b0b1dd16d5dd1d4bddc3bac63d30b9aaa8b4e9c6f1cf61b`.
+- [ ] The accepted environment run remains local pending a separate sanitized
+  export, public-rights validation, and portable evidence check. It is not yet
+  a publishable release-set artifact.
+- [x] Two private character runs remain ineligible negative evidence. Strict
+  prominent-human anatomy acceptance was not established, and neither image
+  is a publishable release-set artifact or may be used as a release or
+  promotional asset. They remain not publishable release-set artifacts.
+- [ ] Claude Code hosted generation remains pending.
+- [x] Regional and two-stage routes remain experimental, outside the golden
+  path, and unsupported by a visual-quality improvement claim.
 
-## Publication gate
+## Publication Gate
 
-- [x] The genuine-image social preview is generated, validated at 1280x640, and visually reviewed without mutating remote metadata.
-- [x] GitHub Release publication received explicit authority; other remote metadata changes remain independently controlled.
-- [x] README, changelog, package metadata, plugin metadata, `server.json`, GitHub copy, directory copy, and release notes agree on version `0.8.3`, exactly seventeen tools, three backends, the ordinary golden path, and open limitations.
-- [x] Windows and Ubuntu jobs on Python 3.11 and 3.12 are green at exact release commit `6627838`.
-- [x] The exact locally verified wheel was published without rebuilding, and PyPI reports the matching 260,937-byte SHA-256 identity.
-- [x] The official MCP Registry record is active and resolves version `0.8.3` to the exact PyPI package, `uvx` runtime, positional `serve` argument, and stdio transport.
-- [x] Tag `v0.8.3`, the public non-prerelease GitHub Release, package URL, and repository evidence URLs resolve to the exact verified release state.
-- [x] The public Registry API returns exactly one matching `0.8.3` record with `status: active` and `isLatest: true`.
-- [x] The repository description and all eight prepared GitHub topics are applied and verified through the public repository API.
-- [ ] Remote social-preview metadata remains pending; the validated local preview asset has not been uploaded.
-- [ ] Directory submissions remain incomplete: `awesome-mcp-servers` PR [#11452](https://github.com/punkpeye/awesome-mcp-servers/pull/11452) is open with `check-submission` passing, while Glama remains unsubmitted because its current Add Server action requires an unavailable interactive browser surface.
-- [x] The earlier pessimistic forecast is retained as planning evidence, while the approved post-release measurement policy supersedes it as a publication gate.
+- [ ] README, changelog, package metadata, plugin metadata, `server.json`,
+  release copy, and directory copy agree on `0.9.0`, exactly seventeen tools,
+  the ordinary golden path, guided-bootstrap scope, and open limitations.
+- [ ] Windows and Ubuntu CI on Python 3.11 and 3.12 are green at the exact
+  frozen release commit.
+- [ ] Push the exact commit without rebuilding the verified wheel.
+- [ ] Publish the exact wheel to PyPI and verify its public SHA-256.
+- [ ] Publish the matching MCP Registry descriptor and verify the resolved
+  package, positional `serve` argument, stdio transport, and active version.
+- [ ] Create tag `v0.9.0` and the non-prerelease GitHub Release from the same
+  commit and wheel identity.
+- [ ] Update the existing `awesome-mcp-servers` submission and separately
+  decide whether to submit Glama.
+- [ ] Review and upload the social preview under a separate remote-metadata
+  publication action.
+- [ ] Prepare, review, and publish Bilibili material only from approved public
+  assets. Do not use either rejected character image.
+
+Public `v0.8.3` remains the current released package until every v0.9
+publication item above is completed. No old commit, wheel, proposal, route,
+prompt ID, approval, or image can substitute for a fresh v0.9 publication
+identity.
 
 ## Post-release adoption measurement
 
-- [x] Campaign `v0.8.3-release-364342670` is anchored to the formal GitHub Release publication time and recorded a truthful degraded baseline of zero Stars at `2026-08-03T16:50:55Z`, 37 minutes later. It is usable but must never be presented as an on-time publication count.
-- [ ] During the inclusive 24-hour T+30 collection window, append the repository-level Star total and validate the complete hash chain.
-- [ ] Measure the floor as T+30 total Stars minus baseline total Stars; `100 net-new GitHub Stars` is the minimum acceptable first-month outcome, not the target, and the operating target remains above it.
-- [ ] Record `goal_met`, `goal_missed`, or `measurement_incomplete` without interpolation or stargazer identities; an actual result below the floor is `goal_missed` and requires continued iteration, while a missed or incomplete result does not retract the Release.
+- [x] Campaign `v0.8.3-release-364342670` remains anchored to the historical
+  formal GitHub Release publication time and retains its truthful degraded
+  zero-Star baseline recorded 37 minutes after publication.
+- [ ] Complete its T+30 observation within the documented inclusive window or
+  retain `measurement_incomplete`; do not reconstruct publication-time data.
+- [ ] Treat `100 net-new GitHub Stars` as a first-month planning floor, not a
+  guarantee, quality result, or publication gate.
 
-## Still pending after release
+## Open Limitations
 
 - Complete retained 9+3 real host/vision acceptance.
-- Additional named-client coverage beyond Codex and Claude Code.
-- Additional publishable real-model routes beyond the bounded SDXL showcase.
-- Measured image quality, latency, performance, and VRAM evidence.
+- Additional named-client generation coverage beyond Codex.
+- Sanitized public export of the accepted v0.9 environment result.
+- Candidate-grade prominent-human anatomy on the current SDXL base route.
+- Measured image quality, latency, performance, concurrency, and VRAM evidence.
