@@ -112,15 +112,15 @@ class CliTests(unittest.TestCase):
         self.assertEqual(report["next_action"], "local-gpu-imagegen bootstrap plan --client codex")
         self.assertFalse(root.exists())
 
-    def test_bootstrap_status_distinguishes_installed_recoverable_and_unknown_evidence(self) -> None:
+    def test_bootstrap_status_distinguishes_evidence_and_routes_next_actions(self) -> None:
         from local_gpu_imagegen import cli
 
         cases = (
-            ("completed", "installed"),
-            ("failed", "recoverable"),
-            (None, "unknown"),
+            ("completed", "installed", "local-gpu-imagegen setup codex --apply"),
+            ("failed", "recoverable", "local-gpu-imagegen bootstrap plan --client codex"),
+            (None, "unknown", "local-gpu-imagegen bootstrap plan --client codex"),
         )
-        for transaction_status, expected_status in cases:
+        for transaction_status, expected_status, expected_next_action in cases:
             with self.subTest(transaction_status=transaction_status), tempfile.TemporaryDirectory() as directory:
                 paths = self._bootstrap_paths(Path(directory) / "bootstrap")
                 self._write_bootstrap_evidence(paths, transaction_status)
@@ -134,6 +134,7 @@ class CliTests(unittest.TestCase):
             report = json.loads(output.getvalue())
             self.assertEqual(exit_code, 0)
             self.assertEqual(report["status"], expected_status)
+            self.assertEqual(report["next_action"], expected_next_action)
 
     def test_bootstrap_plan_displays_effects_and_requires_later_confirmation(self) -> None:
         from local_gpu_imagegen import cli

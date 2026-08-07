@@ -523,7 +523,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "status": state["status"],
                             "reason_codes": state["reason_codes"],
                             "install_root": str(paths.install),
-                            "next_action": "local-gpu-imagegen bootstrap plan --client codex",
+                            "next_action": (
+                                "local-gpu-imagegen setup codex --apply"
+                                if state["status"] == "installed"
+                                else "local-gpu-imagegen bootstrap plan --client codex"
+                            ),
                         }
                     )
                 )
