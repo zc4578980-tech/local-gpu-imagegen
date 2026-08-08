@@ -179,6 +179,7 @@ class BootstrapServiceTests(unittest.TestCase):
         plan_path.unlink()
         return write_rebound_plan(state_dir, record)
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_missing_portable_and_model_complete_fixed_install_without_starting_backend(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -237,6 +238,7 @@ class BootstrapServiceTests(unittest.TestCase):
             self.assertEqual(repeated["setup"], result["setup"])
             self.assertEqual(downloader.call_count, 2)
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_missing_pillow_runtime_smoke_rejects_install_before_model_download(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -291,6 +293,7 @@ class BootstrapServiceTests(unittest.TestCase):
             self.assertEqual(command[1:], ["-I", "-c", "import PIL"])
             self.assertLessEqual(runtime_smoke.call_args.kwargs["timeout"], 15.0)
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_model_failure_retains_promoted_portable_and_consumes_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -389,6 +392,7 @@ class BootstrapServiceTests(unittest.TestCase):
             )
             downloader.assert_not_called()
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_disappeared_valid_model_persists_missing_and_replays_as_consumed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -601,6 +605,7 @@ class BootstrapServiceTests(unittest.TestCase):
             )
             self.assertEqual(destination.read_bytes(), b"unowned-model")
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_keyboard_interrupt_after_portable_commit_leaves_truthful_resumable_journal(self) -> None:
         import local_gpu_imagegen.bootstrap_service as bootstrap_service
 
@@ -684,6 +689,7 @@ class BootstrapServiceTests(unittest.TestCase):
                 transaction["recoverable_next_actions"],
             )
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_system_exit_after_model_commit_leaves_complete_retained_install_journal(self) -> None:
         import local_gpu_imagegen.bootstrap_service as bootstrap_service
 
@@ -746,6 +752,7 @@ class BootstrapServiceTests(unittest.TestCase):
                 [],
             )
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_replay_requires_fresh_plan_after_portable_promotion_journal_gap(self) -> None:
         import local_gpu_imagegen.bootstrap_service as bootstrap_service
 
@@ -808,6 +815,7 @@ class BootstrapServiceTests(unittest.TestCase):
                 ["create_new_bootstrap_plan"],
             )
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_replay_requires_fresh_plan_after_model_promotion_journal_gap(self) -> None:
         import local_gpu_imagegen.bootstrap_service as bootstrap_service
 
@@ -1278,6 +1286,7 @@ class BootstrapServiceTests(unittest.TestCase):
             self.assertEqual(result["error"], {"code": "unsafe_model_destination"})
             self.assertEqual(list(external.rglob("*.safetensors")), [])
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_model_parent_swap_after_handle_promotion_never_writes_external_model(self) -> None:
         import local_gpu_imagegen.bootstrap_service as bootstrap_service
 
@@ -1449,6 +1458,7 @@ class BootstrapServiceTests(unittest.TestCase):
             if retained_staging:
                 self.assertEqual(list(retained_staging[0].iterdir()), [])
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_exact_confirmation_executes_once_and_then_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1744,6 +1754,7 @@ class BootstrapServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "invalid_bootstrap_plan")
         downloader.assert_not_called()
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_concurrent_confirmation_cannot_enter_downloader_twice(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1878,6 +1889,7 @@ class BootstrapServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "invalid_bootstrap_plan")
         downloader.assert_not_called()
 
+    @unittest.skipUnless(os.name == "nt", "Windows bootstrap installation contract")
     def test_edited_completed_transaction_is_not_treated_as_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

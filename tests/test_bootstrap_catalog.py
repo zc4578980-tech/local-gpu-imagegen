@@ -448,10 +448,18 @@ class BootstrapPlannerTests(unittest.TestCase):
     def test_default_bootstrap_paths_are_user_local_and_do_not_create_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             local_app_data = Path(temporary_directory) / "LocalAppData"
-            with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}):
+            xdg_data_home = Path(temporary_directory) / "xdg-data"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "LOCALAPPDATA": str(local_app_data),
+                    "XDG_DATA_HOME": str(xdg_data_home),
+                },
+            ):
                 paths = default_bootstrap_paths()
 
-            expected_root = local_app_data.resolve() / "local-gpu-imagegen" / "bootstrap"
+            expected_base = local_app_data if os.name == "nt" else xdg_data_home
+            expected_root = expected_base.resolve() / "local-gpu-imagegen" / "bootstrap"
             self.assertEqual(paths.root, expected_root)
             self.assertEqual(paths.cache, expected_root / "cache")
             self.assertEqual(paths.install, expected_root / "runtime")

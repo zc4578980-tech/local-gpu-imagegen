@@ -91,6 +91,32 @@ def _assert_ordered(text: str, values: tuple[str, ...]) -> None:
 
 
 class PublicDocumentationTests(unittest.TestCase):
+    def test_release_platform_scope_is_windows_first_with_linux_contract_checks(self) -> None:
+        metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        chinese_readme = CHINESE_README.read_text(encoding="utf-8")
+        normalized_readme = " ".join(readme.split())
+        workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(
+            encoding="utf-8"
+        )
+        checklist = RELEASE_CHECKLIST.read_text(encoding="utf-8")
+
+        self.assertIn("Operating System :: Microsoft :: Windows", metadata)
+        self.assertNotIn("Operating System :: OS Independent", metadata)
+        self.assertIn("windows-latest", workflow)
+        self.assertIn("ubuntu-latest", workflow)
+        self.assertIn("Run Windows full suite", workflow)
+        self.assertIn("Run Ubuntu platform-neutral contracts", workflow)
+        self.assertIn("Windows full suite", checklist)
+        self.assertIn("Ubuntu platform-neutral contracts", checklist)
+        self.assertIn(
+            "supported host scope is Windows 10/11 x64 with NVIDIA",
+            normalized_readme,
+        )
+        self.assertIn("not a separate Linux edition", normalized_readme)
+        self.assertIn("受支持主机范围是 Windows 10/11 x64 与 NVIDIA", chinese_readme)
+        self.assertIn("不代表支持 Linux 托管生图", chinese_readme)
+
     def test_bootstrap_doc_binds_current_v090_candidate(self) -> None:
         document = (ROOT / "docs" / "bootstrap-windows.md").read_text(encoding="utf-8")
         self.assertIn("current local-gpu-imagegen 0.9.0", document)
@@ -501,16 +527,11 @@ class PublicDocumentationTests(unittest.TestCase):
             first_viewport.index("Bring Your Own ComfyUI Workflow"),
         )
 
-    def test_readme_first_viewport_uses_validated_evidence(self) -> None:
+    def test_readme_first_viewport_uses_workflow_evidence_not_retired_visual(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        first_viewport = "\n".join(readme.splitlines()[:55])
-        showcase = real_showcase()
-        image_sha256 = showcase["final"]["image_sha256"]
+        first_viewport = "\n".join(readme.splitlines()[:70])
 
         required = (
-            "docs/demo/real/final.png",
-            image_sha256,
-            "`sdxl-txt2img`",
             "uvx local-gpu-imagegen verify",
             "uvx local-gpu-imagegen setup codex --apply",
             "docs/quickstart.md",
@@ -520,9 +541,10 @@ class PublicDocumentationTests(unittest.TestCase):
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, first_viewport)
-        self.assertLess(
-            readme.index("docs/demo/real/final.png"),
-            readme.index("docs/demo/preview-loop.gif"),
+        self.assertNotIn("docs/demo/real/final.png", readme)
+        self.assertNotIn(
+            "36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4",
+            readme,
         )
 
     def test_quickstart_is_bounded_reversible_and_private_value_free(self) -> None:
@@ -552,6 +574,7 @@ class PublicDocumentationTests(unittest.TestCase):
 
     def test_launch_docs_lead_with_supported_workflow_onboarding(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        normalized_readme = " ".join(readme.split())
         quickstart = QUICKSTART.read_text(encoding="utf-8")
         for required in (
             "supported ordinary ComfyUI API workflow",
@@ -566,8 +589,8 @@ class PublicDocumentationTests(unittest.TestCase):
             quickstart.index("local_gpu_inspect_workflow"),
             quickstart.index("Profile-Driven Run"),
         )
-        self.assertIn("did not submit a prompt", readme)
-        self.assertIn("separate retained Codex generation", readme)
+        self.assertIn("did not submit a prompt", normalized_readme)
+        self.assertIn("not use them as promotional visuals", normalized_readme)
 
     def test_quality_control_rejects_semantic_substitution(self) -> None:
         quality = QUALITY_CONTROL.read_text(encoding="utf-8")
@@ -1053,14 +1076,9 @@ class PublicDocumentationTests(unittest.TestCase):
             (client_root / name).is_file()
             for name in ("codex-v070.json", "claude-code-v070.json")
         )
-        if real_demo_ready:
-            self.assertIn("docs/demo/real/final.png", readme)
-            self.assertLess(
-                readme.index("docs/demo/real/final.png"),
-                readme.index("docs/demo/preview-loop.gif"),
-            )
-        else:
+        if not real_demo_ready:
             self.assertIn("Genuine local-GPU result: release gate pending", readme)
+        self.assertNotIn("docs/demo/real/final.png", readme)
         if named_clients_ready:
             self.assertIn("retained named-client sessions", client_docs)
         else:

@@ -36,6 +36,12 @@ install a backend, download a model, convert UI-format JSON, or execute a
 workflow that requires unsupported custom nodes. An explicit Windows portable
 managed-start option is documented below.
 
+The v0.9 supported host scope is Windows 10/11 x64 with NVIDIA. The single
+`py3-none-any` wheel describes pure-Python packaging, not a separate Linux
+edition or a claim of Linux managed-generation support. Ubuntu CI verifies the
+platform-neutral MCP, packaging, existing-backend, and unsupported-platform
+contracts; Windows runs the complete portable-bootstrap suite.
+
 ComfyUI generates the pixels. Local GPU Imagegen controls authority,
 reproducibility, review, and recovery around that generation.
 
@@ -43,11 +49,11 @@ reproducibility, review, and recovery around that generation.
 
 ## Bring Your Own ComfyUI Workflow
 
-The retained Codex workflow-onboarding session inspected and registered a supported graph, then bound its exact model components; it did not submit a prompt or use the GPU. The image below comes from a separate retained Codex generation through the ordinary reviewed route. These are distinct evidence records, and neither proves image-quality superiority.
-
-![A solitary lighthouse generated through the validated ordinary local SDXL route](docs/demo/real/final.png)
-
-Original finalized 1024x1024 PNG from ordinary `sdxl-txt2img`; SHA-256 `36b5de509a2da8c75571aac436d45d8a31a7a8efc77439abee9e0918191572f4`. Inspect the [validated showcase manifest](docs/demo/real/showcase-manifest.json) for the route, prompts, settings, review, client binding, rights, and limitations.
+The retained Codex workflow-onboarding session inspected and registered a
+supported graph, then bound its exact model components; it did not submit a
+prompt or use the GPU. Historical generated-image records remain available
+for technical audit, but v0.9 does not use them as promotional visuals or as
+evidence of image-quality superiority.
 
 This path requires an existing local image backend and model; there are no silent model downloads or switches.
 
@@ -97,7 +103,7 @@ present in the selected portable installation.
 
 ![Simulated brief-to-candidate protocol loop](docs/demo/preview-loop.gif)
 
-> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. It remains secondary to the genuine result above. Model-free tests cover the protocol and backend contracts, not image quality, broader named-client generation, performance, or complete 9+3 acceptance.
+> The animation is a deterministic simulated protocol demonstration, not model output or image-quality evidence. It remains secondary to the protocol and test evidence. Model-free tests cover the protocol and backend contracts, not image quality, broader named-client generation, performance, or complete 9+3 acceptance.
 
 For Claude Code, use `uvx local-gpu-imagegen setup claude-code --apply`. Remove the entries with `codex mcp remove local-gpu-imagegen` or `claude mcp remove --scope user local-gpu-imagegen`. Use `uvx local-gpu-imagegen doctor` to inspect local backend readiness. The setup contracts and equivalent stdio launches are verified; one Codex installed-client generation is retained, while Claude Code generation remains pending. See [Client compatibility](docs/client-compatibility.md).
 
@@ -473,9 +479,9 @@ Pending before a `1.0` claim:
 - measured performance or VRAM data
 - any production-readiness claim
 
-The Mocked/model-free matrix is deterministic protocol evidence, not the retained real Codex/vision/GPU result. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. Local Z-Image and Anima calls through the project adapter have been observed, but they are local development validation rather than public acceptance evidence. One ordinary-route SDXL MCP result from Codex is finalized, sanitized, and retained under `docs/demo/real/`; its disclosed limitations include a red-purple palette, no distinct directional beacon beam, one extra navigation beacon, and minor railing/cliff-ladder artifacts. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No production, performance, VRAM, image-quality superiority, guaranteed Star, or broader named-client generation claim is made.
+The Mocked/model-free matrix is deterministic protocol evidence, not the retained real Codex/vision/GPU result. It exercises nine fixed briefs and three child revisions with a fake backend; it does not prove visual quality. Local Z-Image and Anima calls through the project adapter have been observed, but they are local development validation rather than public acceptance evidence. Historical generated-image records remain technical audit material and are not v0.9 promotional visuals. The test suite does not load a production model, GPU backend, or Real-ESRGAN binary. No production, performance, VRAM, image-quality superiority, guaranteed Star, or broader named-client generation claim is made.
 
-The repository retains one bounded publishable ComfyUI result but no complete real 9+3 image-acceptance matrix or second publishable route. It makes no generalized image-quality, performance, or VRAM claim. Use the readiness commands above to inspect the target environment.
+The repository has no approved v0.9 promotional image and no complete real 9+3 image-acceptance matrix. It makes no generalized image-quality, performance, or VRAM claim. Use the readiness commands above to inspect the target environment.
 
 ## Documentation
 

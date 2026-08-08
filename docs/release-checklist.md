@@ -80,8 +80,11 @@ result does not retract the Release.
 - [ ] README, changelog, package metadata, plugin metadata, `server.json`,
   release copy, and directory copy agree on `0.9.0`, exactly seventeen tools,
   the ordinary golden path, guided-bootstrap scope, and open limitations.
-- [ ] Windows and Ubuntu CI on Python 3.11 and 3.12 are green at the exact
-  frozen release commit.
+- [ ] The Windows full suite and Ubuntu platform-neutral contracts are green
+  on Python 3.11 and 3.12 at the exact frozen release commit. Windows-only
+  portable bootstrap installation tests must be explicit documented skips on
+  Ubuntu; protocol, packaging, installed-wheel, existing-backend, and
+  unsupported-platform behavior must still pass there.
 - [ ] Push the exact commit without rebuilding the verified wheel.
 - [ ] Publish the exact wheel to PyPI and verify its public SHA-256.
 - [ ] Publish the matching MCP Registry descriptor and verify the resolved

@@ -16,6 +16,13 @@ All notable changes will be documented in this file.
 
 ### Fixed
 
+- Defined v0.9 as Windows 10/11 x64 NVIDIA host support while retaining Ubuntu
+  CI for platform-neutral MCP, packaging, existing-backend, and structured
+  unsupported-platform contracts. Windows-only portable installation tests are
+  explicit Ubuntu skips rather than an implied Linux bootstrap implementation.
+- Removed the historical lighthouse result from README presentation. Historical
+  demo files remain technical audit records and are not v0.9 promotional
+  visuals.
 - Hardened portable ComfyUI extraction for BCJ2 archives, path-case
   preservation, filesystem capability races, rollback wording, NVIDIA host
   detection, and setup-to-managed-startup routing.

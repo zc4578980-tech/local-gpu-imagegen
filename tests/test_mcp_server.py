@@ -132,10 +132,20 @@ class McpServerUnitTests(unittest.TestCase):
             "webui_ready": False,
             "comfyui_ready": False,
         }
-        with patch.object(
-            mcp_server,
-            "run_script",
-            return_value=(1, json.dumps(readiness), ""),
+        with (
+            patch.object(
+                mcp_server,
+                "run_script",
+                return_value=(1, json.dumps(readiness), ""),
+            ),
+            patch.object(mcp_server.sys, "platform", "win32"),
+            patch("platform.machine", return_value="AMD64"),
+            patch.object(
+                mcp_server.sys,
+                "getwindowsversion",
+                return_value=SimpleNamespace(build=26100),
+                create=True,
+            ),
         ):
             result = mcp_server.handle_tool_call({"name": "local_gpu_imagegen_check"})
 
@@ -167,19 +177,40 @@ class McpServerUnitTests(unittest.TestCase):
         with (
             patch.object(mcp_server.sys, "platform", "win32"),
             patch("platform.machine", return_value="ARM64"),
-            patch.object(mcp_server.sys, "getwindowsversion", return_value=SimpleNamespace(build=26100)),
+            patch.object(
+                mcp_server.sys,
+                "getwindowsversion",
+                return_value=SimpleNamespace(build=26100),
+                create=True,
+            ),
         ):
             guidance = mcp_server.bootstrap_guidance(readiness)
 
         self.assertEqual(guidance["support_status"], "unsupported")
         self.assertIn("unsupported_architecture", guidance["reason_codes"])
 
+    def test_bootstrap_guidance_rejects_non_windows_without_windows_api(self) -> None:
+        readiness = {"cuda": {"available": True}, "comfyui_ready": False}
+        with (
+            patch.object(mcp_server.sys, "platform", "linux"),
+            patch("platform.machine", return_value="x86_64"),
+        ):
+            guidance = mcp_server.bootstrap_guidance(readiness)
+
+        self.assertEqual(guidance["support_status"], "unsupported")
+        self.assertIn("unsupported_platform", guidance["reason_codes"])
+
     def test_bootstrap_guidance_rejects_unsupported_windows_build(self) -> None:
         readiness = {"cuda": {"available": True}, "comfyui_ready": False}
         with (
             patch.object(mcp_server.sys, "platform", "win32"),
             patch("platform.machine", return_value="AMD64"),
-            patch.object(mcp_server.sys, "getwindowsversion", return_value=SimpleNamespace(build=19044)),
+            patch.object(
+                mcp_server.sys,
+                "getwindowsversion",
+                return_value=SimpleNamespace(build=19044),
+                create=True,
+            ),
         ):
             guidance = mcp_server.bootstrap_guidance(readiness)
 

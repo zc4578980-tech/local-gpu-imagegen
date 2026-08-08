@@ -15,6 +15,11 @@ uvx local-gpu-imagegen verify
 uvx local-gpu-imagegen setup codex --apply
 ```
 
+v0.9 的受支持主机范围是 Windows 10/11 x64 与 NVIDIA。项目仍发布一个纯 Python
+的 `py3-none-any` wheel；这不代表另有 Linux 版本，也不代表支持 Linux 托管生图。
+Ubuntu CI 只验证平台中立的 MCP、打包、已有后端与不支持平台安全退出合同；Windows
+运行完整 portable bootstrap 套件。
+
 setup 会保存一个已经解析、固定当前版本的启动器，等价命令为
 `uvx --from local-gpu-imagegen==0.9.0 local-gpu-imagegen serve`；它不依赖临时
 `uvx` 环境中的控制台脚本。如果旧条目报告 `client_setup_drift`，请只移除对应客户端

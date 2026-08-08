@@ -533,6 +533,7 @@ class PortableExtractionTests(unittest.TestCase):
             archive.writeall(source, arcname="ComfyUI_windows_portable")
         return archive_path
 
+    @unittest.skipUnless(os.name == "nt", "Windows portable promotion contract")
     def test_verified_archive_snapshot_uses_the_selected_install_volume(self) -> None:
         import local_gpu_imagegen._filesystem_capability as filesystem_capability
 
@@ -650,6 +651,7 @@ class PortableExtractionTests(unittest.TestCase):
                 [],
             )
 
+    @unittest.skipUnless(os.name == "nt", "Windows portable promotion contract")
     def test_extraction_uses_the_exact_verified_archive_handle_after_path_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -684,6 +686,7 @@ class PortableExtractionTests(unittest.TestCase):
                 b"approved",
             )
 
+    @unittest.skipUnless(os.name == "nt", "Windows portable promotion contract")
     def test_safe_archive_is_staged_validated_and_atomically_placed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -706,6 +709,7 @@ class PortableExtractionTests(unittest.TestCase):
                 [],
             )
 
+    @unittest.skipUnless(os.name == "nt", "Windows portable promotion contract")
     def test_mixed_case_archive_paths_preserve_physical_casing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -840,6 +844,7 @@ class PortableExtractionTests(unittest.TestCase):
         self.assertEqual(open_members, 0)
         self.assertEqual(peak_open_members, 1)
 
+    @unittest.skipUnless(os.name == "nt", "Windows portable promotion contract")
     def test_portable_extraction_never_uses_path_based_extractall(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1153,6 +1158,7 @@ class PortableExtractionTests(unittest.TestCase):
                 [],
             )
 
+    @unittest.skipUnless(os.name == "nt", "Windows portable promotion contract")
     def test_successful_promotion_is_not_reported_failed_when_staging_cleanup_races(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
@@ -1240,6 +1246,7 @@ class PortableExtractionTests(unittest.TestCase):
             self.assertTrue((destination / "ComfyUI" / "main.py").is_file())
             self.assertEqual(list(external.rglob("*")), [])
 
+    @unittest.skipUnless(os.name == "nt", "Windows portable promotion contract")
     def test_post_promotion_parent_swap_never_cleans_external_paths(self) -> None:
         import local_gpu_imagegen.bootstrap_download as bootstrap_download
 
