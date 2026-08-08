@@ -11,6 +11,34 @@ Brief first, resolve one exact local route, confirm after displaying it, then ru
 
 The plugin exposes exactly seventeen MCP tools: `local_gpu_imagegen_check`, `local_gpu_generate_image`, `local_gpu_discover_models`, `local_gpu_inspect_workflow`, `local_gpu_register_workflow`, `local_gpu_list_profiles`, `local_gpu_set_model_trust`, `local_gpu_recommend_models`, `local_gpu_start_run`, `local_gpu_get_run`, `local_gpu_branch_run`, `local_gpu_prepare_mask`, `local_gpu_confirm_mask`, `local_gpu_generate_round`, `local_gpu_record_review`, `local_gpu_finalize_run`, and `local_gpu_cleanup_run`. Use the fifteen high-level discovery/onboarding/profile/run/revision tools for adaptive runs. The check and direct-generation tools are compatibility tools, not shortcuts around briefing, route resolution, and confirmation.
 
+## Runtime Recovery
+
+Treat managed ComfyUI startup and model inventory as separate boundaries. A
+healthy endpoint must pass both `/system_stats` and `/queue`; a port listener by
+itself is not reusable. API discovery reads `/object_info` choices and does not
+require a checkpoint to be loaded into VRAM. Never advise the user to load a
+checkpoint merely because discovery failed.
+
+- For `endpoint_unreachable`, inspect the bounded backend logs and the returned
+  endpoint, then retry only after the configured root and loopback endpoint are
+  still exact.
+- For `startup_conflict`, retry the same managed request. Another MCP instance
+  may be starting the identical root and endpoint; do not launch ComfyUI
+  manually, choose another port, or report missing models.
+- For `startup_process_exited`, use the returned stderr summary and log paths to
+  identify the startup failure, correct that failure, then retry startup. Do not
+  wait out the full configured timeout after the child has exited.
+- For `api_inventory_failed`, retry API inventory and inspect ComfyUI logs if it
+  fails again. The endpoint is reachable, but model availability is unknown;
+  do not call it an empty installation.
+- For `no_models_installed`, install a supported model through the explicit
+  bootstrap/download and license flow, then retry API inventory. Report this
+  error only after every required `/object_info` loader inventory succeeded and
+  the checkpoint and split-model choices were all empty.
+
+Discovery recovery remains read-only: do not submit `/prompt`, load model
+weights, or use the GPU while diagnosing startup and inventory.
+
 ## Guided Bootstrap
 
 When `local_gpu_imagegen_check` reports `ready: false`, treat its `bootstrap`

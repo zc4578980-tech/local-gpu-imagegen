@@ -140,6 +140,23 @@ class SkillContractTests(unittest.TestCase):
         cls.text = SKILL_PATH.read_text(encoding="utf-8")
         cls.plugin = json.loads(PLUGIN_PATH.read_text(encoding="utf-8"))
 
+    def test_cold_start_and_inventory_errors_have_exact_recovery_actions(self) -> None:
+        section = _section(self.text, "## Runtime Recovery", "## Guided Bootstrap")
+        expected = {
+            "`endpoint_unreachable`": "inspect the bounded backend logs",
+            "`startup_conflict`": "retry the same managed request",
+            "`startup_process_exited`": "use the returned stderr summary",
+            "`api_inventory_failed`": "retry API inventory",
+            "`no_models_installed`": "install a supported model",
+        }
+        for code, action in expected.items():
+            self.assertIn(code, section)
+            self.assertIn(action, section)
+        self.assertIn("`/system_stats` and `/queue`", section)
+        self.assertIn("`/object_info`", section)
+        self.assertNotIn("load a checkpoint first", section.lower())
+        self.assertNotIn("先加载 checkpoint", section.lower())
+
     def test_guided_bootstrap_requires_a_later_confirmation_and_fresh_discovery(self) -> None:
         section = _section(self.text, "## Guided Bootstrap", "## Codex-First Workflow Runner")
         _assert_ordered(section, (

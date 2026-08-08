@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import secrets
+import shutil
 import subprocess
 import time
 from collections.abc import Callable, MutableMapping
@@ -11,16 +15,28 @@ from urllib.parse import urlsplit
 
 from .backends.comfyui import ComfyUIAdapter
 from .errors import AssetEngineError
+from .run_store import is_process_alive, process_identity
 from .trust_registry import default_state_dir
 
 
 DEFAULT_COMFYUI_URL = "http://127.0.0.1:8188"
 DEFAULT_START_TIMEOUT_SECONDS = 120.0
 MAX_START_TIMEOUT_SECONDS = 300.0
+STARTUP_LOCK_OWNER_GRACE_SECONDS = 2.0
 
 
 class BackendLifecycleError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        code: str,
+        *,
+        details: dict[str, object] | None = None,
+        recoverable_next_actions: list[str] | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.code = code
+        self.details = details or {}
+        self.recoverable_next_actions = recoverable_next_actions or []
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +201,68 @@ class ComfyUIProcessSupervisor:
             self.status = "reused_existing"
             return self.report(readiness)
 
+        try:
+            lock_dir = self._startup_lock_dir()
+        except BackendLifecycleError:
+            self._restore_environment()
+            raise
+        deadline = time.monotonic() + self.config.timeout_seconds
+        waited_for_owner = False
+        owner_token = secrets.token_hex(16)
+        while True:
+            try:
+                lock_dir.mkdir(parents=False)
+                break
+            except FileExistsError:
+                waited_for_owner = True
+                readiness = self.probe(self.config.base_url, 1.0)
+                if readiness.get("available") is True:
+                    self.status = "waited_for_existing"
+                    return self.report(readiness)
+                if self._reclaim_stale_startup_lock(lock_dir):
+                    continue
+                if time.monotonic() >= deadline:
+                    self.status = "startup_conflict"
+                    self._restore_environment()
+                    raise BackendLifecycleError(
+                        "startup_conflict",
+                        details={"base_url": self.config.base_url},
+                        recoverable_next_actions=["retry_after_other_startup"],
+                    )
+                time.sleep(0.05)
+            except OSError as exc:
+                self.status = "launch_failed"
+                self._restore_environment()
+                raise BackendLifecycleError("comfyui_autostart_lock_unavailable") from exc
+
+        try:
+            (lock_dir / "owner.json").write_text(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "process_identity": process_identity(os.getpid()),
+                        "owner_token": owner_token,
+                        "base_url": self.config.base_url,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            readiness = self.probe(self.config.base_url, 1.0)
+            if readiness.get("available") is True:
+                self.status = (
+                    "waited_for_existing" if waited_for_owner else "reused_existing"
+                )
+                return self.report(readiness)
+            return self._launch_and_wait(deadline, readiness)
+        finally:
+            self._release_startup_lock(lock_dir, owner_token)
+
+    def _launch_and_wait(
+        self,
+        deadline: float,
+        readiness: dict[str, object],
+    ) -> dict[str, object]:
+
         log_dir = self.state_dir / "backend-logs"
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -220,7 +298,145 @@ class ComfyUIProcessSupervisor:
             self._restore_environment()
             raise BackendLifecycleError("comfyui_autostart_launch_failed") from exc
         self.status = "starting"
-        return self.report(readiness)
+        while True:
+            returncode = self.process.poll()
+            if returncode is not None:
+                summary = self._stderr_summary()
+                conflict = (
+                    "already in use" in summary.lower()
+                    or "could not acquire lock" in summary.lower()
+                )
+                if conflict:
+                    readiness = self.probe(self.config.base_url, 1.0)
+                    if readiness.get("available") is True:
+                        self.process = None
+                        self.status = "reused_after_startup_conflict"
+                        return self.report(readiness)
+                self.status = "startup_conflict" if conflict else "startup_process_exited"
+                self._restore_environment()
+                code = "startup_conflict" if conflict else "startup_process_exited"
+                raise BackendLifecycleError(
+                    code,
+                    details={
+                        "base_url": self.config.base_url,
+                        "returncode": returncode,
+                        "stderr_summary": summary,
+                    },
+                    recoverable_next_actions=["inspect_backend_logs", "retry_startup"],
+                )
+            readiness = self.probe(self.config.base_url, 1.0)
+            if readiness.get("available") is True:
+                self.status = "started_owned"
+                return self.report(readiness)
+            if time.monotonic() >= deadline:
+                self.status = "endpoint_unreachable"
+                cleanup = self._terminate_unhealthy_owned_process()
+                self._restore_environment()
+                raise BackendLifecycleError(
+                    "endpoint_unreachable",
+                    details={
+                        "base_url": self.config.base_url,
+                        "cleanup_status": cleanup,
+                    },
+                    recoverable_next_actions=["inspect_backend_logs", "retry_startup"],
+                )
+            time.sleep(0.05)
+
+    def _terminate_unhealthy_owned_process(self) -> str:
+        if self.process is None or self.process.poll() is not None:
+            return "already_exited"
+        try:
+            self.process.terminate()
+            self.process.wait(timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return "terminate_failed"
+        return "stopped_unhealthy_owned_process"
+
+    def _startup_lock_dir(self) -> Path:
+        lock_root = self.state_dir / "backend-start-locks"
+        try:
+            lock_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise BackendLifecycleError("comfyui_autostart_lock_unavailable") from exc
+        identity = f"{os.path.normcase(str(self.config.root))}\n{self.config.base_url}"
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+        return lock_root / f"comfyui-{digest}.lock"
+
+    def _stderr_summary(self, max_bytes: int = 4096) -> str:
+        if self.stderr_log is None:
+            return ""
+        try:
+            with self.stderr_log.open("rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                size = stream.tell()
+                stream.seek(max(0, size - max_bytes))
+                return stream.read(max_bytes).decode("utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+
+    def _read_startup_lock_owner(self, lock_dir: Path) -> dict[str, object] | None:
+        try:
+            value = json.loads((lock_dir / "owner.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(value, dict):
+            return None
+        pid = value.get("pid")
+        token = value.get("owner_token")
+        identity = value.get("process_identity")
+        if (
+            not isinstance(pid, int)
+            or isinstance(pid, bool)
+            or pid <= 0
+            or not isinstance(token, str)
+            or not token
+            or (identity is not None and not isinstance(identity, str))
+        ):
+            return None
+        return value
+
+    def _reclaim_stale_startup_lock(self, lock_dir: Path) -> bool:
+        owner = self._read_startup_lock_owner(lock_dir)
+        if owner is None:
+            try:
+                age = time.time() - lock_dir.stat().st_mtime
+            except (FileNotFoundError, OSError):
+                return True
+            if age < STARTUP_LOCK_OWNER_GRACE_SECONDS:
+                return False
+            return self._claim_startup_lock_as_stale(lock_dir)
+        pid = int(owner["pid"])
+        if is_process_alive(pid):
+            recorded_identity = owner.get("process_identity")
+            current_identity = process_identity(pid)
+            if not isinstance(recorded_identity, str) or current_identity is None:
+                return False
+            if recorded_identity == current_identity:
+                return False
+        return self._claim_startup_lock_as_stale(lock_dir)
+
+    def _claim_startup_lock_as_stale(self, lock_dir: Path) -> bool:
+        stale = lock_dir.with_name(
+            f"{lock_dir.name}.stale.{secrets.token_hex(16)}"
+        )
+        try:
+            lock_dir.rename(stale)
+        except (FileNotFoundError, FileExistsError):
+            return True
+        except OSError:
+            return False
+        shutil.rmtree(stale, ignore_errors=True)
+        return True
+
+    def _release_startup_lock(self, lock_dir: Path, owner_token: str) -> None:
+        owner = self._read_startup_lock_owner(lock_dir)
+        if owner is None or owner.get("owner_token") != owner_token:
+            return
+        try:
+            (lock_dir / "owner.json").unlink()
+            lock_dir.rmdir()
+        except (FileNotFoundError, OSError):
+            pass
 
     def close(self) -> dict[str, object]:
         try:

@@ -133,7 +133,21 @@ class ComfyUIAdapter:
     def discover(self) -> list[dict[str, object]]:
         records: list[dict[str, object]] = []
         for loader_class, input_name in COMPONENT_LOADER_INPUTS.items():
-            info = self.client.get_json(f"/object_info/{loader_class}")
+            try:
+                info = self.client.get_json(f"/object_info/{loader_class}")
+            except AssetEngineError as error:
+                raise StateError(
+                    "api_inventory_failed",
+                    "ComfyUI is healthy but its model inventory API failed.",
+                    {
+                        "backend_error": error.code,
+                        "loader_class": loader_class,
+                        "recoverable_next_actions": [
+                            "retry_api_inventory",
+                            "inspect_comfyui_logs",
+                        ],
+                    },
+                ) from error
             names = _loader_choices(info, loader_class, input_name)
             for name in sorted(names):
                 record = validate_discovery_record({
@@ -152,6 +166,22 @@ class ComfyUIAdapter:
                 })
                 record["identity_token"] = identity_token(record)
                 records.append(record)
+        has_primary_model = any(
+            record["metadata"]["loader_class"]
+            in {"CheckpointLoaderSimple", "UNETLoader"}
+            for record in records
+        )
+        if not has_primary_model:
+            raise StateError(
+                "no_models_installed",
+                "ComfyUI inventory succeeded but no supported model files are installed.",
+                {
+                    "recoverable_next_actions": [
+                        "install_supported_model",
+                        "retry_api_inventory",
+                    ]
+                },
+            )
         return records
 
     def layout_capability(self, mode: str) -> dict[str, object]:

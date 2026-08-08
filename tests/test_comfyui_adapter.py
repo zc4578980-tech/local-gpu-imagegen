@@ -563,6 +563,63 @@ class ComfyUIAdapterTests(unittest.TestCase):
         )
         self.assertEqual(records[0]["metadata"]["loader_class"], "UNETLoader")
 
+    def test_discovery_reports_api_inventory_failure_after_healthy_probe(self) -> None:
+        self.assertTrue(self.adapter.probe()["ready"])
+        self.server.routes[("GET", "/object_info/CheckpointLoaderSimple")] = (
+            FakeResponse.json({"error": "inventory unavailable"}, status=500)
+        )
+
+        with self.assertRaises(StateError) as raised:
+            self.adapter.discover()
+
+        self.assertEqual(raised.exception.code, "api_inventory_failed")
+        self.assertEqual(
+            raised.exception.details["recoverable_next_actions"],
+            ["retry_api_inventory", "inspect_comfyui_logs"],
+        )
+        self.assertFalse(any(item["method"] == "POST" for item in self.server.requests))
+
+    def test_discovery_reports_no_models_only_when_all_loader_inventories_are_empty(self) -> None:
+        empty = {
+            loader_class: FakeResponse.json({
+                loader_class: {"input": {"required": {input_name: [[]]}}}
+            })
+            for loader_class, input_name in (
+                ("CheckpointLoaderSimple", "ckpt_name"),
+                ("UNETLoader", "unet_name"),
+                ("CLIPLoader", "clip_name"),
+                ("VAELoader", "vae_name"),
+            )
+        }
+        for loader_class, response in empty.items():
+            self.server.routes[("GET", f"/object_info/{loader_class}")] = response
+
+        with self.assertRaises(StateError) as raised:
+            self.adapter.discover()
+
+        self.assertEqual(raised.exception.code, "no_models_installed")
+        self.assertEqual(
+            raised.exception.details["recoverable_next_actions"],
+            ["install_supported_model", "retry_api_inventory"],
+        )
+        self.assertFalse(any(item["method"] == "POST" for item in self.server.requests))
+
+    def test_auxiliary_files_without_checkpoint_or_unet_are_no_models(self) -> None:
+        for loader_class, input_name in (
+            ("CheckpointLoaderSimple", "ckpt_name"),
+            ("UNETLoader", "unet_name"),
+        ):
+            self.server.routes[("GET", f"/object_info/{loader_class}")] = (
+                FakeResponse.json({
+                    loader_class: {"input": {"required": {input_name: [[]]}}}
+                })
+            )
+
+        with self.assertRaises(StateError) as raised:
+            self.adapter.discover()
+
+        self.assertEqual(raised.exception.code, "no_models_installed")
+
     def test_generate_accepts_reviewed_unet_workflow(self) -> None:
         registry = WorkflowTemplateRegistry(
             ROOT / "workflows" / "comfyui",

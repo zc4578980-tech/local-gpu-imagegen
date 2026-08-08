@@ -642,6 +642,41 @@ class CliTests(unittest.TestCase):
         serve.assert_called_once_with()
         supervisor.close.assert_called_once_with()
 
+    def test_managed_serve_returns_structured_startup_recovery(self) -> None:
+        from local_gpu_imagegen import cli
+        from local_gpu_imagegen.backend_lifecycle import BackendLifecycleError
+
+        supervisor = unittest.mock.MagicMock()
+        supervisor.start.side_effect = BackendLifecycleError(
+            "startup_process_exited",
+            details={"returncode": 1, "stderr_summary": "fatal startup error"},
+            recoverable_next_actions=["inspect_backend_logs", "retry_startup"],
+        )
+        error = io.StringIO()
+        with (
+            patch(
+                "local_gpu_imagegen.backend_lifecycle.build_comfyui_start_config",
+                return_value=object(),
+            ),
+            patch(
+                "local_gpu_imagegen.backend_lifecycle.ComfyUIProcessSupervisor",
+                return_value=supervisor,
+            ),
+            redirect_stderr(error),
+        ):
+            exit_code = cli.main(
+                ["serve", "--auto-start-comfyui", "--comfyui-root", "C:/portable"]
+            )
+
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(error.getvalue())
+        self.assertEqual(payload["error"]["code"], "startup_process_exited")
+        self.assertEqual(
+            payload["error"]["recoverable_next_actions"],
+            ["inspect_backend_logs", "retry_startup"],
+        )
+        self.assertEqual(payload["error"]["details"]["returncode"], 1)
+
     def test_source_checkout_resource_root_is_detected(self) -> None:
         from local_gpu_imagegen.paths import resolve_resource_root
 

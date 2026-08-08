@@ -611,7 +611,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             supervisor = ComfyUIProcessSupervisor(config)
             supervisor.start()
         except (OSError, RuntimeError, ValueError) as exc:
-            print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
+            from local_gpu_imagegen.backend_lifecycle import BackendLifecycleError
+
+            if isinstance(exc, BackendLifecycleError):
+                error: object = {
+                    "code": exc.code,
+                    "category": "backend_lifecycle",
+                    "details": exc.details,
+                    "recoverable_next_actions": exc.recoverable_next_actions,
+                }
+            else:
+                error = str(exc)
+            print(json.dumps({"ok": False, "error": error}), file=sys.stderr)
             return 1
         try:
             return mcp_server.main()
